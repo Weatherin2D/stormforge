@@ -1,0 +1,29 @@
+{
+  "name": "stormforge",
+  "version": "0.1.0",
+  "description": "Stormforge — 3D clouds & rain sandbox",
+  "main": "electron/main.cjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/ensure-electron.cjs",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "electron": "electron .",
+    "start": "concurrently -k \"vite --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "smoke": "tsx scripts/smoke-solver.ts",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "concurrently": "^9.1.0",
+    "electron": "^33.4.11",
+    "tsx": "^4.23.11",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  }
+}

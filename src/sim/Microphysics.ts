@@ -1,0 +1,141 @@
+import { Grid3D } from "./Grid3D";
+import { SimFields } from "./InitFromSounding";
+import { LV, CP, esatFast, mixingRatio } from "./thermo";
+
+/** Terminal fall speed (m/s) used by rain advection and sedimentation. */
+export function rainFallSpeed(k: number, nz: number): number {
+  const vt0 = 14;
+  // Milder decay aloft so shafts still fall quickly
+  return vt0 * (1 - 0.18 * (k / Math.max(nz - 1, 1)));
+}
+
+/** Kessler-like warm-rain microphysics on continuum fields. */
+export function stepMicrophysics(
+  grid: Grid3D,
+  f: SimFields,
+  dt: number,
+  qrScratch: Float32Array,
+  exner: Float32Array,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const autoc = 0.002;
+  const qcrit = 0.00035;
+  const accr = 2.8;
+  const condRate = 2.0; // less explosive than 3.5 on long batch runs
+  const evapCloud = 0.35;
+  // ~1 K/min under a rain shaft when the air is a few g/kg below saturation.
+  const evapRain = 0.004;
+  const qcCap = 0.0035; // prevent runaway solid-white plumes
+  const condFac = 1 - Math.exp(-condRate * dt);
+  const evapCloudFac = 1 - Math.exp(-evapCloud * dt);
+  const nxny = nx * ny;
+  const latHeat = LV / CP;
+
+  for (let k = 0; k < nz; k++) {
+    const p0 = f.p0[k];
+    const ex = exner[k];
+    const kBase = k * nxny;
+    for (let j = 0; j < ny; j++) {
+      const jBase = kBase + j * nx;
+      for (let i = 0; i < nx; i++) {
+        const id = jBase + i;
+        let qv = f.qv[id];
+        let qc = f.qc[id];
+        let qr = f.qr[id];
+        let th = f.theta[id];
+
+        const T = th * ex;
+        const qs = Math.max(1e-6, mixingRatio(esatFast(T), p0));
+        const excess = qv - qs;
+
+        // Condensation grows cloud whenever supersaturated
+        if (excess > 0) {
+          const cond = Math.min(excess, excess * condFac);
+          qv -= cond;
+          qc += cond;
+          th += (latHeat * cond * th) / Math.max(T, 1);
+        } else if (qc > 0) {
+          // Rate-limited evaporation (does not wipe cloud in one step)
+          const deficit = -excess;
+          const evap = Math.min(qc, deficit * evapCloudFac);
+          qv += evap;
+          qc -= evap;
+          th -= (latHeat * evap * th) / Math.max(T, 1);
+        }
+
+        // Autoconversion (only thicker cloud)
+        if (qc > qcrit) {
+          const auto = Math.min(
+            qc - qcrit * 0.5,
+            autoc * dt * (qc - qcrit),
+          );
+          if (auto > 0) {
+            qc -= auto;
+            qr += auto;
+          }
+        }
+
+        // Accretion
+        if (qc > 0 && qr > 0) {
+          const ac = Math.min(qc, accr * qc * qr * dt);
+          qc -= ac;
+          qr += ac;
+        }
+
+        // Rain evaporation
+        if (qr > 0 && qv < qs) {
+          const ev = Math.min(qr, evapRain * (qs - qv) * dt);
+          qr -= ev;
+          qv += ev;
+          th -= (latHeat * ev * th) / Math.max(T, 1);
+        }
+
+        // Excess cloud above cap converts to rain (keeps storms rain-producing, not fog)
+        if (qc > qcCap) {
+          qr += qc - qcCap;
+          qc = qcCap;
+        }
+
+        f.qv[id] = Math.max(0, qv);
+        f.qc[id] = Math.max(0, qc);
+        f.qr[id] = Math.max(0, qr);
+        f.theta[id] = th;
+      }
+    }
+  }
+
+  // Sedimentation (semi-Lagrangian, up to ~1.8 cells/step)
+  sedimentRain(grid, f, dt, qrScratch);
+}
+
+function sedimentRain(
+  grid: Grid3D,
+  f: SimFields,
+  dt: number,
+  qrNew: Float32Array,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const nxny = nx * ny;
+  qrNew.fill(0);
+  for (let k = 0; k < nz; k++) {
+    const vt = rainFallSpeed(k, nz);
+    const cells = Math.min(1.8, (vt * dt) / Math.max(dz, 1));
+    const kBase = k * nxny;
+    for (let j = 0; j < ny; j++) {
+      const jBase = kBase + j * nx;
+      for (let i = 0; i < nx; i++) {
+        const remain = f.qr[jBase + i];
+        if (remain <= 0) continue;
+        const kDest = k - cells;
+        if (kDest <= 0) continue; // rains out at surface
+        const k0 = Math.floor(kDest);
+        const k1 = Math.min(nz - 1, k0 + 1);
+        const fz = kDest - k0;
+        const ij = i + j * nx;
+        qrNew[ij + k0 * nxny] += remain * (1 - fz);
+        if (k1 !== k0) qrNew[ij + k1 * nxny] += remain * fz;
+      }
+    }
+  }
+  f.qr.set(qrNew);
+}
