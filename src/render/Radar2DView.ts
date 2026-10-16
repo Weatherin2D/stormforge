@@ -49,6 +49,8 @@ export class Radar2DView {
           <button type="button" data-product="wspd">Wind</button>
           <button type="button" data-product="psfc">Pressure</button>
           <button type="button" data-product="ltg">Lightning</button>
+          <button type="button" data-product="vis">Visible</button>
+          <button type="button" data-product="ir">Infrared</button>
         </div>
         <div class="radar2d-canvas-wrap">
           <canvas id="radar2d-canvas"></canvas>

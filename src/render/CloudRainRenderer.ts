@@ -91,7 +91,7 @@ void main() {
   float sunVis = smoothstep(-0.04, 0.16, elev);
   float warm = smoothstep(-0.12, 0.0, elev) * (1.0 - smoothstep(0.02, 0.2, elev));
   vec3 sunCol = mix(vec3(1.0, 0.97, 0.93), vec3(1.0, 0.70, 0.40), warm);
-  vec3 amb = mix(vec3(0.09, 0.10, 0.13), vec3(0.74, 0.80, 0.88), day);
+  vec3 amb = mix(vec3(0.04, 0.045, 0.06), vec3(0.20, 0.23, 0.28), day);
   float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   pos += rayDir * uStep * jitter * 0.12;
   vec4 acc = vec4(0.0);
@@ -111,26 +111,30 @@ void main() {
     cloud *= smoothstep(0.0, 0.12, cloud);
     // Same lumps as the cloud, and the shaft stays partly present inside it
     // so the base fades into the rain instead of ending on a line.
-    float shaft = mass.b * (0.4 + 0.6 * fbm);
-    shaft *= mix(0.5, 1.0, 1.0 - smoothstep(0.04, 0.7, cloud));
-    float d = cloud + shaft * 0.5;
+    // mass.b is 0 at 5 dBZ and 1 at 70 dBZ. A small billow keeps the edge soft
+    // without lifting a green echo up to an opaque curtain.
+    float shaft = mass.b * mix(0.82, 1.0, fbm);
+    shaft *= mix(0.65, 1.0, 1.0 - smoothstep(0.04, 0.7, cloud));
+    float d = cloud + shaft * shaft;
     float stepLen = d > 0.045 ? uStep * 0.75 : (d > 0.008 ? uStep : uStep * 2.6);
     if (d > 0.008) {
-      float shadow = sampleMass(sp + sunLocal * (uStep * 3.2)).r;
-      float light = exp(-shadow * 1.05);
+      float shadow = sampleMass(sp + sunLocal * (uStep * 2.2)).r;
+      shadow += sampleMass(sp + sunLocal * (uStep * 4.8)).r;
+      shadow += sampleMass(sp + sunLocal * (uStep * 8.5)).r;
+      float light = exp(-shadow * 1.15);
       float wet = smoothstep(0.0, 0.55, shaft / max(cloud + shaft, 0.04));
-      vec3 dry = mix(vec3(0.60, 0.64, 0.70), vec3(1.0, 0.99, 0.97), light);
-      vec3 damp = mix(vec3(0.52, 0.56, 0.62), vec3(0.74, 0.78, 0.84), light * 0.65 + 0.35);
+      vec3 dry = mix(vec3(0.14, 0.16, 0.20), vec3(0.93, 0.95, 0.97), light);
+      vec3 damp = mix(vec3(0.08, 0.10, 0.13), vec3(0.42, 0.46, 0.52), light * 0.5 + 0.15);
       vec3 albedo = mix(dry, damp, wet);
-      vec3 lit = mix(vec3(0.50, 0.53, 0.60), albedo, sunVis);
-      float sunAmt = sunVis * mix(1.0, 0.45, wet);
+      vec3 lit = mix(vec3(0.18, 0.20, 0.26), albedo, sunVis);
+      float sunAmt = sunVis * mix(1.0, 0.35, wet);
       vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
       float flashDist = length((sp - uFlashLocal) * uScale);
       float glow = uFlash * exp(-flashDist * flashDist / (2200.0 * 2200.0));
       col += vec3(0.75, 0.84, 1.0) * glow * 1.6;
-      float ext = mix(8.0, 2.4, wet);
+      float ext = mix(8.0, 2.8, wet);
       float a = 1.0 - exp(-d * ext * stepLen / max(uStep, 1e-4));
-      a = clamp(a, 0.0, mix(1.0, 0.4, wet));
+      a = clamp(a, 0.0, mix(1.0, shaft * 0.55 + 0.02, wet));
       acc.rgb += (1.0 - acc.a) * col * a;
       acc.a += (1.0 - acc.a) * a;
     }
@@ -873,8 +877,10 @@ export class CloudRainRenderer {
         if (!live[i + nx * j]) continue;
         let fall = 0;
         for (let k = nz - 1; k >= 0; k--) {
-          const qr = data[at(i, j, k) * 4 + 1];
-          fall = qr > 8 ? Math.max(qr * 0.8, fall * 0.982) : fall * 0.965;
+          // G is 0 at 5 dBZ and 255 at 70 dBZ. Light rain fades in a few levels.
+          const rain = data[at(i, j, k) * 4 + 1];
+          const decay = 0.86 + 0.1 * (Math.max(rain, fall) / 255);
+          fall = rain > fall ? rain : fall * decay;
           data[at(i, j, k) * 4 + 2] = Math.min(255, fall) | 0;
         }
       }
@@ -911,36 +917,26 @@ export class CloudRainRenderer {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           if (!live[i + nx * j]) continue;
-          let acc = data[at(i, j, k) * 4 + 2] * 2;
-          let wt = 2;
-          if (i > 0) {
-            acc += data[at(i - 1, j, k) * 4 + 2];
-            wt++;
-          }
-          if (i + 1 < nx) {
-            acc += data[at(i + 1, j, k) * 4 + 2];
-            wt++;
-          }
-          if (j > 0) {
-            acc += data[at(i, j - 1, k) * 4 + 2];
-            wt++;
-          }
-          if (j + 1 < ny) {
-            acc += data[at(i, j + 1, k) * 4 + 2];
-            wt++;
-          }
-          a[at(i, j, k)] = (acc / wt + 0.5) | 0;
+          // Aloft the shaft stays one column wide. The foot below does the spreading.
+          a[at(i, j, k)] = data[at(i, j, k) * 4 + 2];
         }
       }
     }
 
     const kFoot = Math.max(1, (nz * 0.12) | 0);
     for (let k = 0; k <= kFoot; k++) {
-      const rad = k === 0 ? 2 : 1;
-      const spread = k === 0 ? 0.72 : 0.55;
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           if (!live[i + nx * j]) continue;
+          const core = a[at(i, j, k)];
+          const t = core / 255;
+          // Width opens only as the echo approaches the top of the dBZ scale.
+          const rad = t >= 0.72 ? (k === 0 ? 2 : 1) : t >= 0.35 ? 1 : 0;
+          if (rad === 0) {
+            b[at(i, j, k)] = core;
+            continue;
+          }
+          const spread = t >= 0.72 ? 0.72 : 0.42;
           let m = 0;
           for (let dj = -rad; dj <= rad; dj++) {
             const jj = j + dj;
@@ -952,7 +948,6 @@ export class CloudRainRenderer {
               if (v > m) m = v;
             }
           }
-          const core = a[at(i, j, k)];
           b[at(i, j, k)] = Math.max(core, (m * spread) | 0);
         }
       }
@@ -1060,8 +1055,9 @@ export class CloudRainRenderer {
         this.spanY,
         this.spanZ,
       );
-      const fade = Math.min(1, (performance.now() - this.lastVolumeMs) / 125);
-      mat.uniforms.uFade.value = this.lastVolumeMs > 0 ? fade : 1;
+      // Show the volume that just arrived. Blending back to the previous
+      // upload kept the first empty texture on screen.
+      mat.uniforms.uFade.value = 1;
       this.applyFlashUniforms(mat);
       this.renderer.getClearColor(this.clearScratch);
       const prevA = this.renderer.getClearAlpha();
@@ -1177,6 +1173,7 @@ export class CloudRainRenderer {
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.unpackAlignment = 1;
+    tex.generateMipmaps = false;
     tex.flipY = false;
     if ("colorSpace" in tex) tex.colorSpace = THREE.NoColorSpace;
     tex.needsUpdate = true;

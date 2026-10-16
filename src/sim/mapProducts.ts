@@ -13,7 +13,9 @@ export type MapProductId =
   | "td"
   | "wspd"
   | "psfc"
-  | "ltg";
+  | "ltg"
+  | "vis"
+  | "ir";
 
 export interface MapProductMeta {
   id: MapProductId;
@@ -97,6 +99,22 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
       "linear-gradient(90deg,#1a1428 0%,#c87820 40%,#ffe060 70%,#ffffff 100%)",
     ticks: ["0", "5", "15", "30"],
   },
+  vis: {
+    id: "vis",
+    title: "Visible satellite",
+    units: "albedo",
+    legendCss:
+      "linear-gradient(90deg,#141820 0%,#6a7384 42%,#d8dce4 78%,#ffffff 100%)",
+    ticks: ["clear", "thin", "thick"],
+  },
+  ir: {
+    id: "ir",
+    title: "Infrared satellite",
+    units: "°C",
+    legendCss:
+      "linear-gradient(90deg,#2a1408 0%,#8a4030 28%,#b0b4c0 62%,#f7f7fb 100%)",
+    ticks: ["30", "0", "-40", "-70"],
+  },
 };
 
 export function packMapProduct(
@@ -132,6 +150,12 @@ export function packMapProduct(
       break;
     case "ltg":
       break;
+    case "vis":
+      packVisible(grid, fields, out);
+      break;
+    case "ir":
+      packInfrared(grid, fields, out);
+      break;
   }
 }
 
@@ -146,18 +170,74 @@ function packReflectivity(
   out: Uint8Array,
 ): void {
   const { nx, ny, nz } = grid;
+  const nxny = nx * ny;
   const stepK = nz > 48 ? Math.ceil(nz / 48) : 1;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       let maxDbz = -30;
       for (let k = 0; k < nz; k += stepK) {
         const id = grid.idx(i, j, k);
-        const dbz = reflectivityDbz(f.qr[id], f.qc[id]);
+        const ww = 0.5 * (f.w[id] + f.w[id + nxny]);
+        const dbz = reflectivityDbz(f.qr[id], f.qc[id], ww);
         if (dbz > maxDbz) maxDbz = dbz;
       }
       dbzToRgba(maxDbz, out, mapPix(i, j, nx, ny));
     }
   }
+}
+
+/** Visible satellite: column cloud thickness. Clear ground stays dark. */
+function packVisible(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  const nxny = nx * ny;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let tau = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = i + j * nx + k * nxny;
+        tau += f.qc[id] * 520 + f.qr[id] * 180;
+      }
+      const alb = 1 - Math.exp(-tau);
+      const g = (18 + alb * 237) | 0;
+      const o = mapPix(i, j, nx, ny);
+      out[o] = g;
+      out[o + 1] = g;
+      out[o + 2] = Math.min(255, g + 4);
+      out[o + 3] = 255;
+    }
+  }
+}
+
+/** Infrared: cold cloud tops are bright. Clear columns use the warm surface. */
+function packInfrared(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  const nxny = nx * ny;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let kTop = 0;
+      for (let k = nz - 1; k >= 0; k--) {
+        const id = i + j * nx + k * nxny;
+        if (f.qc[id] + f.qr[id] > 2e-5) {
+          kTop = k;
+          break;
+        }
+      }
+      const id = i + j * nx + kTop * nxny;
+      const tC = TFromTheta(f.theta[id], f.p0[kTop]) - 273.15;
+      irToRgba(tC, out, mapPix(i, j, nx, ny));
+    }
+  }
+}
+
+function irToRgba(tC: number, out: Uint8Array, o: number): void {
+  const stops: [number, number, number, number][] = [
+    [-70, 255, 255, 255],
+    [-40, 232, 232, 238],
+    [-12, 176, 176, 186],
+    [8, 138, 64, 48],
+    [30, 42, 20, 12],
+  ];
+  lerpStops(Math.min(30, Math.max(-70, tC)), stops, out, o, 255);
 }
 
 /** Storm-relative radial velocity toward domain-center virtual radar, ~1.5 km. */
@@ -325,12 +405,34 @@ export function packLightning(
   }
 }
 
-export function reflectivityDbz(qr: number, qc: number): number {
-  const ze =
-    4.0e7 * Math.pow(Math.max(0, qr), 1.75) +
-    8.0e4 * Math.pow(Math.max(0, qc), 2.0);
-  if (ze < 1e-8) return -30;
-  return 10 * Math.log10(ze);
+/** Bottom and top of the reflectivity color bar. Shaft opacity uses the same span. */
+export const DBZ_FLOOR = 5;
+export const DBZ_SCALE_MAX = 70;
+
+/** 0 at 5 dBZ, 1 at 70 dBZ. */
+export function dbzOpacity(dbz: number): number {
+  if (dbz <= DBZ_FLOOR) return 0;
+  return Math.min(1, (dbz - DBZ_FLOOR) / (DBZ_SCALE_MAX - DBZ_FLOOR));
+}
+
+/**
+ * Reflectivity from warm-rain mixing ratios.
+ * The prefactor maps the rain this model actually holds onto 5–70 dBZ.
+ * A strong updraft over heavy rain adds a compact core so pink and white
+ * stay inside the updraft instead of painting the whole echo.
+ */
+export function reflectivityDbz(qr: number, qc: number, w = 0): number {
+  const qrp = Math.max(0, qr);
+  const qcp = Math.max(0, qc);
+  if (qrp < 1e-8 && qcp < 5e-5) return -30;
+  const ze = 8.0e8 * Math.pow(qrp, 1.6) + 2.0e5 * qcp * qcp;
+  let dbz = 10 * Math.log10(Math.max(ze, 1e-8));
+  if (w > 4 && qrp > 2e-4) {
+    const up = Math.min(1, (w - 4) / 12);
+    const rain = Math.min(1, qrp / 0.004);
+    dbz += 16 * up * rain;
+  }
+  return dbz;
 }
 
 function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {

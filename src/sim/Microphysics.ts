@@ -18,14 +18,14 @@ export function stepMicrophysics(
   exner: Float32Array,
 ): void {
   const { nx, ny, nz, dz } = grid;
-  const autoc = 0.002;
-  const qcrit = 0.00035;
-  const accr = 2.8;
+  const autoc = 0.0007;
+  const qcrit = 0.0011;
+  const accr = 1.15;
   const condRate = 2.0; // less explosive than 3.5 on long batch runs
   const evapCloud = 0.35;
   // ~1 K/min under a rain shaft when the air is a few g/kg below saturation.
   const evapRain = 0.004;
-  const qcCap = 0.0035; // prevent runaway solid-white plumes
+  const qcCap = 0.006; // thicker shield before leftover cloud is forced into rain
   const condFac = 1 - Math.exp(-condRate * dt);
   const evapCloudFac = 1 - Math.exp(-evapCloud * dt);
   const nxny = nx * ny;

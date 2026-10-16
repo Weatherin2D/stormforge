@@ -1340,9 +1340,14 @@ export class App {
       cloudMass: st.cloudMass,
     };
     if (st.volume && this.showClouds && !this.showRadar2d) {
+      const vol = st.volume;
       this.renderer.updateVolume(
         (out) => {
-          if (st.volume && out.length === st.volume.length) out.set(st.volume);
+          if (out.length === vol.length) out.set(vol);
+          else if (this.solver) {
+            const g = this.solver.grid;
+            copyFullVolumeToDisplay(vol, g.nx, g.ny, g.nz, out);
+          }
         },
         st.cloudMax,
         st.rainMax,

@@ -1,4 +1,4 @@
-import { Grid3D } from "./Grid3D";
+import { Grid3D, volumeDisplaySize } from "./Grid3D";
 import { FluidSolver } from "./FluidSolver";
 import { SoundingLevel } from "./thermo";
 import { InitOptions } from "./InitFromSounding";
@@ -111,7 +111,11 @@ self.onmessage = (ev: MessageEvent) => {
   const strikes = msg.lightning ? solver.rollLightning(msg.wall) : [];
   let volume: Uint8Array | null = null;
   if (msg.wantVolume) {
-    volume = new Uint8Array(solver.grid.n * 4);
+    const g = solver.grid;
+    const d = volumeDisplaySize(g.nx, g.ny, g.nz);
+    // Display texture is at most 128×128×48. A full-grid buffer is rejected
+    // by the renderer, which is why clouds vanished above that size.
+    volume = new Uint8Array(d.nx * d.ny * d.nz * 4);
     solver.packVolumeRGBA(volume);
   }
   let map: Uint8Array | null = null;

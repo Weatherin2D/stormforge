@@ -14,6 +14,7 @@ import {
   packLightning,
   packMapProduct as packMapProductRGBA,
   reflectivityDbz,
+  dbzOpacity,
 } from "./mapProducts";
 import { volumeDisplaySize } from "./Grid3D";
 import {
@@ -1252,24 +1253,26 @@ export class FluidSolver {
     }
   }
 
-  /** Pack qc and qr into a Uint8 RGBA volume (R=qc, G=qr). Full grid, or stride-sampled when `out` is display-sized. */
+  /** Pack the display volume. R = cloud, G = rain opacity on the 5–70 dBZ scale. */
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
+    const nxny = nx * ny;
     const write = (id: number, o: number): void => {
       const qc = Math.min(1, f.qc[id] * 3800);
-      const qr = Math.min(1, f.qr[id] * 2800);
+      const ww =
+        id + nxny < f.w.length ? 0.5 * (f.w[id] + f.w[id + nxny]) : 0;
+      const rain = dbzOpacity(reflectivityDbz(f.qr[id], f.qc[id], ww));
       out[o] = (qc * 255) | 0;
-      out[o + 1] = (qr * 255) | 0;
+      out[o + 1] = (rain * 255) | 0;
       out[o + 2] = 0;
-      out[o + 3] = Math.min(255, ((qc * 0.75 + qr * 0.55) * 255) | 0);
+      out[o + 3] = Math.min(255, ((qc * 0.75 + rain * 0.55) * 255) | 0);
     };
     if (out.length >= n * 4) {
       for (let i = 0; i < n; i++) write(i, i * 4);
       return;
     }
     const d = volumeDisplaySize(nx, ny, nz);
-    const nxny = nx * ny;
     for (let k = 0; k < d.nz; k++) {
       const ks = Math.min(nz - 1, k * d.sz);
       const kBase = ks * nxny;
