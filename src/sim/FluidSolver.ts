@@ -358,14 +358,18 @@ export class FluidSolver {
     const fy = yy - j0;
     const fz = zz - k0;
     const arr = this.fields.u;
-    const c000 = arr[g.uIdx(i0, j0, k0)];
-    const c100 = arr[g.uIdx(i1, j0, k0)];
-    const c010 = arr[g.uIdx(i0, j1, k0)];
-    const c110 = arr[g.uIdx(i1, j1, k0)];
-    const c001 = arr[g.uIdx(i0, j0, k1)];
-    const c101 = arr[g.uIdx(i1, j0, k1)];
-    const c011 = arr[g.uIdx(i0, j1, k1)];
-    const c111 = arr[g.uIdx(i1, j1, k1)];
+    const row0 = j0 * nxu;
+    const row1 = j1 * nxu;
+    const k0b = k0 * nxu * g.ny;
+    const k1b = k1 * nxu * g.ny;
+    const c000 = arr[k0b + row0 + i0];
+    const c100 = arr[k0b + row0 + i1];
+    const c010 = arr[k0b + row1 + i0];
+    const c110 = arr[k0b + row1 + i1];
+    const c001 = arr[k1b + row0 + i0];
+    const c101 = arr[k1b + row0 + i1];
+    const c011 = arr[k1b + row1 + i0];
+    const c111 = arr[k1b + row1 + i1];
     const c00 = c000 * (1 - fx) + c100 * fx;
     const c10 = c010 * (1 - fx) + c110 * fx;
     const c01 = c001 * (1 - fx) + c101 * fx;
@@ -391,14 +395,20 @@ export class FluidSolver {
     const fy = yy - j0;
     const fz = zz - k0;
     const arr = this.fields.v;
-    const c000 = arr[g.vIdx(i0, j0, k0)];
-    const c100 = arr[g.vIdx(i1, j0, k0)];
-    const c010 = arr[g.vIdx(i0, j1, k0)];
-    const c110 = arr[g.vIdx(i1, j1, k0)];
-    const c001 = arr[g.vIdx(i0, j0, k1)];
-    const c101 = arr[g.vIdx(i1, j0, k1)];
-    const c011 = arr[g.vIdx(i0, j1, k1)];
-    const c111 = arr[g.vIdx(i1, j1, k1)];
+    const nx = g.nx;
+    const row0 = j0 * nx;
+    const row1 = j1 * nx;
+    const kStride = nx * nyv;
+    const k0b = k0 * kStride;
+    const k1b = k1 * kStride;
+    const c000 = arr[k0b + row0 + i0];
+    const c100 = arr[k0b + row0 + i1];
+    const c010 = arr[k0b + row1 + i0];
+    const c110 = arr[k0b + row1 + i1];
+    const c001 = arr[k1b + row0 + i0];
+    const c101 = arr[k1b + row0 + i1];
+    const c011 = arr[k1b + row1 + i0];
+    const c111 = arr[k1b + row1 + i1];
     const c00 = c000 * (1 - fx) + c100 * fx;
     const c10 = c010 * (1 - fx) + c110 * fx;
     const c01 = c001 * (1 - fx) + c101 * fx;
@@ -424,14 +434,20 @@ export class FluidSolver {
     const fy = yy - j0;
     const fz = zz - k0;
     const arr = this.fields.w;
-    const c000 = arr[g.wIdx(i0, j0, k0)];
-    const c100 = arr[g.wIdx(i1, j0, k0)];
-    const c010 = arr[g.wIdx(i0, j1, k0)];
-    const c110 = arr[g.wIdx(i1, j1, k0)];
-    const c001 = arr[g.wIdx(i0, j0, k1)];
-    const c101 = arr[g.wIdx(i1, j0, k1)];
-    const c011 = arr[g.wIdx(i0, j1, k1)];
-    const c111 = arr[g.wIdx(i1, j1, k1)];
+    const nx = g.nx;
+    const row0 = j0 * nx;
+    const row1 = j1 * nx;
+    const kStride = nx * g.ny;
+    const k0b = k0 * kStride;
+    const k1b = k1 * kStride;
+    const c000 = arr[k0b + row0 + i0];
+    const c100 = arr[k0b + row0 + i1];
+    const c010 = arr[k0b + row1 + i0];
+    const c110 = arr[k0b + row1 + i1];
+    const c001 = arr[k1b + row0 + i0];
+    const c101 = arr[k1b + row0 + i1];
+    const c011 = arr[k1b + row1 + i0];
+    const c111 = arr[k1b + row1 + i1];
     const c00 = c000 * (1 - fx) + c100 * fx;
     const c10 = c010 * (1 - fx) + c110 * fx;
     const c01 = c001 * (1 - fx) + c101 * fx;
@@ -572,27 +588,54 @@ export class FluidSolver {
     // real θ anomaly) keep their inflow, outflow, and cold-pool winds.
     const baseNudge = Math.min(0.2, 0.01 * dt);
     const nxny = nx * ny;
-    const stormy = (ci: number, cj: number, ck: number): boolean => {
-      if (ci < 0 || cj < 0 || ci >= nx || cj >= ny) return false;
-      const id = ci + nx * cj + ck * nxny;
-      if (f.qc[id] + f.qr[id] > 1e-5) return true;
-      const dth = f.theta[id] - f.theta0[ck];
-      return dth > 0.6 || dth < -0.6;
-    };
+    const nu = nx + 1;
+    const th = f.theta;
+    const qc = f.qc;
+    const qr = f.qr;
+    const th0k = f.theta0;
     for (let k = 0; k < nz; k++) {
       const z = (k + 0.5) * dz;
       const nudge = z < 1500 ? baseNudge * 0.15 : baseNudge;
+      const kBase = k * nxny;
+      const t0 = th0k[k];
+      const ku = k * nu * ny;
+      const kv = k * nx * (ny + 1);
       for (let j = 0; j < ny; j++) {
+        const row = kBase + j * nx;
+        const ju = ku + j * nu;
         for (let i = 0; i <= nx; i++) {
-          if (stormy(i - 1, j, k) || stormy(i, j, k)) continue;
-          const id = g.uIdx(i, j, k);
+          let storm = false;
+          if (i > 0) {
+            const c = row + i - 1;
+            const dth = th[c] - t0;
+            if (qc[c] + qr[c] > 1e-5 || dth > 0.6 || dth < -0.6) storm = true;
+          }
+          if (!storm && i < nx) {
+            const c = row + i;
+            const dth = th[c] - t0;
+            if (qc[c] + qr[c] > 1e-5 || dth > 0.6 || dth < -0.6) storm = true;
+          }
+          if (storm) continue;
+          const id = ju + i;
           f.u[id] += (f.u0[k] - f.u[id]) * nudge;
         }
       }
       for (let j = 0; j <= ny; j++) {
+        const jv = kv + j * nx;
         for (let i = 0; i < nx; i++) {
-          if (stormy(i, j - 1, k) || stormy(i, j, k)) continue;
-          const id = g.vIdx(i, j, k);
+          let storm = false;
+          if (j > 0) {
+            const c = kBase + (j - 1) * nx + i;
+            const dth = th[c] - t0;
+            if (qc[c] + qr[c] > 1e-5 || dth > 0.6 || dth < -0.6) storm = true;
+          }
+          if (!storm && j < ny) {
+            const c = kBase + j * nx + i;
+            const dth = th[c] - t0;
+            if (qc[c] + qr[c] > 1e-5 || dth > 0.6 || dth < -0.6) storm = true;
+          }
+          if (storm) continue;
+          const id = jv + i;
           f.v[id] += (f.v0[k] - f.v[id]) * nudge;
         }
       }
@@ -973,17 +1016,17 @@ export class FluidSolver {
     const coarsest = levelIndex === this.mgLevels.length - 1;
     if (coarsest) {
       if (levelIndex > 0) p.fill(0);
-      this.smoothLevel(level, p, rhs, 8);
+      this.smoothLevel(level, p, rhs, 4);
       return;
     }
-    this.smoothLevel(level, p, rhs, 2);
+    this.smoothLevel(level, p, rhs, 1);
     this.residualLevel(level, p, rhs, level.resid);
     const coarse = this.mgLevels[levelIndex + 1];
     this.restrictResidual(level, coarse);
     coarse.p!.fill(0);
     this.vcycle(levelIndex + 1);
     this.prolongAdd(coarse, p, level);
-    this.smoothLevel(level, p, rhs, 2);
+    this.smoothLevel(level, p, rhs, 1);
   }
 
   private correctVelocity(dt: number): void {
@@ -1037,15 +1080,93 @@ export class FluidSolver {
    * One xy multigrid V-cycle, warm-started from the previous π.
    * A second cycle runs when the divergence is still large.
    */
+  /** Divergence on the 2x-coarser grid, sampled from the fine winds. */
+  private fillCoarseDivergence(coarse: MgLevel, invDt: number): void {
+    const f = this.fields;
+    const fineNx = this.grid.nx;
+    const fineNy = this.grid.ny;
+    const { nx, ny, nz, dx, dy, dz } = coarse;
+    const rhs = coarse.rhs!;
+    const nu = fineNx + 1;
+    const nv = fineNy + 1;
+    const nxnyF = fineNx * fineNy;
+    const u = f.u;
+    const v = f.v;
+    const w = f.w;
+    const invDx = 1 / dx;
+    const invDy = 1 / dy;
+    const invDz = 1 / dz;
+    const uSj = nu;
+    const vSj = fineNx;
+    const vSk = fineNx * nv;
+    for (let k = 0; k < nz; k++) {
+      const rho = f.rho0[k];
+      const rhowB = f.rho0w[k];
+      const rhowT = f.rho0w[k + 1];
+      const uK = k * uSj * fineNy;
+      const vK = k * vSk;
+      const wK = k * nxnyF;
+      const wK1 = (k + 1) * nxnyF;
+      const cBase = k * nx * ny;
+      for (let J = 0; J < ny; J++) {
+        const j0 = J * 2;
+        const j1 = j0 + 1 < fineNy ? j0 + 1 : j0;
+        const jTop = j0 + 2 <= fineNy ? j0 + 2 : fineNy;
+        const row = cBase + J * nx;
+        const u0 = uK + j0 * uSj;
+        const u1 = uK + j1 * uSj;
+        const v0 = vK + j0 * vSj;
+        const v1 = vK + jTop * vSj;
+        const wb = wK + j0 * fineNx;
+        const wb1 = wK + j1 * fineNx;
+        const wt = wK1 + j0 * fineNx;
+        const wt1 = wK1 + j1 * fineNx;
+        for (let I = 0; I < nx; I++) {
+          const i0 = I * 2;
+          const i1 = i0 + 1 < fineNx ? i0 + 1 : i0;
+          const uL = 0.5 * (u[u0 + i0] + u[u1 + i0]);
+          const uR = 0.5 * (u[u0 + i0 + 2] + u[u1 + i0 + 2]);
+          const vB = 0.5 * (v[v0 + i0] + v[v0 + i1]);
+          const vT = 0.5 * (v[v1 + i0] + v[v1 + i1]);
+          const wB = 0.25 * (w[wb + i0] + w[wb + i1] + w[wb1 + i0] + w[wb1 + i1]);
+          const wT = 0.25 * (w[wt + i0] + w[wt + i1] + w[wt1 + i0] + w[wt1 + i1]);
+          rhs[row + I] =
+            (rho * (uR - uL) * invDx +
+              rho * (vT - vB) * invDy +
+              (rhowT * wT - rhowB * wB) * invDz) *
+            invDt;
+        }
+      }
+    }
+  }
+
   private project(dt: number): void {
     const invDt = 1 / Math.max(1e-6, dt);
     this.setLids();
+    const levels = this.mgLevels;
+    if (
+      levels.length > 1 &&
+      levels[0].nx >= 48 &&
+      levels[0].ny >= 48 &&
+      (levels[0].nx & 1) === 0 &&
+      (levels[0].ny & 1) === 0
+    ) {
+      const coarse = levels[1];
+      this.fillCoarseDivergence(coarse, invDt);
+      coarse.p!.fill(0);
+      this.vcycle(1);
+      this.fields.p.fill(0);
+      this.prolongAdd(coarse, this.fields.p, levels[0]);
+      this.correctVelocity(dt);
+      this.setLids();
+      return;
+    }
     const max0 = this.fillDivergence(invDt);
     this.vcycle(0);
     this.correctVelocity(dt);
     this.setLids();
     const max1 = this.fillDivergence(invDt);
-    if (max1 > 0.02 && max0 > 1e-8 && max1 > 0.25 * max0) {
+    if (max1 > 0.08 && max0 > 1e-8 && max1 > 0.5 * max0) {
       // Second cycle is a correction on the leftover divergence, then
       // folded back into π so the next step can warm-start.
       const saved = this.tmp;

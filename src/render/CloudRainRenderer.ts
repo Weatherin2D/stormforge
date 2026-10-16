@@ -96,7 +96,7 @@ void main() {
   pos += rayDir * uStep * jitter * 0.12;
   vec4 acc = vec4(0.0);
 
-  for (int i = 0; i < 80; i++) {
+  for (int i = 0; i < 56; i++) {
     vec2 xz = pos.xz * uScale.xz;
     float yb = pos.y * 7.5;
     float n = noise2(xz * 0.0005 + vec2(yb, -yb * 0.6));
@@ -114,7 +114,7 @@ void main() {
     float shaft = mass.b * (0.4 + 0.6 * fbm);
     shaft *= mix(0.5, 1.0, 1.0 - smoothstep(0.04, 0.7, cloud));
     float d = cloud + shaft * 0.5;
-    float stepLen = d > 0.045 ? uStep * 0.7 : (d > 0.008 ? uStep : uStep * 2.1);
+    float stepLen = d > 0.045 ? uStep * 0.75 : (d > 0.008 ? uStep : uStep * 2.6);
     if (d > 0.008) {
       float shadow = sampleMass(sp + sunLocal * (uStep * 3.2)).r;
       float light = exp(-shadow * 1.05);
@@ -258,6 +258,9 @@ export class CloudRainRenderer {
   private clearScratch = new THREE.Color();
   private cloudScratch: Uint8Array | null = null;
   private cloudScratchB: Uint8Array | null = null;
+  /** Columns that need the cloud/rain blur. Empty sky is left alone. */
+  private colLive: Uint8Array | null = null;
+  private colSeed: Uint8Array | null = null;
   private liveBolts: {
     i: number;
     j: number;
@@ -273,7 +276,7 @@ export class CloudRainRenderer {
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     this.renderer.setClearColor(0x0a1424, 1);
     const canvas = this.renderer.domElement;
     canvas.style.display = "block";
@@ -386,8 +389,8 @@ export class CloudRainRenderer {
     this.renderer.setSize(w, h, true);
     const bw = Math.max(1, this.renderer.domElement.width);
     const bh = Math.max(1, this.renderer.domElement.height);
-    const hw = Math.max(1, Math.floor(bw * 0.67));
-    const hh = Math.max(1, Math.floor(bh * 0.67));
+    const hw = Math.max(1, Math.floor(bw * 0.5));
+    const hh = Math.max(1, Math.floor(bh * 0.5));
     if (
       !this.cloudTarget ||
       this.cloudTarget.width !== hw ||
@@ -749,12 +752,56 @@ export class CloudRainRenderer {
     }
     const a = this.cloudScratch;
     const b = this.cloudScratchB!;
+    const nxy = nx * ny;
+    if (!this.colLive || this.colLive.length < nxy) {
+      this.colLive = new Uint8Array(nxy);
+      this.colSeed = new Uint8Array(nxy);
+    }
+    const live = this.colLive;
+    const seed = this.colSeed!;
+    seed.fill(0);
     const at = (i: number, j: number, k: number) => i + nx * (j + ny * k);
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const ij = i + nx * j;
+        for (let k = 0; k < nz; k++) {
+          const o = at(i, j, k) * 4;
+          if (data[o] > 0 || data[o + 1] > 0) {
+            seed[ij] = 1;
+            break;
+          }
+        }
+      }
+    }
+    // Blur kernels reach 4 cells past a cloudy column.
+    live.set(seed);
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (!seed[i + nx * j]) continue;
+        for (let dj = -4; dj <= 4; dj++) {
+          const jj = j + dj;
+          if (jj < 0 || jj >= ny) continue;
+          const row = jj * nx;
+          const i0 = i - 4 < 0 ? 0 : i - 4;
+          const i1 = i + 4 >= nx ? nx - 1 : i + 4;
+          for (let ii = i0; ii <= i1; ii++) live[row + ii] = 1;
+        }
+      }
+    }
+    a.fill(0);
+    b.fill(0);
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (live[i + nx * j]) continue;
+        for (let k = 0; k < nz; k++) data[at(i, j, k) * 4 + 2] = 0;
+      }
+    }
     const wz = [1, 2, 4, 7, 4, 2, 1];
 
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let acc = 0;
           let wt = 0;
           for (let dk = -3; dk <= 3; dk++) {
@@ -771,6 +818,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let acc = a[at(i, j, k)] * 4;
           let wt = 4;
           if (i > 0) {
@@ -796,6 +844,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let acc = b[at(i, j, k)] * 4;
           let wt = 4;
           if (j > 0) {
@@ -821,6 +870,7 @@ export class CloudRainRenderer {
 
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
+        if (!live[i + nx * j]) continue;
         let fall = 0;
         for (let k = nz - 1; k >= 0; k--) {
           const qr = data[at(i, j, k) * 4 + 1];
@@ -834,6 +884,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let acc = 0;
           let wt = 0;
           for (let dk = -2; dk <= 2; dk++) {
@@ -850,6 +901,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           data[at(i, j, k) * 4 + 2] = b[at(i, j, k)];
         }
       }
@@ -858,6 +910,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let acc = data[at(i, j, k) * 4 + 2] * 2;
           let wt = 2;
           if (i > 0) {
@@ -887,6 +940,7 @@ export class CloudRainRenderer {
       const spread = k === 0 ? 0.72 : 0.55;
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           let m = 0;
           for (let dj = -rad; dj <= rad; dj++) {
             const jj = j + dj;
@@ -906,6 +960,7 @@ export class CloudRainRenderer {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          if (!live[i + nx * j]) continue;
           const id = at(i, j, k);
           data[id * 4 + 2] = k <= kFoot ? b[id] : a[id];
         }

@@ -2,6 +2,7 @@ import { SetupScreen, SetupValues } from "./setup/SetupScreen";
 import { SynopticSetup, defaultSynoptic } from "./sim/synoptic";
 import { copyFullVolumeToDisplay, Grid3D } from "./sim/Grid3D";
 import { FluidSolver } from "./sim/FluidSolver";
+import { LiveBridge, LiveState } from "./sim/LiveBridge";
 import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
 import { SkewTEditor } from "./skewt/SkewTEditor";
@@ -76,6 +77,12 @@ export class App {
   private playbackSpeed = 1;
   /** Sim seconds per wall second. 1 is realtime, and the only mode with lightning. */
   private simSpeed = 40;
+  /** Live physics, off the render thread. */
+  private live: LiveBridge | null = null;
+  private liveDebt = 0;
+  private liveVolumeAsk = 0;
+  private liveDth: number | null = null;
+  private liveCloud: { cloudMax: number; rainMax: number; cloudMass: number } | null = null;
   private outputIntervalSec = 5;
   private batchCancel = false;
   private pendingSetup: SetupValues | null = null;
@@ -416,6 +423,7 @@ export class App {
   private setClockPaused(paused: boolean): void {
     this.clockPaused = paused;
     if (this.solver) this.solver.clockPaused = paused;
+    this.live?.clock(paused);
     const chk = this.simScreen.querySelector(
       "#live-pause",
     ) as HTMLInputElement | null;
@@ -464,15 +472,18 @@ export class App {
     q("#btn-bubble").addEventListener("click", () => {
       if (this.sessionMode !== "live" || !this.solver) return;
       this.solver.respawnBubble({ bubbleStrength: this.bubbleStrength });
+      this.live?.bubble(this.bubbleStrength);
     });
 
     q("#btn-reset").addEventListener("click", () => {
       if (this.sessionMode !== "live" || !this.solver) return;
       const levels = this.syncSoundingFromEditors();
-      this.solver.reset(levels, {
+      const opts = {
         bubbleStrength: this.bubbleStrength,
         synoptic: this.synoptic,
-      });
+      };
+      this.solver.reset(levels, opts);
+      this.live?.reset(levels, opts);
     });
 
     q("#btn-batch-cancel").addEventListener("click", () => {
@@ -607,12 +618,14 @@ export class App {
     const applyLiveSun = () => {
       if (!this.solver) return;
       const dayMin = Number(liveDaylen.value);
-      this.solver.setRadiation({
+      const radiation = {
         solarHour: Number(liveHour.value),
         latitudeDeg: Number(liveLat.value),
         month: Number(liveMonth.value),
         diurnalSpeed: speedFromDayLen(dayMin),
-      });
+      };
+      this.solver.setRadiation(radiation);
+      this.live?.radiation(radiation);
       (
         this.simScreen.querySelector("#live-daylen-val") as HTMLElement
       ).textContent = `~${dayMin}m`;
@@ -652,10 +665,12 @@ export class App {
     q("#btn-apply").addEventListener("click", () => {
       if (this.sessionMode !== "live" || !this.solver) return;
       const levels = this.syncSoundingFromEditors();
-      this.solver.reset(levels, {
+      const opts = {
         bubbleStrength: this.bubbleStrength,
         synoptic: this.synoptic,
-      });
+      };
+      this.solver.reset(levels, opts);
+      this.live?.reset(levels, opts);
     });
 
     q("#btn-export").addEventListener("click", () => {
@@ -715,10 +730,12 @@ export class App {
         this.hodo?.setLevels(this.sounding);
         // Immediately re-init the sim so import is not a silent no-op
         if (this.solver && this.sessionMode === "live") {
-          this.solver.reset(this.sounding, {
+          const opts = {
             bubbleStrength: this.bubbleStrength,
             synoptic: this.synoptic,
-          });
+          };
+          this.solver.reset(this.sounding, opts);
+          this.live?.reset(this.sounding, opts);
           msg.textContent = `${res.message} Loaded into Skew-T and applied to the sim.`;
         } else if (res.ok) {
           msg.textContent = `${res.message} (review mode — not applied to physics)`;
@@ -927,12 +944,23 @@ export class App {
       bubbleStrength: values.bubbleStrength,
       synoptic: this.synoptic,
     });
-    this.solver.setRadiation({
+    const radiation = {
       enabled: true,
       latitudeDeg: values.latitudeDeg,
       month: values.month,
       solarHour: values.startHour,
       diurnalSpeed: 15,
+    };
+    this.solver.setRadiation(radiation);
+    this.liveDebt = 0;
+    this.liveDth = null;
+    this.liveCloud = null;
+    this.ensureLive().rebuild({
+      grid: { nx: grid.nx, ny: grid.ny, nz: grid.nz, zTop: grid.zTop },
+      sounding: this.sounding,
+      opts: { bubbleStrength: values.bubbleStrength, synoptic: this.synoptic },
+      radiation,
+      clockPaused: this.clockPaused,
     });
     this.syncSunUi(true);
 
@@ -1222,7 +1250,7 @@ export class App {
   private updateStatsLine(fromPlayback: boolean, tOverride?: number): void {
     if (!this.solver) return;
     const g = this.solver.grid;
-    const st = this.solver.cloudRainStats();
+    const st = this.liveCloud ?? this.solver.cloudRainStats();
     const midK = Math.floor(g.nz * 0.25);
     const windSpd = Math.hypot(
       this.solver.fields.u0[midK],
@@ -1230,17 +1258,19 @@ export class App {
     );
     const sun = this.solver.getSolarStatus();
     // Domain-mean surface θ anomaly vs sounding (radiation signal)
-    let dThSum = 0;
-    let dThN = 0;
-    for (let j = 0; j < g.ny; j++) {
-      for (let i = 0; i < g.nx; i++) {
-        const id = g.idx(i, j, 0);
-        dThSum +=
-          this.solver.fields.theta[id] - this.solver.fields.theta0[0];
-        dThN++;
+    let dThSfc = this.liveDth ?? 0;
+    if (this.liveDth == null) {
+      let dThSum = 0;
+      let dThN = 0;
+      for (let j = 0; j < g.ny; j++) {
+        for (let i = 0; i < g.nx; i++) {
+          const id = g.idx(i, j, 0);
+          dThSum += this.solver.fields.theta[id] - this.solver.fields.theta0[0];
+          dThN++;
+        }
       }
+      dThSfc = dThN ? dThSum / dThN : 0;
     }
-    const dThSfc = dThN ? dThSum / dThN : 0;
     const dT =
       (dThSfc >= 0 ? "+" : "") + `${dThSfc.toFixed(1)}K`;
     const sunBit = sun.isDay
@@ -1279,22 +1309,74 @@ export class App {
     void fromPlayback;
   }
 
-  private syncLightning(wallSec: number): void {
-    if (!this.solver || !this.renderer) return;
-    if (this.simSpeed === 1 && !this.paused && this.sessionMode === "live") {
-      const g = this.solver.grid;
-      for (const hit of this.solver.rollLightning(wallSec)) {
-        this.renderer.addLightning({
-          i: hit.i,
-          j: hit.j,
-          x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
-          z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
-          y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,
-        });
-      }
-    } else if (this.simSpeed !== 1) {
-      this.renderer.clearLightning();
+  private ensureLive(): LiveBridge {
+    if (!this.live) {
+      this.live = new LiveBridge();
+      this.live.onState = (state) => this.consumeLive(state);
     }
+    return this.live;
+  }
+
+  private placeStrike(hit: { i: number; j: number; k: number }): void {
+    if (!this.solver || !this.renderer) return;
+    const g = this.solver.grid;
+    this.renderer.addLightning({
+      i: hit.i,
+      j: hit.j,
+      x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
+      z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
+      y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,
+    });
+  }
+
+  private consumeLive(st: LiveState): void {
+    if (!this.solver || !this.renderer) return;
+    this.solver.time = st.time;
+    this.solver.setSolarHour(st.solarHour);
+    this.liveDth = st.dThSfc;
+    this.liveCloud = {
+      cloudMax: st.cloudMax,
+      rainMax: st.rainMax,
+      cloudMass: st.cloudMass,
+    };
+    if (st.volume && this.showClouds && !this.showRadar2d) {
+      this.renderer.updateVolume(
+        (out) => {
+          if (st.volume && out.length === st.volume.length) out.set(st.volume);
+        },
+        st.cloudMax,
+        st.rainMax,
+      );
+    }
+    if (st.map && st.mapId && this.radar2d && this.showRadar2d) {
+      const bytes = st.map;
+      const id = st.mapId;
+      this.radar2d.update((out) => {
+        if (out.length === bytes.length) out.set(bytes);
+      });
+      this.markMapPacked(id);
+    }
+    if (st.map && st.mapId === "refl" && this.showRadar3d) {
+      const bytes = st.map;
+      this.renderer.updateRadar((out) => {
+        if (out.length === bytes.length) out.set(bytes);
+      });
+      this.markMapPacked("refl");
+    }
+    if (st.winds) {
+      if (this.showRadar2d && this.radar2d) this.radar2d.updateWinds(st.winds);
+      else this.renderer.updateWinds(st.winds);
+    }
+    if (this.simSpeed === 1) {
+      for (const hit of st.strikes) this.placeStrike(hit);
+    }
+    this.syncSunUi(true);
+    this.updateStatsLine(false);
+  }
+
+  private syncLightning(wallSec: number): void {
+    if (!this.renderer) return;
+    if (this.simSpeed !== 1) this.renderer.clearLightning();
     this.renderer.tickLightning(wallSec);
     this.radar2d?.setLightning(this.renderer.lightningMarks());
   }
@@ -1335,41 +1417,47 @@ export class App {
 
     const wall = Math.min(0.05, Math.max(0, dtMs) / 1000);
     if (this.solver && !this.paused) {
-      this.solver.step(Math.max(1e-4, wall * this.simSpeed));
+      this.liveDebt += wall;
+      const live = this.ensureLive();
+      // Steps longer than about 2 s drop the cloud field, so the catch-up
+      // timestep stays inside that limit. A 50 ms step then still reaches 40×.
+      const simDt = Math.min(2, this.liveDebt * this.simSpeed);
+      const now = performance.now();
+      const wantVolume =
+        this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 120;
+      const map =
+        this.showRadar2d &&
+        this.radar2d &&
+        this.mapRefreshDue(this.radar2d.getProduct())
+          ? this.radar2d.getProduct()
+          : !this.showRadar2d && this.showRadar3d && this.mapRefreshDue("refl")
+            ? "refl"
+            : null;
+      if (
+        simDt >= 1e-4 &&
+        live.step({
+          dt: simDt,
+          wall,
+          lightning: this.simSpeed === 1,
+          wantVolume,
+          map,
+          winds: this.showSurfaceWinds,
+        })
+      ) {
+        this.liveDebt = 0;
+        if (wantVolume) this.liveVolumeAsk = now;
+      }
     }
 
     if (this.solver && this.renderer) {
       this.syncLightning(wall);
-      const st = this.solver.cloudRainStats();
 
       if (this.showRadar2d && this.radar2d) {
-        const product = this.radar2d.getProduct();
-        this.mapProduct = product;
-        if (this.mapRefreshDue(product)) {
-          this.radar2d.update((out) =>
-            this.solver!.packMapProduct(product, out),
-          );
-          this.markMapPacked(product);
-          this.pushSurfaceWinds();
-        }
+        this.mapProduct = this.radar2d.getProduct();
       } else {
         this.renderer.setVolumeVisible(this.showClouds);
         this.renderer.setRadarVisible(this.showRadar3d);
         this.renderer.setWindsVisible(this.showSurfaceWinds);
-        if (this.showClouds) {
-          this.renderer.updateVolume(
-            (out) => this.solver!.packVolumeRGBA(out),
-            st.cloudMax,
-            st.rainMax,
-          );
-        }
-        if (this.showRadar3d && this.mapRefreshDue("refl")) {
-          this.renderer.updateRadar((out) =>
-            this.solver!.packRadarComposite(out),
-          );
-          this.markMapPacked("refl");
-        }
-        this.pushSurfaceWinds();
         this.renderer.render();
       }
 
