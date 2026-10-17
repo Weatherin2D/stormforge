@@ -1,4 +1,0 @@
-﻿ id="lightning-freq-val">100%</span>
-              </label>
-            </div>
-            <div class="sun-controls">
