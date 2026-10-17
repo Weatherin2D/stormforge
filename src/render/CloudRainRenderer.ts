@@ -858,6 +858,15 @@ export class CloudRainRenderer {
       this.volumeClear = false;
     }
     this.volumeTex.needsUpdate = true;
+    // Wet ground: darken under active rain
+    const wetness = Math.min(1, rainMax / 0.002);
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    groundMat.color.setRGB(
+      0.3 - wetness * 0.12,
+      0.55 - wetness * 0.2,
+      0.32 - wetness * 0.12,
+    );
+    groundMat.roughness = 0.95 - wetness * 0.35;
 
     if (!this.warnedEmpty && !empty) {
       let maxA = 0;

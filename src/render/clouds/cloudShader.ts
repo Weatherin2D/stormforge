@@ -102,6 +102,9 @@ uniform vec2 uResolution;
 uniform vec3 uFlashPos[4];
 uniform vec3 uFlashColor[4];
 uniform float uFlashAmt[4];
+uniform float uTime;          // seconds, for scrolling rain streaks
+uniform float uRainFallSpeed; // m/s, scroll rate of streak noise
+uniform vec3  uRainWindShear; // horizontal drift per metre of height (lean)
 
 const float PI = 3.14159265359;
 
@@ -207,11 +210,27 @@ vec3 sampleSigma(vec3 p, float detail) {
       ice = clamp((ice - thrI) / max(1.0 - thrI, 1e-3), 0.0, 1.0);
     }
 
-    // Rain: vertical streaks (noise squashed along Y).
+// Rain: physics-based extinction + scrolling sheared streaks.
     if (rain > 0.002) {
-      vec3 qr = vec3(rel.x, rel.y * 0.05, rel.z) * uShapeFreq * 2.0;
+      // Step 1: contrast curve — sharpen the core edge
+      float rainCore = smoothstep(0.05, 0.55, rain);
+      float rainFringe = rain;
+      rain = mix(rainFringe, rainCore, 0.65);
+
+      // Step 2: streak noise — shear coords with height so curtains lean with wind
+      vec3 sheared = rel + uRainWindShear * (p.y - uBoxMin.y);
+      // scroll downward at fall speed
+      vec3 qr = vec3(sheared.x * uShapeFreq * 1.8,
+                     (sheared.y - uTime * uRainFallSpeed) * uShapeFreq * 0.04,
+                     sheared.z * uShapeFreq * 1.8);
       float streak = textureLod(uShapeNoise, qr, 0.0).g;
-      rain *= mix(1.0, mix(0.45, 1.3, streak), detail);
+      // apply streaks more at edges, less in dense core
+      float edgeMask = 1.0 - rainCore;
+      rain *= mix(1.0, mix(0.35, 1.4, streak), detail * (0.4 + 0.6 * edgeMask));
+
+      // Step 3: mist foot — thicken rain near ground base
+      float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
+      rain += rainCore * groundFade * 0.4;
     }
   }
 

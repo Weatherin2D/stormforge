@@ -38,7 +38,7 @@ export const DEFAULT_LOOK: CloudLook = {
   iceStretch: [0.25, 0.6, 2.5],
   phaseLiquid: [0.65, 0.3],
   phaseIce: [0.5, 0.2],
-  phaseRain: [0.3, 0.2],
+  phaseRain: [0.85, 0.1],
   backWeight: 0.3,
   multiScatter: [0.5, 0.5, 0.5],
   powder: 0.8,
@@ -138,6 +138,9 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
         uFlashPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
         uFlashColor: { value: [new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1)] },
         uFlashAmt: { value: [0, 0, 0, 0] },
+        uTime: { value: 0 },
+        uRainFallSpeed: { value: 7.0 },
+        uRainWindShear: { value: new THREE.Vector3(0, 0, 0) },
       },
       side: THREE.BackSide, // so the camera can sit inside the box
       transparent: true,
@@ -280,10 +283,17 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   update(timeSeconds: number): void {
     this.frame++;
     this.u<number>('uFrame').value = this.frame % 64;
+    this.u<number>('uTime').value = timeSeconds;
     this.u<THREE.Vector3>('uNoiseOffset').value.set(
       -this.windDir.x * this.windSpeed * timeSeconds,
       this.boil * timeSeconds,
       -this.windDir.z * this.windSpeed * timeSeconds,
+    );
+    // Rain wind shear: lean streaks in wind direction, ~1m horizontal per 1000m height
+    this.u<THREE.Vector3>('uRainWindShear').value.set(
+      this.windDir.x * this.windSpeed * 0.001,
+      0,
+      this.windDir.z * this.windSpeed * 0.001,
     );
   }
 }
