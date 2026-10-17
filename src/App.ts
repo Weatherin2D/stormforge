@@ -1,4 +1,4 @@
-import { SetupScreen, SetupValues } from "./setup/SetupScreen";
+﻿import { SetupScreen, SetupValues } from "./setup/SetupScreen";
 import { SynopticSetup, defaultSynoptic } from "./sim/synoptic";
 import { copyFullVolumeToDisplay, Grid3D } from "./sim/Grid3D";
 import { FluidSolver, type LightningKind } from "./sim/FluidSolver";
@@ -176,6 +176,11 @@ export class App {
                 Lightning frequency
                 <input id="lightning-freq" type="range" min="0" max="1" step="0.01" value="1" />
                 <span id="lightning-freq-val">100%</span>
+              </label>
+              <label>
+                Vorticity
+                <input id="vorticity" type="range" min="0" max="5" step="0.1" value="0" />
+                <span id="vorticity-val">0.0</span>
               </label>
             </div>
             <div class="sun-controls">
@@ -654,7 +659,7 @@ export class App {
     const speedEl = q("#sim-speed") as HTMLSelectElement;
     speedEl.addEventListener("change", () => {
       const next = Number(speedEl.value);
-      this.simSpeed = next === 1 || next === 5 || next === 15 || next === 40 ? next : 40;
+      this.simSpeed = next === 1 || next === 5 || next === 15 || next === 40 || next === 75 || next === 100 ? next : 40;
       if (this.simSpeed !== 1) {
         this.renderer?.clearLightning();
         this.radar2d?.setLightning([]);
@@ -705,6 +710,12 @@ export class App {
     lightningFreqEl.addEventListener("input", () => {
       this.lightningFreq = Number(lightningFreqEl.value);
       (q("#lightning-freq-val") as HTMLElement).textContent = Math.round(this.lightningFreq * 100) + "%";
+    });
+    const vorticityEl = q("#vorticity") as HTMLInputElement;
+    vorticityEl.addEventListener("input", () => {
+      const v = Number(vorticityEl.value);
+      if (this.solver) this.solver.vorticityStrength = v;
+      (q("#vorticity-val") as HTMLElement).textContent = v.toFixed(1);
     });
 
     const liveHour = q("#live-hour") as HTMLInputElement;

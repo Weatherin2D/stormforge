@@ -75,6 +75,7 @@ export class FluidSolver {
   private plumeCooldown: Float32Array;
   /** Recent flash rate, flashes per minute, decaying over ~5 minutes. */
   private flash: Float32Array;
+  private vortScratch: Float32Array = new Float32Array(0);
   private mgLevels: MgLevel[] = [];
   private lastBubbleOpts: InitOptions = { bubbleStrength: 3 };
   radiation: RadiationOptions = { ...DEFAULT_RADIATION };
@@ -82,6 +83,8 @@ export class FluidSolver {
   clockPaused = false;
   time = 0;
   stepCount = 0;
+  /** Vorticity confinement strength. 0 = off, ~1-5 = noticeable rotation enhancement. */
+  vorticityStrength = 0;
 
   constructor(grid: Grid3D) {
     this.grid = grid;
@@ -120,6 +123,7 @@ export class FluidSolver {
     this.landMask = buildLandMask(g.nx, g.ny);
     this.plumeCooldown = new Float32Array(g.nx * g.ny);
     this.flash = new Float32Array(g.nx * g.ny);
+    this.vortScratch = new Float32Array(g.n * 3);
     this.buildMg();
   }
 
@@ -220,6 +224,7 @@ export class FluidSolver {
     for (let s = 0; s < sub; s++) {
       this.applyBuoyancy(h);
       this.advectVelocity(h);
+      if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
       this.project(h);
       this.advectScalars(h);
       applySurfaceRadiation(
@@ -1187,6 +1192,64 @@ export class FluidSolver {
       for (let i = 0; i < p.length; i++) p[i] += saved[i];
       this.setLids();
     }
+  }
+
+  /** Vorticity confinement: amplifies existing rotation to counteract numerical diffusion. */
+  private applyVorticityConfinement(dt: number): void {
+    const g = this.grid;
+    const { nx, ny, nz, dx, dy, dz } = g;
+    const f = this.fields;
+    const eps = this.vorticityStrength;
+    const vc = this.vortScratch; // nx*ny*nz * 3: (wx, wy, wz) curl at cell centres
+    const n = nx * ny * nz;
+    vc.fill(0);
+    // Compute curl of velocity at cell centres using centred differences on face velocities
+    for (let k = 1; k < nz - 1; k++) {
+      for (let j = 1; j < ny - 1; j++) {
+        for (let i = 1; i < nx - 1; i++) {
+          const c = i + nx * (j + ny * k);
+          // dw/dy - dv/dz
+          const wx = (f.w[g.wIdx(i, j + 1, k)] - f.w[g.wIdx(i, j - 1, k)]) / (2 * dy)
+                   - (f.v[g.vIdx(i, j, k + 1)] - f.v[g.vIdx(i, j, k - 1)]) / (2 * dz);
+          // du/dz - dw/dx
+          const wy = (f.u[g.uIdx(i, j, k + 1)] - f.u[g.uIdx(i, j, k - 1)]) / (2 * dz)
+                   - (f.w[g.wIdx(i + 1, j, k)] - f.w[g.wIdx(i - 1, j, k)]) / (2 * dx);
+          // dv/dx - du/dy
+          const wz = (f.v[g.vIdx(i + 1, j, k)] - f.v[g.vIdx(i - 1, j, k)]) / (2 * dx)
+                   - (f.u[g.uIdx(i, j + 1, k)] - f.u[g.uIdx(i, j - 1, k)]) / (2 * dy);
+          vc[c * 3    ] = wx;
+          vc[c * 3 + 1] = wy;
+          vc[c * 3 + 2] = wz;
+        }
+      }
+    }
+    // Gradient of |omega| then cross with omega to get confinement force
+    for (let k = 1; k < nz - 1; k++) {
+      for (let j = 1; j < ny - 1; j++) {
+        for (let i = 1; i < nx - 1; i++) {
+          const c = i + nx * (j + ny * k);
+          const mag = (p: number) => Math.sqrt(vc[p*3]*vc[p*3] + vc[p*3+1]*vc[p*3+1] + vc[p*3+2]*vc[p*3+2]);
+          let nx_ = (mag(c + 1) - mag(c - 1)) / (2 * dx);
+          let ny_ = (mag(c + nx) - mag(c - nx)) / (2 * dy);
+          let nz_ = (mag(c + nx * ny) - mag(c - nx * ny)) / (2 * dz);
+          const nl = Math.sqrt(nx_*nx_ + ny_*ny_ + nz_*nz_) + 1e-8;
+          nx_ /= nl; ny_ /= nl; nz_ /= nl;
+          const wx = vc[c*3], wy = vc[c*3+1], wz = vc[c*3+2];
+          // force = eps * (N x omega)
+          const fx = eps * (ny_ * wz - nz_ * wy);
+          const fy = eps * (nz_ * wx - nx_ * wz);
+          const fz = eps * (nx_ * wy - ny_ * wx);
+          // Apply to surrounding u/v/w faces
+          f.u[g.uIdx(i,   j, k)] -= fx * dt * 0.5;
+          f.u[g.uIdx(i+1, j, k)] += fx * dt * 0.5;
+          f.v[g.vIdx(i, j,   k)] -= fy * dt * 0.5;
+          f.v[g.vIdx(i, j+1, k)] += fy * dt * 0.5;
+          f.w[g.wIdx(i, j, k  )] -= fz * dt * 0.5;
+          f.w[g.wIdx(i, j, k+1)] += fz * dt * 0.5;
+        }
+      }
+    }
+    void n;
   }
 
   private applySponge(dt: number): void {
