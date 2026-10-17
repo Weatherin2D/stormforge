@@ -300,17 +300,7 @@ export class Radar2DView {
       ctx.save();
       ctx.translate(cx, cy);
       ctx.scale(s / 10, s / 10);
-      if (m.kind === "crawler") {
-        ctx.beginPath();
-        ctx.moveTo(-9, 1);
-        ctx.lineTo(-4, -2);
-        ctx.lineTo(-1, 2);
-        ctx.lineTo(3, -2);
-        ctx.lineTo(9, 1);
-        ctx.strokeStyle = `rgba(255, 236, 160, ${a})`;
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
-      } else if (m.kind === "sprite") {
+      if (m.kind === "sprite") {
         ctx.beginPath();
         ctx.moveTo(0, 8);
         ctx.lineTo(0, -2);

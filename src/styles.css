@@ -1162,6 +1162,14 @@ label {
   border-color: var(--accent-dim);
 }
 
+/* Load button inside the sim-menu action row */
+.sim-menu-actions .file-btn-load {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  line-height: 1;
+}
+
 .mode-tabs {
   display: flex;
   flex-wrap: wrap;

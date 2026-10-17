@@ -27,7 +27,7 @@ import {
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
 
-export type LightningKind = "cg" | "crawler" | "sprite";
+export type LightningKind = "cg" | "sprite";
 
 export interface LightningStrike {
   i: number;
@@ -1390,13 +1390,9 @@ export class FluidSolver {
     hits.sort((a, b) => b.rate - a.rate);
     const out: LightningStrike[] = [];
     for (const hit of hits.slice(0, 4)) {
-      const high = hit.k >= nz * 0.5;
-      if (high && Math.random() < 1 / 3) {
-        out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "crawler" });
-        continue;
-      }
+      if (out.length >= 4) break;
       out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "cg" });
-      if (hit.rate > 8 && Math.random() < 0.25) {
+      if (hit.rate > 8 && out.length < 4 && Math.random() < 0.25) {
         out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "sprite" });
       }
     }

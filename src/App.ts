@@ -13,6 +13,7 @@ import { MAP_PRODUCTS, MapProductId, paintLegend } from "./sim/mapProducts";
 import { sampleSurfaceWinds } from "./sim/surfaceWinds";
 import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
+import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 
 type PanelView = "skewt" | "hodograph";
 type SessionMode = "live" | "batching" | "playback";
@@ -88,6 +89,8 @@ export class App {
   private pendingSetup: SetupValues | null = null;
   private synoptic: SynopticSetup = defaultSynoptic();
   private playbackAccumMs = 0;
+  /** Pending save to apply after the new run mounts (for load-save flow). */
+  private pendingLoadSave: StormforgeSave | null = null;
 
   constructor(private host: HTMLElement) {
     this.host.innerHTML = "";
@@ -117,6 +120,11 @@ export class App {
               <button id="btn-radar2d" title="2D maps: Reflectivity, Doppler, CAPE, Surface T">Maps 2D</button>
               <button id="btn-winds" title="Surface wind direction arrows (overlay on 3D or Maps 2D)">Winds</button>
               <button id="btn-teleport" title="Open the map and click to move">Teleport</button>
+              <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
+              <label class="file-btn file-btn-load" title="Load a .sfz save file">
+                Load
+                <input id="load-file" type="file" accept=".sfz,.json" hidden />
+              </label>
             </div>
             <label class="sim-speed">
               Simulation speed
@@ -852,6 +860,27 @@ export class App {
         this.hodo?.setLevels(this.sounding);
       }
     });
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+    q("#btn-save").addEventListener("click", () => {
+      this.saveToDisk();
+    });
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+    const loadFileInput = this.simScreen.querySelector(
+      "#load-file",
+    ) as HTMLInputElement;
+    loadFileInput?.addEventListener("change", () => {
+      const file = loadFileInput.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = String(reader.result ?? "");
+        loadFileInput.value = "";
+        this.loadFromText(text);
+      };
+      reader.readAsText(file);
+    });
   }
 
   private bindTeleport(): void {
@@ -1167,6 +1196,11 @@ export class App {
     if (this.sessionMode === "batching" && this.pendingSetup) {
       void this.beginBatch(this.pendingSetup);
     }
+
+    // Restore view state from a loaded save file (must run after renderer is ready).
+    if (this.pendingLoadSave) {
+      this.applyPendingLoad();
+    }
   }
 
   private async beginBatch(values: SetupValues): Promise<void> {
@@ -1214,11 +1248,158 @@ export class App {
     }
   }
 
+  // ── Save / Load ─────────────────────────────────────────────────────────────
+
+  /** Collect current state and trigger a .sfz download. */
+  private saveToDisk(): void {
+    if (!this.solver || !this.pendingSetup) return;
+
+    const tune = this.renderer?.cloudTune() ?? {
+      gain: 1,
+      sigmaLiquid: 0.06,
+      sigmaRain: 0.045,
+      erosionLiquid: 0.6,
+      erosionIce: 0.25,
+    };
+
+    const lookPreset =
+      (this.simScreen.querySelector("#cloud-look") as HTMLSelectElement | null)
+        ?.value ?? "";
+
+    const simSpeedRaw = this.simSpeed;
+    const simSpeed: 1 | 5 | 15 | 40 =
+      simSpeedRaw === 1 || simSpeedRaw === 5 || simSpeedRaw === 15 || simSpeedRaw === 40
+        ? simSpeedRaw
+        : 40;
+
+    // Build a complete SetupValues snapshot from current live state so that
+    // the restored run starts with exactly the same sounding and synoptic.
+    const currentSounding = this.syncSoundingFromEditors();
+    const setup: typeof this.pendingSetup = {
+      ...this.pendingSetup,
+      sounding: currentSounding.map((l) => ({ ...l })),
+      synoptic: JSON.parse(JSON.stringify(this.synoptic)),
+      // Radiation fields at save time (lat, month, startHour captured from solver)
+      latitudeDeg: this.solver.radiation.latitudeDeg,
+      month: this.solver.radiation.month,
+      startHour: this.solver.radiation.solarHour,
+    };
+
+    const save: StormforgeSave = {
+      version: 1,
+      created: new Date().toISOString(),
+      name: this.runName,
+      setup,
+      simTime: this.solver.time,
+      solarHour: this.solver.radiation.solarHour,
+      view: {
+        showClouds: this.showClouds,
+        showRadar3d: this.showRadar3d,
+        showRadar2d: this.showRadar2d,
+        showSurfaceWinds: this.showSurfaceWinds,
+        mapProduct: this.mapProduct,
+        simSpeed,
+        cloudLookPreset: lookPreset,
+        cloudTune: { ...tune },
+        clockPaused: this.clockPaused,
+      },
+    };
+
+    downloadSave(save);
+  }
+
+  /** Parse a .sfz JSON string and restart the simulation from it. */
+  private loadFromText(text: string): void {
+    let save: StormforgeSave;
+    try {
+      save = parseSave(text);
+    } catch (err) {
+      alert(`Could not load save file:\n${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    // Store the view preferences — applied after mountSimView() finishes.
+    this.pendingLoadSave = save;
+
+    // Start a fresh run with the saved setup. startRun() will call mountSimView()
+    // which calls applyPendingLoad() at the end.
+    this.startRun(save.setup);
+  }
+
+  /**
+   * Apply the view and solar-time state from a loaded save file.
+   * Called once mountSimView() has finished and the renderer/solver are live.
+   */
+  private applyPendingLoad(): void {
+    const save = this.pendingLoadSave;
+    if (!save) return;
+    this.pendingLoadSave = null;
+
+    const v = save.view;
+    const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
+
+    // ── Solar time ────────────────────────────────────────────────────────────
+    if (this.solver) {
+      this.solver.setSolarHour(save.solarHour);
+      this.live?.radiation({ solarHour: save.solarHour });
+      this.syncSunUi(true);
+    }
+
+    // ── Sim speed ─────────────────────────────────────────────────────────────
+    this.simSpeed = v.simSpeed;
+    const speedEl = this.simScreen.querySelector("#sim-speed") as HTMLSelectElement | null;
+    if (speedEl) speedEl.value = String(v.simSpeed);
+
+    // ── Display toggles ───────────────────────────────────────────────────────
+    this.showClouds = v.showClouds;
+    this.showRadar3d = v.showRadar3d;
+    this.showRadar2d = v.showRadar2d;
+    this.showSurfaceWinds = v.showSurfaceWinds;
+    this.mapProduct = v.mapProduct;
+
+    q("#btn-clouds").classList.toggle("active", this.showClouds);
+    q("#btn-radar3d").classList.toggle("active", this.showRadar3d);
+    q("#btn-radar2d").classList.toggle("active", this.showRadar2d);
+    q("#btn-winds").classList.toggle("active", this.showSurfaceWinds);
+
+    this.renderer?.setVolumeVisible(this.showClouds);
+    this.renderer?.setRadarVisible(this.showRadar3d);
+    this.radar2d?.setVisible(this.showRadar2d);
+    if (this.showRadar2d) this.radar2d?.setProduct(v.mapProduct);
+
+    // ── Cloud look preset ─────────────────────────────────────────────────────
+    const lookEl = this.simScreen.querySelector("#cloud-look") as HTMLSelectElement | null;
+    if (lookEl) {
+      lookEl.value = v.cloudLookPreset;
+      this.renderer?.setCloudLook(v.cloudLookPreset);
+    }
+
+    // ── Cloud tune sliders ────────────────────────────────────────────────────
+    const ct = v.cloudTune;
+    this.renderer?.setCloudTune(ct);
+
+    const setSlider = (id: string, val: number, decimals: number) => {
+      const input = this.simScreen.querySelector(id) as HTMLInputElement | null;
+      const span = this.simScreen.querySelector(`${id}-val`) as HTMLElement | null;
+      if (input) input.value = String(val);
+      if (span) span.textContent = val.toFixed(decimals);
+    };
+    setSlider("#cloud-gain", ct.gain, 2);
+    setSlider("#cloud-sigma", ct.sigmaLiquid, 3);
+    setSlider("#cloud-sigma-rain", ct.sigmaRain, 3);
+    setSlider("#cloud-erosion", ct.erosionLiquid, 2);
+    setSlider("#cloud-erosion-ice", ct.erosionIce, 2);
+
+    // ── Clock pause ───────────────────────────────────────────────────────────
+    this.setClockPaused(v.clockPaused);
+  }
+
   private returnToMenu(): void {
     this.stopLoop();
     this.frameStore = null;
     this.sessionMode = "live";
     this.pendingSetup = null;
+    this.pendingLoadSave = null;
     this.batchCancel = false;
     this.renderer?.dispose();
     this.renderer = null;
