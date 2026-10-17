@@ -9,6 +9,7 @@ import {
   SurfaceWindSample,
   windSpeedScale,
 } from "../sim/surfaceWinds";
+import type { LightningKind } from "../sim/FluidSolver";
 
 /**
  * Flat top-down map display for reflectivity / Doppler / CAPE / Tsfc.
@@ -32,7 +33,7 @@ export class Radar2DView {
   private recordedOnly = false;
   private windsVisible = false;
   private windSamples: SurfaceWindSample[] = [];
-  private lightning: { i: number; j: number; alpha: number }[] = [];
+  private lightning: { i: number; j: number; alpha: number; kind: LightningKind }[] = [];
   private blitCanvas: HTMLCanvasElement | null = null;
   private blitCtx: CanvasRenderingContext2D | null = null;
   private upImage: ImageData | null = null;
@@ -281,7 +282,7 @@ export class Radar2DView {
   }
 
   /** Small bolt icons for live flashes. North is up, same as the map. */
-  setLightning(marks: { i: number; j: number; alpha: number }[]): void {
+  setLightning(marks: { i: number; j: number; alpha: number; kind: LightningKind }[]): void {
     this.lightning = marks;
     if (!this.root.classList.contains("hidden")) this.draw();
   }
@@ -295,22 +296,45 @@ export class Radar2DView {
       const cx = ((m.i + 0.5) / nx) * w;
       const cy = ((ny - 1 - m.j + 0.5) / ny) * h;
       const s = Math.max(7, Math.min(w, h) / ny * 0.55);
+      const a = Math.max(0, Math.min(1, m.alpha));
       ctx.save();
       ctx.translate(cx, cy);
       ctx.scale(s / 10, s / 10);
-      ctx.beginPath();
-      ctx.moveTo(0, -9);
-      ctx.lineTo(-4.2, -1.2);
-      ctx.lineTo(0.6, -1.6);
-      ctx.lineTo(-1.4, 9);
-      ctx.lineTo(4.4, 0.4);
-      ctx.lineTo(-0.4, 0.8);
-      ctx.closePath();
-      ctx.fillStyle = `rgba(255, 236, 160, ${Math.max(0, Math.min(1, m.alpha))})`;
-      ctx.strokeStyle = `rgba(40, 30, 8, ${Math.max(0, Math.min(1, m.alpha)) * 0.85})`;
-      ctx.lineWidth = 1.2;
-      ctx.fill();
-      ctx.stroke();
+      if (m.kind === "crawler") {
+        ctx.beginPath();
+        ctx.moveTo(-9, 1);
+        ctx.lineTo(-4, -2);
+        ctx.lineTo(-1, 2);
+        ctx.lineTo(3, -2);
+        ctx.lineTo(9, 1);
+        ctx.strokeStyle = `rgba(255, 236, 160, ${a})`;
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      } else if (m.kind === "sprite") {
+        ctx.beginPath();
+        ctx.moveTo(0, 8);
+        ctx.lineTo(0, -2);
+        ctx.moveTo(-3.5, -6);
+        ctx.lineTo(0, -2);
+        ctx.lineTo(3.5, -7);
+        ctx.strokeStyle = `rgba(255, 72, 96, ${a})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(0, -9);
+        ctx.lineTo(-4.2, -1.2);
+        ctx.lineTo(0.6, -1.6);
+        ctx.lineTo(-1.4, 9);
+        ctx.lineTo(4.4, 0.4);
+        ctx.lineTo(-0.4, 0.8);
+        ctx.closePath();
+        ctx.fillStyle = `rgba(255, 236, 160, ${a})`;
+        ctx.strokeStyle = `rgba(40, 30, 8, ${a * 0.85})`;
+        ctx.lineWidth = 1.2;
+        ctx.fill();
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Grid3D, volumeDisplaySize } from "../sim/Grid3D";
+import type { LightningKind } from "../sim/FluidSolver";
 import {
   SurfaceWindSample,
   windSpeedScale,
@@ -309,6 +310,7 @@ export class CloudRainRenderer {
   private liveBolts: {
     i: number;
     j: number;
+    kind: LightningKind;
     x: number;
     y: number;
     z: number;
@@ -319,6 +321,7 @@ export class CloudRainRenderer {
   }[] = [];
   private flashTint = new THREE.Color(0.75, 0.86, 1);
   private flashFar = new THREE.Color(1, 0.92, 0.55);
+  private spriteTint = new THREE.Color(1, 0.28, 0.38);
   private flashLights: THREE.PointLight[] = [];
   private boltLines: THREE.Line[] = [];
 
@@ -347,7 +350,7 @@ export class CloudRainRenderer {
     this.sunLight = new THREE.DirectionalLight(0xfff2d6, 1.15);
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
-    for (let n = 0; n < 3; n++) {
+    for (let n = 0; n < 6; n++) {
       const light = new THREE.PointLight(0xdbe7ff, 0, 8000, 2);
       light.castShadow = false;
       this.flashLights.push(light);
@@ -355,7 +358,7 @@ export class CloudRainRenderer {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute(
         "position",
-        new THREE.BufferAttribute(new Float32Array(6 * 3), 3),
+        new THREE.BufferAttribute(new Float32Array(24 * 3), 3),
       );
       const bolt = new THREE.Line(
         geo,
@@ -1225,15 +1228,35 @@ export class CloudRainRenderer {
   }
 
   /** A bolt inside a storm. World position is meters; i/j are grid columns. */
-  addLightning(hit: { i: number; j: number; x: number; y: number; z: number }): void {
+  addLightning(hit: {
+    i: number;
+    j: number;
+    kind: LightningKind;
+    x: number;
+    y: number;
+    z: number;
+  }): void {
+    const kind = hit.kind;
+    const life =
+      kind === "crawler"
+        ? 0.7 + Math.random() * 0.4
+        : kind === "sprite"
+          ? 0.12 + Math.random() * 0.2
+          : 0.28 + Math.random() * 0.38;
+    const brightness =
+      kind === "crawler"
+        ? 0.25 + Math.random() * 0.35
+        : kind === "sprite"
+          ? 0.45 + Math.random() * 0.4
+          : 0.35 + Math.random() * 0.65;
     this.liveBolts.unshift({
       ...hit,
       age: 0,
-      life: 0.28 + Math.random() * 0.38,
+      life,
       seed: Math.random() * 20,
-      brightness: 0.35 + Math.random() * 0.65,
+      brightness,
     });
-    if (this.liveBolts.length > 3) this.liveBolts.length = 3;
+    if (this.liveBolts.length > 6) this.liveBolts.length = 6;
   }
 
   clearLightning(): void {
@@ -1249,16 +1272,17 @@ export class CloudRainRenderer {
     this.syncBoltVisuals();
   }
 
-  lightningMarks(): { i: number; j: number; alpha: number }[] {
+  lightningMarks(): { i: number; j: number; alpha: number; kind: LightningKind }[] {
     return this.liveBolts.map((bolt) => ({
       i: bolt.i,
       j: bolt.j,
+      kind: bolt.kind,
       alpha: Math.max(0, 1 - bolt.age / bolt.life),
     }));
   }
 
   private syncBoltVisuals(): void {
-    for (let n = 0; n < 3; n++) {
+    for (let n = 0; n < 6; n++) {
       const bolt = this.liveBolts[n];
       const light = this.flashLights[n];
       const line = this.boltLines[n];
@@ -1269,26 +1293,86 @@ export class CloudRainRenderer {
       }
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
-      this.boltTint(bolt.x, bolt.y, bolt.z);
-      light.color.copy(this.flashTint);
-      light.position.set(bolt.x, bolt.y - 600, bolt.z);
-      light.intensity = 6e6 * pulse;
+      const sprite = bolt.kind === "sprite";
+      if (sprite) {
+        light.intensity = 0;
+      } else {
+        this.boltTint(bolt.x, bolt.y, bolt.z);
+        light.color.copy(this.flashTint);
+        const litY =
+          bolt.kind === "cg" ? bolt.y * 0.55 + this.groundY * 0.45 : bolt.y;
+        light.position.set(bolt.x, litY, bolt.z);
+        light.intensity = (bolt.kind === "crawler" ? 2.2e6 : 6e6) * pulse;
+      }
       const pos = line.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const count = this.writeBoltPath(bolt, pos);
+      pos.needsUpdate = true;
+      line.geometry.setDrawRange(0, count);
+      const mat = line.material as THREE.LineBasicMaterial;
+      if (sprite) mat.color.copy(this.spriteTint);
+      else mat.color.copy(this.flashTint);
+      const body =
+        bolt.kind === "crawler" ? 0.35 + 0.4 * bolt.brightness : 0.55 + 0.45 * bolt.brightness;
+      mat.opacity = alpha * (sprite ? 0.55 : body);
+      line.visible = alpha > 0.04;
+    }
+  }
+
+  /** Jagged channel. Returns how many vertices to draw. */
+  private writeBoltPath(
+    bolt: {
+      kind: LightningKind;
+      x: number;
+      y: number;
+      z: number;
+      seed: number;
+    },
+    pos: THREE.BufferAttribute,
+  ): number {
+    const seed = bolt.seed;
+    if (bolt.kind === "sprite") {
+      const steps = 16;
+      const y0 = this.groundY + 15000;
+      const y1 = this.groundY + 70000;
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const spread = 90 + t * t * 1600;
+        pos.setXYZ(
+          s,
+          bolt.x + Math.sin(seed + s * 1.7) * spread,
+          y0 + (y1 - y0) * t,
+          bolt.z + Math.cos(seed * 1.1 + s) * spread * 0.65,
+        );
+      }
+      return steps + 1;
+    }
+    if (bolt.kind === "crawler") {
+      const steps = 18;
+      const stepLen = 220 + (seed % 1) * 180;
       let px = bolt.x;
       let py = bolt.y;
       let pz = bolt.z;
-      for (let s = 0; s < 6; s++) {
+      for (let s = 0; s <= steps; s++) {
         pos.setXYZ(s, px, py, pz);
-        px += Math.sin(bolt.seed + s * 2.17) * 90;
-        pz += Math.cos(bolt.seed * 1.3 + s) * 90;
-        py -= 240;
+        const wander = Math.sin(seed * 1.7 + s * 0.9) * 0.45;
+        px += Math.cos(seed + wander) * stepLen;
+        pz += Math.sin(seed + wander) * stepLen;
+        py += Math.sin(seed * 2.2 + s) * 35;
       }
-      pos.needsUpdate = true;
-      const mat = line.material as THREE.LineBasicMaterial;
-      mat.color.copy(this.flashTint);
-      mat.opacity = alpha * (0.45 + 0.55 * bolt.brightness);
-      line.visible = alpha > 0.04;
+      return steps + 1;
     }
+    const steps = 16;
+    const drop = Math.max(80, bolt.y - this.groundY);
+    let px = bolt.x;
+    let py = bolt.y;
+    let pz = bolt.z;
+    for (let s = 0; s <= steps; s++) {
+      pos.setXYZ(s, px, s === steps ? this.groundY : py, pz);
+      px += Math.sin(seed + s * 2.17) * 120;
+      pz += Math.cos(seed * 1.3 + s) * 120;
+      py -= drop / steps;
+    }
+    return steps + 1;
   }
 
   /** Close bolts are blue-white. Distant ones shift toward yellow. */
@@ -1300,7 +1384,7 @@ export class CloudRainRenderer {
   }
 
   private applyFlashUniforms(mat: THREE.ShaderMaterial): void {
-    const lead = this.liveBolts[0];
+    const lead = this.liveBolts.find((bolt) => bolt.kind !== "sprite");
     if (!lead || !this.volumeMesh) {
       mat.uniforms.uFlash.value = 0;
       return;

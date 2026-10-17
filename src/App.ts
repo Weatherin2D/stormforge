@@ -1,7 +1,7 @@
 import { SetupScreen, SetupValues } from "./setup/SetupScreen";
 import { SynopticSetup, defaultSynoptic } from "./sim/synoptic";
 import { copyFullVolumeToDisplay, Grid3D } from "./sim/Grid3D";
-import { FluidSolver } from "./sim/FluidSolver";
+import { FluidSolver, type LightningKind } from "./sim/FluidSolver";
 import { LiveBridge, LiveState } from "./sim/LiveBridge";
 import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
@@ -1326,12 +1326,18 @@ export class App {
     return this.live;
   }
 
-  private placeStrike(hit: { i: number; j: number; k: number }): void {
+  private placeStrike(hit: {
+    i: number;
+    j: number;
+    k: number;
+    kind: LightningKind;
+  }): void {
     if (!this.solver || !this.renderer) return;
     const g = this.solver.grid;
     this.renderer.addLightning({
       i: hit.i,
       j: hit.j,
+      kind: hit.kind,
       x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
       z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
       y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,

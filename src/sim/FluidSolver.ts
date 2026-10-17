@@ -28,6 +28,15 @@ import {
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
 
+export type LightningKind = "cg" | "crawler" | "sprite";
+
+export interface LightningStrike {
+  i: number;
+  j: number;
+  k: number;
+  kind: LightningKind;
+}
+
 /** One xy-coarsened level of the anelastic pressure V-cycle. */
 interface MgLevel {
   nx: number;
@@ -1326,9 +1335,11 @@ export class FluidSolver {
 
   /**
    * Discrete flashes from the lightning-hotspot field.
-   * `dt` is sim seconds. At most two bolts per call.
+   * `dt` is wall seconds, so bolts appear at every sim speed.
+   * At most four channels per call. A strong ground stroke can also
+   * carry a sprite, which does not count as its own roll.
    */
-  rollLightning(dt: number): { i: number; j: number; k: number }[] {
+  rollLightning(dt: number): LightningStrike[] {
     if (dt <= 0) return [];
     const { nx, ny, nz } = this.grid;
     const f = this.fields;
@@ -1354,7 +1365,19 @@ export class FluidSolver {
       }
     }
     hits.sort((a, b) => b.rate - a.rate);
-    return hits.slice(0, 2).map(({ i, j, k }) => ({ i, j, k }));
+    const out: LightningStrike[] = [];
+    for (const hit of hits.slice(0, 4)) {
+      const high = hit.k >= nz * 0.5;
+      if (high && Math.random() < 1 / 3) {
+        out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "crawler" });
+        continue;
+      }
+      out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "cg" });
+      if (hit.rate > 8 && Math.random() < 0.25) {
+        out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "sprite" });
+      }
+    }
+    return out;
   }
 
   /** Column-max reflectivity (legacy name for 3D radar plane). */

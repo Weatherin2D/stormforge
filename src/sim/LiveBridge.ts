@@ -3,6 +3,7 @@ import { InitOptions } from "./InitFromSounding";
 import { RadiationOptions } from "./SurfaceRadiation";
 import { MapProductId } from "./mapProducts";
 import { SurfaceWindSample } from "./surfaceWinds";
+import type { LightningStrike } from "./FluidSolver";
 
 export interface LiveState {
   type: "state";
@@ -16,7 +17,7 @@ export interface LiveState {
   clock: string;
   label: string;
   dThSfc: number;
-  strikes: { i: number; j: number; k: number }[];
+  strikes: LightningStrike[];
   volume: Uint8Array | null;
   map: Uint8Array | null;
   mapId: MapProductId | null;

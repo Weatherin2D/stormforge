@@ -1,5 +1,5 @@
 import { Grid3D, volumeDisplaySize } from "./Grid3D";
-import { FluidSolver } from "./FluidSolver";
+import { FluidSolver, type LightningStrike } from "./FluidSolver";
 import { SoundingLevel } from "./thermo";
 import { InitOptions } from "./InitFromSounding";
 import { RadiationOptions } from "./SurfaceRadiation";
@@ -33,7 +33,7 @@ function publish(extra: {
   map: Uint8Array | null;
   mapId: MapProductId | null;
   winds: SurfaceWindSample[] | null;
-  strikes: { i: number; j: number; k: number }[];
+  strikes: LightningStrike[];
 }): void {
   if (!solver) return;
   const sun = solver.getSolarStatus();
