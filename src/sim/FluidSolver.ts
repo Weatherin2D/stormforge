@@ -1456,7 +1456,7 @@ export class FluidSolver {
     for (const hit of picked) {
       if (out.length >= 4) break;
       out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "cg" });
-      if (hit.rate > 8 && out.length < 4 && Math.random() < 0.25) {
+      if (hit.rate > 8 && out.length < 4 && Math.random() < 0.05) {
         out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "sprite" });
       }
     }

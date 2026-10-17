@@ -1196,6 +1196,8 @@ export class CloudRainRenderer {
       const sprite = bolt.kind === "sprite";
       if (sprite) {
         light.intensity = 0;
+        ribbon.visible = false; // sprites are volumetric-only, never draw through clouds
+        continue;
       } else {
         this.boltTint(bolt.x, bolt.y, bolt.z);
         light.color.copy(this.flashTint);
@@ -1258,22 +1260,8 @@ export class CloudRainRenderer {
   ): number {
     const seed = bolt.seed;
     const cap = Math.min(out.length, this.boltPointCount);
-    if (bolt.kind === "sprite") {
-      const steps = Math.min(16, cap - 1);
-      const y0 = this.groundY + 15000;
-      const y1 = this.groundY + 70000;
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
-        const spread = 90 + t * t * 1600;
-        out[s].set(
-          bolt.x + Math.sin(seed + s * 1.7) * spread,
-          y0 + (y1 - y0) * t,
-          bolt.z + Math.cos(seed * 1.1 + s) * spread * 0.65,
-        );
-      }
-      return steps + 1;
-    }
-const steps = Math.min(16, cap - 1);
+    if (bolt.kind === "sprite") return 0; // sprites are flash-only, no geometry
+    const steps = Math.min(16, cap - 1);
     const drop = Math.max(80, bolt.y - this.groundY);
     // Main channel with stepped leader jags
     let px = bolt.x;
