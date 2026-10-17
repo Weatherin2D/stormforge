@@ -156,8 +156,8 @@ export class App {
               </label>
               <label>
                 Base darkness
-                <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.06" />
-                <span id="cloud-sigma-val">0.060</span>
+                <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.08" />
+                <span id="cloud-sigma-val">0.080</span>
               </label>
               <label>
                 Liquid billow
@@ -171,8 +171,8 @@ export class App {
               </label>
               <label>
                 Rain shaft thickness
-                <input id="cloud-sigma-rain" type="range" min="0.005" max="0.12" step="0.005" value="0.045" />
-                <span id="cloud-sigma-rain-val">0.045</span>
+                <input id="cloud-sigma-rain" type="range" min="0.005" max="0.3" step="0.005" value="0.18" />
+                <span id="cloud-sigma-rain-val">0.180</span>
               </label>
               <label>
                 Lightning frequency
@@ -1280,8 +1280,8 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.06,
-      sigmaRain: 0.045,
+      sigmaLiquid: 0.08,
+      sigmaRain: 0.18,
       erosionLiquid: 0.6,
       erosionIce: 0.25,
     };
