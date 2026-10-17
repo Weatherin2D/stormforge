@@ -75,7 +75,7 @@ export class App {
   private playbackIndex = 0;
   private playbackPlaying = false;
   private playbackSpeed = 1;
-  /** Sim seconds per wall second. 1 is realtime, and the only mode with lightning. */
+  /** Sim seconds per wall second. 1 is realtime. Lightning flashes at every speed. */
   private simSpeed = 40;
   /** Live physics, off the render thread. */
   private live: LiveBridge | null = null;
@@ -127,7 +127,7 @@ export class App {
                 <option value="40" selected>40×</option>
               </select>
             </label>
-            <p class="hint sim-speed-note">Lightning runs in realtime only.</p>
+            <p class="hint sim-speed-note">Lightning flashes at every speed.</p>
             <div class="sun-controls">
               <span id="sun-clock" class="sun-clock">12:00 · day</span>
               <div id="sun-panel" class="sun-panel">
@@ -1372,16 +1372,13 @@ export class App {
       if (this.showRadar2d && this.radar2d) this.radar2d.updateWinds(st.winds);
       else this.renderer.updateWinds(st.winds);
     }
-    if (this.simSpeed === 1) {
-      for (const hit of st.strikes) this.placeStrike(hit);
-    }
+    for (const hit of st.strikes) this.placeStrike(hit);
     this.syncSunUi(true);
     this.updateStatsLine(false);
   }
 
   private syncLightning(wallSec: number): void {
     if (!this.renderer) return;
-    if (this.simSpeed !== 1) this.renderer.clearLightning();
     this.renderer.tickLightning(wallSec);
     this.radar2d?.setLightning(this.renderer.lightningMarks());
   }
@@ -1443,7 +1440,7 @@ export class App {
         live.step({
           dt: simDt,
           wall,
-          lightning: this.simSpeed === 1,
+          lightning: true,
           wantVolume,
           map,
           winds: this.showSurfaceWinds,

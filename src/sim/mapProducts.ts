@@ -112,8 +112,8 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     title: "Infrared satellite",
     units: "°C",
     legendCss:
-      "linear-gradient(90deg,#2a1408 0%,#8a4030 28%,#b0b4c0 62%,#f7f7fb 100%)",
-    ticks: ["30", "0", "-40", "-70"],
+      "linear-gradient(90deg,#00ffff 0%,#0050ff 14%,#0000b4 24%,#00c800 40%,#ffff00 52%,#ff8c00 64%,#ff0000 74%,#500000 84%,#808080 92%,#b400dc 100%)",
+    ticks: ["40", "0", "-40", "-70", "-90"],
   },
 };
 
@@ -214,16 +214,16 @@ function packInfrared(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   const nxny = nx * ny;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      let kTop = 0;
+      let kTop = -1;
       for (let k = nz - 1; k >= 0; k--) {
         const id = i + j * nx + k * nxny;
-        if (f.qc[id] + f.qr[id] > 2e-5) {
+        if (f.qc[id] + f.qr[id] > 1.5e-4) {
           kTop = k;
           break;
         }
       }
-      const id = i + j * nx + kTop * nxny;
-      const tC = TFromTheta(f.theta[id], f.p0[kTop]) - 273.15;
+      const id = i + j * nx + (kTop < 0 ? 0 : kTop) * nxny;
+      const tC = TFromTheta(f.theta[id], f.p0[kTop < 0 ? 0 : kTop]) - 273.15;
       irToRgba(tC, out, mapPix(i, j, nx, ny));
     }
   }
@@ -231,13 +231,19 @@ function packInfrared(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 
 function irToRgba(tC: number, out: Uint8Array, o: number): void {
   const stops: [number, number, number, number][] = [
-    [-70, 255, 255, 255],
-    [-40, 232, 232, 238],
-    [-12, 176, 176, 186],
-    [8, 138, 64, 48],
-    [30, 42, 20, 12],
+    [-90, 180, 0, 220],
+    [-80, 128, 128, 128],
+    [-70, 80, 0, 0],
+    [-60, 255, 0, 0],
+    [-50, 255, 140, 0],
+    [-40, 255, 255, 0],
+    [-30, 180, 255, 0],
+    [-20, 0, 200, 0],
+    [0, 0, 0, 180],
+    [20, 0, 80, 255],
+    [40, 0, 255, 255],
   ];
-  lerpStops(Math.min(30, Math.max(-70, tC)), stops, out, o, 255);
+  lerpStops(Math.min(40, Math.max(-90, tC)), stops, out, o, 255);
 }
 
 /** Storm-relative radial velocity toward domain-center virtual radar, ~1.5 km. */

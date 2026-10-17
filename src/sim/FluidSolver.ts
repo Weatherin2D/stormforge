@@ -1325,7 +1325,7 @@ export class FluidSolver {
   }
 
   /**
-   * Discrete flashes from the lightning-hotspot field. Call only in realtime;
+   * Discrete flashes from the lightning-hotspot field.
    * `dt` is sim seconds. At most two bolts per call.
    */
   rollLightning(dt: number): { i: number; j: number; k: number }[] {

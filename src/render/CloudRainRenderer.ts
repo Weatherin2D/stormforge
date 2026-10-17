@@ -30,6 +30,7 @@ uniform vec3 uSunWorld;
 uniform vec3 uScale;
 uniform vec3 uFlashLocal;
 uniform float uFlash;
+uniform vec3 uFlashColor;
 
 float hash21(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -91,7 +92,7 @@ void main() {
   float sunVis = smoothstep(-0.04, 0.16, elev);
   float warm = smoothstep(-0.12, 0.0, elev) * (1.0 - smoothstep(0.02, 0.2, elev));
   vec3 sunCol = mix(vec3(1.0, 0.97, 0.93), vec3(1.0, 0.70, 0.40), warm);
-  vec3 amb = mix(vec3(0.04, 0.045, 0.06), vec3(0.20, 0.23, 0.28), day);
+  vec3 amb = mix(vec3(0.04, 0.045, 0.06), vec3(0.52, 0.58, 0.66), day);
   float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   pos += rayDir * uStep * jitter * 0.12;
   vec4 acc = vec4(0.0);
@@ -101,14 +102,14 @@ void main() {
     float yb = pos.y * 7.5;
     float n = noise2(xz * 0.0005 + vec2(yb, -yb * 0.6));
     float n2 = noise2(xz * 0.00135 + vec2(yb * 1.8, yb * 0.7) + 9.0);
-    vec3 sp = pos + vec3((n - 0.5) * 0.03, (n - 0.5) * 0.04 + (n2 - 0.5) * 0.055, (n2 - 0.5) * 0.03);
+    vec3 sp = pos + vec3((n - 0.5) * 0.045, (n - 0.5) * 0.10 + (n2 - 0.5) * 0.12, (n2 - 0.5) * 0.045);
     float puff = noise2(vec2(pos.x * 13.0 + pos.y * 17.0, pos.z * 13.0 - pos.y * 15.0));
     float puffB = noise2(vec2(pos.x * 6.5 - pos.y * 8.0, pos.z * 6.5 + pos.y * 7.0) + 4.2);
     vec3 mass = sampleMass(sp);
     float qc = mass.r;
     float fbm = puff * 0.62 + puffB * 0.38;
-    float cloud = max(0.0, qc * (0.22 + fbm) - 0.03);
-    cloud *= smoothstep(0.0, 0.12, cloud);
+    float cloud = max(0.0, qc * (0.35 + fbm * 0.65) - 0.012);
+    cloud *= smoothstep(0.0, 0.28, cloud);
     // Same lumps as the cloud, and the shaft stays partly present inside it
     // so the base fades into the rain instead of ending on a line.
     // mass.b is 0 at 5 dBZ and 1 at 70 dBZ. A small billow keeps the edge soft
@@ -121,17 +122,17 @@ void main() {
       float shadow = sampleMass(sp + sunLocal * (uStep * 2.2)).r;
       shadow += sampleMass(sp + sunLocal * (uStep * 4.8)).r;
       shadow += sampleMass(sp + sunLocal * (uStep * 8.5)).r;
-      float light = exp(-shadow * 1.15);
+      float light = exp(-shadow * 0.28);
       float wet = smoothstep(0.0, 0.55, shaft / max(cloud + shaft, 0.04));
-      vec3 dry = mix(vec3(0.14, 0.16, 0.20), vec3(0.93, 0.95, 0.97), light);
-      vec3 damp = mix(vec3(0.08, 0.10, 0.13), vec3(0.42, 0.46, 0.52), light * 0.5 + 0.15);
+      vec3 dry = mix(vec3(0.62, 0.68, 0.76), vec3(1.0, 0.995, 0.99), light);
+      vec3 damp = mix(vec3(0.48, 0.54, 0.62), vec3(0.78, 0.82, 0.88), light * 0.55 + 0.25);
       vec3 albedo = mix(dry, damp, wet);
-      vec3 lit = mix(vec3(0.18, 0.20, 0.26), albedo, sunVis);
+      vec3 lit = mix(vec3(0.16, 0.18, 0.24), albedo, sunVis);
       float sunAmt = sunVis * mix(1.0, 0.35, wet);
       vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
       float flashDist = length((sp - uFlashLocal) * uScale);
       float glow = uFlash * exp(-flashDist * flashDist / (2200.0 * 2200.0));
-      col += vec3(0.75, 0.84, 1.0) * glow * 1.6;
+      col += uFlashColor * glow * 1.6;
       float ext = mix(8.0, 2.8, wet);
       float a = 1.0 - exp(-d * ext * stepLen / max(uStep, 1e-4));
       a = clamp(a, 0.0, mix(1.0, shaft * 0.55 + 0.02, wet));
@@ -274,7 +275,10 @@ export class CloudRainRenderer {
     age: number;
     life: number;
     seed: number;
+    brightness: number;
   }[] = [];
+  private flashTint = new THREE.Color(0.75, 0.86, 1);
+  private flashFar = new THREE.Color(1, 0.92, 0.55);
   private flashLights: THREE.PointLight[] = [];
   private boltLines: THREE.Line[] = [];
 
@@ -626,6 +630,7 @@ export class CloudRainRenderer {
         uScale: { value: new THREE.Vector3(sx, height, sz) },
         uFlashLocal: { value: new THREE.Vector3(0, -2, 0) },
         uFlash: { value: 0 },
+        uFlashColor: { value: new THREE.Color(0.75, 0.86, 1.0) },
       },
       transparent: true,
       blending: THREE.NoBlending,
@@ -800,7 +805,7 @@ export class CloudRainRenderer {
         for (let k = 0; k < nz; k++) data[at(i, j, k) * 4 + 2] = 0;
       }
     }
-    const wz = [1, 2, 4, 7, 4, 2, 1];
+    const wz = [2, 5, 2];
 
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
@@ -808,10 +813,10 @@ export class CloudRainRenderer {
           if (!live[i + nx * j]) continue;
           let acc = 0;
           let wt = 0;
-          for (let dk = -3; dk <= 3; dk++) {
+          for (let dk = -1; dk <= 1; dk++) {
             const kk = k + dk;
             if (kk < 0 || kk >= nz) continue;
-            const ww = wz[dk + 3];
+            const ww = wz[dk + 1];
             acc += data[at(i, j, kk) * 4] * ww;
             wt += ww;
           }
@@ -1084,8 +1089,9 @@ export class CloudRainRenderer {
     this.liveBolts.unshift({
       ...hit,
       age: 0,
-      life: 0.45,
+      life: 0.28 + Math.random() * 0.38,
       seed: Math.random() * 20,
+      brightness: 0.35 + Math.random() * 0.65,
     });
     if (this.liveBolts.length > 3) this.liveBolts.length = 3;
   }
@@ -1122,7 +1128,9 @@ export class CloudRainRenderer {
         continue;
       }
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
-      const pulse = alpha * alpha;
+      const pulse = alpha * alpha * bolt.brightness;
+      this.boltTint(bolt.x, bolt.y, bolt.z);
+      light.color.copy(this.flashTint);
       light.position.set(bolt.x, bolt.y - 600, bolt.z);
       light.intensity = 6e6 * pulse;
       const pos = line.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -1137,9 +1145,18 @@ export class CloudRainRenderer {
       }
       pos.needsUpdate = true;
       const mat = line.material as THREE.LineBasicMaterial;
-      mat.opacity = alpha;
+      mat.color.copy(this.flashTint);
+      mat.opacity = alpha * (0.45 + 0.55 * bolt.brightness);
       line.visible = alpha > 0.04;
     }
+  }
+
+  /** Close bolts are blue-white. Distant ones shift toward yellow. */
+  private boltTint(x: number, y: number, z: number): void {
+    const cam = this.camera.position;
+    const dist = Math.hypot(x - cam.x, y - cam.y, z - cam.z);
+    const tint = Math.min(1, Math.max(0, (dist - 4000) / 24000));
+    this.flashTint.setRGB(0.75, 0.86, 1).lerp(this.flashFar, tint);
   }
 
   private applyFlashUniforms(mat: THREE.ShaderMaterial): void {
@@ -1149,7 +1166,9 @@ export class CloudRainRenderer {
       return;
     }
     const alpha = Math.max(0, 1 - lead.age / lead.life);
-    mat.uniforms.uFlash.value = alpha * alpha;
+    mat.uniforms.uFlash.value = alpha * alpha * lead.brightness;
+    this.boltTint(lead.x, lead.y, lead.z);
+    (mat.uniforms.uFlashColor.value as THREE.Color).copy(this.flashTint);
     const local = this.volumeMesh.worldToLocal(
       new THREE.Vector3(lead.x, lead.y, lead.z),
     );
