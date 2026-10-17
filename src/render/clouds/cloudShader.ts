@@ -126,10 +126,9 @@ vec3 flashLight(vec3 p) {
     if (amt <= 0.0) continue;
     vec3 d = p - uFlashPos[f];
     float d2 = dot(d, d);
-    float core = exp(-d2 / (4500.0 * 4500.0));
-    float wide = exp(-d2 / (16000.0 * 16000.0));
-    float halo = exp(-d2 / (28000.0 * 28000.0));
-    flash += uFlashColor[f] * amt * (core * 1.4 + wide * 0.85 + halo * 0.28);
+    float core = exp(-d2 / (2800.0 * 2800.0));
+    float wide = exp(-d2 / (9000.0 * 9000.0));
+    flash += uFlashColor[f] * amt * (core + 0.55 * wide);
   }
   return flash;
 }
@@ -325,9 +324,9 @@ void main() {
       vec3 ambient = (uSkyColor * exp(-odUp * uAmbientAtten) +
                       uGroundColor * exp(-odDown * uAmbientAtten)) * uAmbientStrength;
 
-      // Rain takes a larger share so a shaft and a rain-cored base light with the bolt.
+      // Rain takes a full share of the flash so a shaft lights up with the cloud.
       vec3 flash = flashLight(p);
-      float flashSig = sig.x + sig.y + 2.6 * sig.z;
+      float flashSig = sig.x + sig.y + 1.4 * sig.z;
       vec3 S = (uSunColor * sunTerm + ambient) * sigS + flash * flashSig;
 
       // energy-conserving integration over the step

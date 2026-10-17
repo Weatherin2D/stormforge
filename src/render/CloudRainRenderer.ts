@@ -214,12 +214,11 @@ export class CloudRainRenderer {
   private flashFar = new THREE.Color(1, 0.92, 0.55);
   private spriteTint = new THREE.Color(1, 0.28, 0.38);
   private flashLights: THREE.PointLight[] = [];
-  private groundFlashLights: THREE.PointLight[] = [];
   private boltScene = new THREE.Scene();
   private boltRibbons: THREE.Mesh[] = [];
-  private readonly boltPointCount = 48;
+  private readonly boltPointCount = 28;
   private readonly boltScratch: THREE.Vector3[] = Array.from(
-    { length: 48 },
+    { length: 28 },
     () => new THREE.Vector3(),
   );
   private readonly boltRight = new THREE.Vector3();
@@ -252,14 +251,10 @@ export class CloudRainRenderer {
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {
-      const light = new THREE.PointLight(0xdbe7ff, 0, 70000, 1);
+      const light = new THREE.PointLight(0xdbe7ff, 0, 32000, 2);
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
-      const groundLight = new THREE.PointLight(0xe8f0ff, 0, 45000, 1);
-      groundLight.castShadow = false;
-      this.groundFlashLights.push(groundLight);
-      this.scene.add(groundLight);
       const ribbon = this.makeBoltRibbon();
       this.boltRibbons.push(ribbon);
       this.boltScene.add(ribbon);
@@ -669,9 +664,9 @@ export class CloudRainRenderer {
       if (bolt.kind === "sprite") continue;
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
-      const gain = 48;
+      const gain = bolt.kind === "crawler" ? 16 : 12;
       this.boltTint(bolt.x, bolt.y, bolt.z);
-      const pushAt = (x: number, y: number, z: number, scale: number) => {
+      const pushAt = (x: number, y: number, z: number) => {
         if (flashes.length >= 4) return;
         flashes.push({
           x,
@@ -680,13 +675,18 @@ export class CloudRainRenderer {
           r: this.flashTint.r,
           g: this.flashTint.g,
           b: this.flashTint.b,
-          amount: pulse * gain * scale,
+          amount: pulse * gain,
         });
       };
-      pushAt(bolt.x, bolt.y, bolt.z, 1);
-      const midY = bolt.y * 0.45 + this.groundY * 0.55;
-      pushAt(bolt.x, midY, bolt.z, 0.85);
-      pushAt(bolt.x, this.groundY + 120, bolt.z, 0.7);
+      if (bolt.kind === "crawler") {
+        const n = this.fillBoltPoints(bolt, this.boltScratch);
+        const a = this.boltScratch[Math.max(0, Math.floor(n * 0.22))];
+        const b = this.boltScratch[Math.min(n - 1, Math.floor(n * 0.72))];
+        if (a) pushAt(a.x, a.y, a.z);
+        if (b) pushAt(b.x, b.y, b.z);
+      } else {
+        pushAt(bolt.x, bolt.y, bolt.z);
+      }
     }
     this.cloudMat.setFlashes(flashes);
   }
@@ -1125,18 +1125,21 @@ export class CloudRainRenderer {
     y: number;
     z: number;
   }): void {
-    const kind = hit.kind === "sprite" ? "sprite" : "cg";
+    const kind = hit.kind;
     const life =
-      kind === "sprite"
-        ? 0.12 + Math.random() * 0.2
-        : 0.28 + Math.random() * 0.38;
+      kind === "crawler"
+        ? 0.9 + Math.random() * 0.5
+        : kind === "sprite"
+          ? 0.12 + Math.random() * 0.2
+          : 0.28 + Math.random() * 0.38;
     const brightness =
-      kind === "sprite"
-        ? 0.45 + Math.random() * 0.4
-        : 0.55 + Math.random() * 0.45;
+      kind === "crawler"
+        ? 0.85 + Math.random() * 0.15
+        : kind === "sprite"
+          ? 0.45 + Math.random() * 0.4
+          : 0.55 + Math.random() * 0.45;
     this.liveBolts.unshift({
       ...hit,
-      kind,
       age: 0,
       life,
       seed: Math.random() * 20,
@@ -1172,11 +1175,9 @@ export class CloudRainRenderer {
     for (let n = 0; n < 6; n++) {
       const bolt = this.liveBolts[n];
       const light = this.flashLights[n];
-      const groundLight = this.groundFlashLights[n];
       const ribbon = this.boltRibbons[n];
       if (!bolt || !light || !ribbon) {
         if (light) light.intensity = 0;
-        if (groundLight) groundLight.intensity = 0;
         if (ribbon) ribbon.visible = false;
         continue;
       }
@@ -1185,21 +1186,17 @@ export class CloudRainRenderer {
       const sprite = bolt.kind === "sprite";
       if (sprite) {
         light.intensity = 0;
-        if (groundLight) groundLight.intensity = 0;
       } else {
         this.boltTint(bolt.x, bolt.y, bolt.z);
         light.color.copy(this.flashTint);
-        light.position.set(bolt.x, bolt.y * 0.55 + this.groundY * 0.45, bolt.z);
-        light.intensity = 4.5e9 * pulse;
-        if (groundLight) {
-          groundLight.color.copy(this.flashTint);
-          groundLight.position.set(bolt.x, this.groundY + 40, bolt.z);
-          groundLight.intensity = 3.2e9 * pulse;
-        }
+        const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
+        light.position.set(bolt.x, litY, bolt.z);
+        light.intensity = (bolt.kind === "crawler" ? 9e7 : 1.6e8) * pulse;
       }
       const count = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const half = sprite ? 90 : 70;
+      const half =
+        bolt.kind === "crawler" ? 160 : bolt.kind === "sprite" ? 90 : 70;
       const eye = this.camera.position;
       for (let s = 0; s < count; s++) {
         const p = this.boltScratch[s];
@@ -1220,7 +1217,7 @@ export class CloudRainRenderer {
       const mat = ribbon.material as THREE.MeshBasicMaterial;
       if (sprite) mat.color.copy(this.spriteTint);
       else mat.color.copy(this.flashTint);
-      mat.opacity = alpha * (sprite ? 0.7 : 0.95);
+      mat.opacity = alpha * (sprite ? 0.7 : bolt.kind === "crawler" ? 1 : 0.9);
       ribbon.visible = alpha > 0.04 && count >= 2;
     }
   }
@@ -1253,7 +1250,23 @@ export class CloudRainRenderer {
       }
       return steps + 1;
     }
-    const steps = Math.min(18, cap - 1);
+    if (bolt.kind === "crawler") {
+      const steps = Math.min(24, cap - 1);
+      const stepLen = 420 + (seed % 1) * 280;
+      let heading = seed * 6.2831853;
+      let px = bolt.x;
+      let py = bolt.y;
+      let pz = bolt.z;
+      for (let s = 0; s <= steps; s++) {
+        out[s].set(px, py, pz);
+        heading += Math.sin(seed * 2.1 + s * 1.31) * 0.62;
+        px += Math.cos(heading) * stepLen;
+        pz += Math.sin(heading) * stepLen;
+        py += Math.sin(seed * 3.1 + s * 1.7) * 90;
+      }
+      return steps + 1;
+    }
+    const steps = Math.min(16, cap - 1);
     const drop = Math.max(80, bolt.y - this.groundY);
     let px = bolt.x;
     let py = bolt.y;
@@ -1264,30 +1277,7 @@ export class CloudRainRenderer {
       pz += Math.cos(seed * 1.3 + s) * 140;
       py -= drop / steps;
     }
-    let n = steps + 1;
-    const forks = [4, 8, 12];
-    for (let b = 0; b < forks.length; b++) {
-      const fork = forks[b];
-      if (fork >= steps || n + 9 > cap) break;
-      const origin = out[fork];
-      out[n++].copy(origin);
-      out[n++].copy(origin);
-      const side = b % 2 === 0 ? 1 : -1;
-      const heading = seed * 1.9 + b * 1.7 + side * 1.1;
-      let bx = origin.x;
-      let by = origin.y;
-      let bz = origin.z;
-      const branchSteps = 6;
-      const stepLen = 90 + (seed % 1) * 50;
-      for (let s = 1; s <= branchSteps; s++) {
-        bx += Math.cos(heading) * stepLen + Math.sin(seed + s * 2.4 + b) * 28;
-        bz += Math.sin(heading) * stepLen + Math.cos(seed * 1.4 + s + b) * 28;
-        by -= drop * (0.045 + 0.012 * s);
-        if (by < this.groundY + 2) by = this.groundY + 2;
-        out[n++].set(bx, by, bz);
-      }
-    }
-    return n;
+    return steps + 1;
   }
 
   /** Close bolts are blue-white. Distant ones shift toward yellow. */
