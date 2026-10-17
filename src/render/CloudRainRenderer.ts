@@ -51,12 +51,13 @@ float noise2(vec2 p) {
 // Physics: i + nx*(j + ny*k), k = height, +j = north.
 // Display: flip j like 2D mapPix so north sits on −Z (viewed from +Z).
 // R = softened cloud, G = rain, B = shaft hung below the rain.
-vec3 sampleMass(vec3 p) {
+// A = cloud texture: layer ~0.27, tower ~0.55, anvil ~0.82, rain base 1.
+vec4 sampleMass(vec3 p) {
   vec3 uv = vec3(p.x + 0.5, 1.0 - (p.z + 0.5), p.y + 0.5);
   if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
-    return vec3(0.0);
+    return vec4(0.0);
   }
-  return mix(texture(uVolumePrev, uv).rgb, texture(uVolume, uv).rgb, uFade);
+  return mix(texture(uVolumePrev, uv), texture(uVolume, uv), uFade);
 }
 
 vec3 safeInv(vec3 d) {
@@ -97,19 +98,30 @@ void main() {
   float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   pos += rayDir * uStep * jitter * 0.12;
   vec4 acc = vec4(0.0);
+  float kind = 0.55;
 
   for (int i = 0; i < 56; i++) {
     vec2 xz = pos.xz * uScale.xz;
     float yb = pos.y * 7.5;
     float n = noise2(xz * 0.0005 + vec2(yb, -yb * 0.6));
     float n2 = noise2(xz * 0.00135 + vec2(yb * 1.8, yb * 0.7) + 9.0);
-    vec3 sp = pos + vec3((n - 0.5) * 0.045, (n - 0.5) * 0.10 + (n2 - 0.5) * 0.12, (n2 - 0.5) * 0.045);
+    float rainW = smoothstep(0.90, 0.99, kind);
+    float anvilW = smoothstep(0.64, 0.80, kind) * (1.0 - rainW);
+    float layerW = smoothstep(0.15, 0.28, kind) * (1.0 - smoothstep(0.40, 0.52, kind));
+    float towerW = clamp(1.0 - rainW - anvilW - layerW, 0.0, 1.0);
+    float vertAmp = 0.10 * towerW + 0.025 * anvilW + 0.01 * layerW + 0.05 * rainW;
+    float horizAmp = 0.045 * towerW + 0.08 * anvilW + 0.02 * layerW + 0.03 * rainW;
+    vec3 sp = pos + vec3((n - 0.5) * horizAmp, (n - 0.5) * vertAmp + (n2 - 0.5) * vertAmp * 1.2, (n2 - 0.5) * horizAmp);
     float puff = noise2(vec2(pos.x * 13.0 + pos.y * 17.0, pos.z * 13.0 - pos.y * 15.0));
     float puffB = noise2(vec2(pos.x * 6.5 - pos.y * 8.0, pos.z * 6.5 + pos.y * 7.0) + 4.2);
-    vec3 mass = sampleMass(sp);
+    float fiber = noise2(xz * vec2(0.0024, 0.00045) + vec2(0.0, pos.y * 1.6));
+    vec4 mass = sampleMass(sp);
+    kind = mass.a;
     float qc = mass.r;
-    float fbm = puff * 0.62 + puffB * 0.38;
+    float fbmTower = puff * 0.62 + puffB * 0.38;
+    float fbm = fbmTower * towerW + fiber * anvilW + mix(fiber, puff, 0.25) * layerW + n * rainW;
     float cloud = max(0.0, qc * (0.35 + fbm * 0.65) - 0.012);
+    cloud *= mix(1.0, 0.42 + 0.58 * n, rainW);
     cloud *= smoothstep(0.0, 0.28, cloud);
     // Same lumps as the cloud, and the shaft stays partly present inside it
     // so the base fades into the rain instead of ending on a line.
@@ -128,6 +140,8 @@ void main() {
       vec3 dry = mix(vec3(0.62, 0.68, 0.76), vec3(1.0, 0.995, 0.99), light);
       vec3 damp = mix(vec3(0.48, 0.54, 0.62), vec3(0.78, 0.82, 0.88), light * 0.55 + 0.25);
       vec3 albedo = mix(dry, damp, wet);
+      vec3 sheet = mix(vec3(0.55, 0.58, 0.64), vec3(0.90, 0.92, 0.94), light);
+      albedo = mix(albedo, sheet, layerW * (1.0 - wet));
       vec3 lit = mix(vec3(0.16, 0.18, 0.24), albedo, sunVis);
       float sunAmt = sunVis * mix(1.0, 0.35, wet);
       vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
@@ -955,6 +969,61 @@ export class CloudRainRenderer {
           if (!live[i + nx * j]) continue;
           const id = at(i, j, k);
           data[id * 4 + 2] = k <= kFoot ? b[id] : a[id];
+        }
+      }
+    }
+
+    // Alpha is the texture: layer, tower, anvil, or rain base.
+    const layerLevels = Math.max(
+      2,
+      Math.round((1500 / Math.max(this.spanY, 1)) * nz),
+    );
+    const cloudMin = 18;
+    const TYPE_LAYER = 70;
+    const TYPE_TOWER = 140;
+    const TYPE_ANVIL = 210;
+    const TYPE_RAIN = 255;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const ij = i + nx * j;
+        if (!live[ij]) {
+          for (let k = 0; k < nz; k++) data[at(i, j, k) * 4 + 3] = 0;
+          continue;
+        }
+        let kBase = -1;
+        let kTop = -1;
+        for (let k = 0; k < nz; k++) {
+          if (data[at(i, j, k) * 4] > cloudMin) {
+            if (kBase < 0) kBase = k;
+            kTop = k;
+          }
+        }
+        if (kBase < 0) {
+          for (let k = 0; k < nz; k++) {
+            const shaft = data[at(i, j, k) * 4 + 2];
+            data[at(i, j, k) * 4 + 3] = shaft > 40 ? TYPE_RAIN : 0;
+          }
+          continue;
+        }
+        const depth = kTop - kBase + 1;
+        const deep = depth > layerLevels;
+        const anvilFrom =
+          deep && kTop >= nz * 0.5
+            ? kTop - Math.max(1, (depth * 0.25) | 0)
+            : nz;
+        const baseBand = Math.max(1, Math.round(depth * 0.22));
+        for (let k = 0; k < nz; k++) {
+          const o = at(i, j, k) * 4;
+          const shaft = data[o + 2];
+          const cloud = data[o];
+          const nearBase = k <= kBase + baseBand;
+          let type = 0;
+          if (shaft > 90 && (nearBase || cloud <= cloudMin)) type = TYPE_RAIN;
+          else if (cloud <= cloudMin) type = 0;
+          else if (k >= anvilFrom) type = TYPE_ANVIL;
+          else if (!deep) type = TYPE_LAYER;
+          else type = TYPE_TOWER;
+          data[o + 3] = type;
         }
       }
     }
