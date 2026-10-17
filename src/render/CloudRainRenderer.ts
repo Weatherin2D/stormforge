@@ -193,6 +193,7 @@ export class CloudRainRenderer {
   };
   private sky: THREE.Mesh;
   private blitMesh: THREE.Mesh;
+  private sunFrac = 0;
   private sunDir = new THREE.Vector3(0.25, 0.75, 0.2);
   private cloudsOn = true;
   private volumeClear = false;
@@ -540,6 +541,7 @@ export class CloudRainRenderer {
 
   setSunFrac(frac: number): void {
     const f = Math.min(1, Math.max(0, frac));
+    this.sunFrac = f;
     const mix = (a: number, b: number) => Math.round(a + (b - a) * f);
     const sky = (mix(10, 143) << 16) | (mix(16, 180) << 8) | mix(28, 214);
     this.renderer.setClearColor(sky, 1);
@@ -680,7 +682,7 @@ export class CloudRainRenderer {
       if (bolt.kind === "sprite") continue;
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
-      const gain = 3;
+      const gain = 3 * (1 - 0.9 * this.sunFrac) / 10;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number) => {
         if (flashes.length >= 4) return;
@@ -1199,7 +1201,9 @@ export class CloudRainRenderer {
         light.color.copy(this.flashTint);
         const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
-        light.intensity = 3.2e7 * pulse;
+      // Day/night scale: night=1, day=0.1, smooth transition
+        const dayScale = 1 - 0.9 * this.sunFrac;
+        light.intensity = 3.2e7 * pulse * dayScale / 20;
       }
       const count = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -1236,7 +1240,7 @@ export class CloudRainRenderer {
     }
     if (this.groundFlashMesh) {
       const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = groundPulse * 0.044;
+      mat.opacity = groundPulse * 0.044 / 20 * (1 - 0.9 * this.sunFrac);
       this.groundFlashMesh.visible = groundPulse > 0.01;
     }
   }
