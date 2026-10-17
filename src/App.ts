@@ -134,6 +134,8 @@ export class App {
                 <option value="5">5×</option>
                 <option value="15">15×</option>
                 <option value="40" selected>40×</option>
+                <option value="75">75×</option>
+                <option value="100">100×</option>
               </select>
             </label>
             <label class="sim-speed">
