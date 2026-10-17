@@ -127,7 +127,38 @@ export class App {
                 <option value="40" selected>40×</option>
               </select>
             </label>
-            <p class="hint sim-speed-note">Lightning flashes at every speed.</p>
+            <label class="sim-speed">
+              Cloud look
+              <select id="cloud-look" title="Sun and erosion matched to a reference photo. Live sun follows the clock.">
+                <option value="">Live sun</option>
+                <option value="A_towerWithAnvil">Tower with anvil</option>
+                <option value="B_matureAnvil">Mature anvil</option>
+                <option value="C_flatBaseRain">Flat base and rain</option>
+                <option value="D_towerPileus">Tower with pileus</option>
+              </select>
+            </label>
+            <div class="cloud-tune">
+              <label>
+                Core density
+                <input id="cloud-gain" type="range" min="0.25" max="2.5" step="0.05" value="1" />
+                <span id="cloud-gain-val">1.00</span>
+              </label>
+              <label>
+                Base darkness
+                <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.06" />
+                <span id="cloud-sigma-val">0.060</span>
+              </label>
+              <label>
+                Liquid billow
+                <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="0.6" />
+                <span id="cloud-erosion-val">0.60</span>
+              </label>
+              <label>
+                Ice fibres
+                <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.25" />
+                <span id="cloud-erosion-ice-val">0.25</span>
+              </label>
+            </div>
             <div class="sun-controls">
               <span id="sun-clock" class="sun-clock">12:00 · day</span>
               <div id="sun-panel" class="sun-panel">
@@ -611,6 +642,42 @@ export class App {
       }
     });
 
+    const lookEl = q("#cloud-look") as HTMLSelectElement;
+    const gainEl = q("#cloud-gain") as HTMLInputElement;
+    const sigmaEl = q("#cloud-sigma") as HTMLInputElement;
+    const erosionEl = q("#cloud-erosion") as HTMLInputElement;
+    const erosionIceEl = q("#cloud-erosion-ice") as HTMLInputElement;
+    const showTune = () => {
+      const tune = this.renderer?.cloudTune();
+      if (!tune) return;
+      gainEl.value = String(tune.gain);
+      sigmaEl.value = String(tune.sigmaLiquid);
+      erosionEl.value = String(tune.erosionLiquid);
+      erosionIceEl.value = String(tune.erosionIce);
+      (q("#cloud-gain-val") as HTMLElement).textContent = tune.gain.toFixed(2);
+      (q("#cloud-sigma-val") as HTMLElement).textContent = tune.sigmaLiquid.toFixed(3);
+      (q("#cloud-erosion-val") as HTMLElement).textContent = tune.erosionLiquid.toFixed(2);
+      (q("#cloud-erosion-ice-val") as HTMLElement).textContent = tune.erosionIce.toFixed(2);
+    };
+    const pushTune = () => {
+      const gain = Number(gainEl.value);
+      const sigmaLiquid = Number(sigmaEl.value);
+      const erosionLiquid = Number(erosionEl.value);
+      const erosionIce = Number(erosionIceEl.value);
+      this.renderer?.setCloudTune({ gain, sigmaLiquid, erosionLiquid, erosionIce });
+      (q("#cloud-gain-val") as HTMLElement).textContent = gain.toFixed(2);
+      (q("#cloud-sigma-val") as HTMLElement).textContent = sigmaLiquid.toFixed(3);
+      (q("#cloud-erosion-val") as HTMLElement).textContent = erosionLiquid.toFixed(2);
+      (q("#cloud-erosion-ice-val") as HTMLElement).textContent = erosionIce.toFixed(2);
+    };
+    lookEl.addEventListener("change", () => {
+      this.renderer?.setCloudLook(lookEl.value);
+      showTune();
+    });
+    for (const el of [gainEl, sigmaEl, erosionEl, erosionIceEl]) {
+      el.addEventListener("input", pushTune);
+    }
+
     const liveHour = q("#live-hour") as HTMLInputElement;
     const liveLat = q("#live-lat") as HTMLInputElement;
     const liveMonth = q("#live-month") as HTMLInputElement;
@@ -884,6 +951,15 @@ export class App {
     const st = this.solver.getSolarStatus();
     const sun = sunDirection(rad.latitudeDeg, rad.month, rad.solarHour);
     this.renderer?.setSun(st.sunFrac, sun);
+    const g = this.solver.grid;
+    const anvilK = Math.min(
+      g.nz - 1,
+      Math.max(0, Math.round(8000 / Math.max(g.dz, 1))),
+    );
+    this.renderer?.setEnvironmentWind(
+      this.solver.fields.u0[anvilK],
+      this.solver.fields.v0[anvilK],
+    );
     const clockEl = this.simScreen.querySelector("#sun-clock") as HTMLElement;
     clockEl.textContent = `${st.clock} · ${st.label}`;
     clockEl.classList.toggle("night", !st.isDay);

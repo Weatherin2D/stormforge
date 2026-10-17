@@ -6,185 +6,16 @@ import {
   windSpeedScale,
 } from "../sim/surfaceWinds";
 import { upsampleRgba } from "./upsampleRgba";
-
-const volumeVert = /* glsl */ `
-out vec3 vPos;
-void main() {
-  vPos = position;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
-
-// Back faces: the camera lives inside the domain, so each pixel is an exit wall.
-const volumeFrag = /* glsl */ `
-precision highp float;
-precision highp sampler3D;
-uniform sampler3D uVolume;
-uniform sampler3D uVolumePrev;
-uniform float uFade;
-uniform vec3 uCameraPos;
-uniform float uOpacity;
-uniform float uStep;
-in vec3 vPos;
-out vec4 fragColor;
-
-uniform vec3 uSunWorld;
-uniform vec3 uScale;
-uniform vec3 uFlashLocal;
-uniform float uFlash;
-uniform vec3 uFlashColor;
-
-float hash21(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise2(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = hash21(i);
-  float b = hash21(i + vec2(1.0, 0.0));
-  float c = hash21(i + vec2(0.0, 1.0));
-  float d = hash21(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-// Physics: i + nx*(j + ny*k), k = height, +j = north.
-// Display: flip j like 2D mapPix so north sits on −Z (viewed from +Z).
-// R = softened cloud, G = rain, B = shaft hung below the rain.
-// A = cloud texture: stratus ~0.20, tower ~0.39, base ~0.59,
-// anvil ~0.75, cirrus ~0.88, rain base 1.
-vec4 sampleMass(vec3 p) {
-  vec3 uv = vec3(p.x + 0.5, 1.0 - (p.z + 0.5), p.y + 0.5);
-  if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
-    return vec4(0.0);
-  }
-  return mix(texture(uVolumePrev, uv), texture(uVolume, uv), uFade);
-}
-
-vec3 safeInv(vec3 d) {
-  return vec3(
-    abs(d.x) < 1e-5 ? 1e6 : 1.0 / d.x,
-    abs(d.y) < 1e-5 ? 1e6 : 1.0 / d.y,
-    abs(d.z) < 1e-5 ? 1e6 : 1.0 / d.z
-  );
-}
-
-void main() {
-  vec3 cam = uCameraPos;
-  vec3 rayDir = normalize(vPos - cam);
-  vec3 boxMin = vec3(-0.5);
-  vec3 boxMax = vec3(0.5);
-  bool inside = all(greaterThan(cam, boxMin)) && all(lessThan(cam, boxMax));
-  vec3 pos = cam;
-  if (!inside) {
-    vec3 inv = safeInv(rayDir);
-    vec3 t0 = (boxMin - cam) * inv;
-    vec3 t1 = (boxMax - cam) * inv;
-    vec3 tNear = min(t0, t1);
-    float tEnter = max(max(tNear.x, tNear.y), tNear.z);
-    pos = cam + rayDir * max(tEnter, 0.0);
-  }
-  vec3 worldRay = normalize(rayDir * uScale);
-  vec3 sunLocal = uSunWorld / max(uScale, vec3(1.0));
-  float sunLen = length(sunLocal);
-  sunLocal = sunLen > 1e-5 ? sunLocal / sunLen : vec3(0.0, 1.0, 0.0);
-  float mu = dot(worldRay, normalize(uSunWorld));
-  float sheen = pow(max(mu, 0.0), 8.0);
-  float elev = uSunWorld.y;
-  float day = smoothstep(-0.02, 0.30, elev);
-  float sunVis = smoothstep(-0.04, 0.16, elev);
-  float warm = smoothstep(-0.12, 0.0, elev) * (1.0 - smoothstep(0.02, 0.2, elev));
-  vec3 sunCol = mix(vec3(1.0, 0.97, 0.93), vec3(1.0, 0.70, 0.40), warm);
-  vec3 amb = mix(vec3(0.04, 0.045, 0.06), vec3(0.52, 0.58, 0.66), day);
-  float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-  pos += rayDir * uStep * jitter * 0.12;
-  vec4 acc = vec4(0.0);
-  float kind = 0.39;
-
-  for (int i = 0; i < 56; i++) {
-    vec3 w0 = pos * uScale;
-    float n = noise2(vec2(w0.x * 0.00072 + w0.y * 0.0008, w0.z * 0.00072 - w0.y * 0.00068));
-    float n2 = noise2(vec2(w0.x * 0.00036 + w0.y * 0.0004, w0.z * 0.00036 + w0.y * 0.00034) + 6.0);
-    float rainW = smoothstep(0.94, 0.99, kind);
-    float cirrusW = smoothstep(0.82, 0.88, kind) * (1.0 - smoothstep(0.94, 0.99, kind));
-    float anvilW = smoothstep(0.68, 0.74, kind) * (1.0 - smoothstep(0.80, 0.86, kind));
-    float baseW = smoothstep(0.52, 0.58, kind) * (1.0 - smoothstep(0.66, 0.74, kind));
-    float stratusW = smoothstep(0.10, 0.16, kind) * (1.0 - smoothstep(0.28, 0.36, kind));
-    float towerW = clamp(1.0 - rainW - cirrusW - anvilW - baseW - stratusW, 0.0, 1.0);
-    float vertAmp = 0.16 * towerW + 0.07 * anvilW + 0.1 * stratusW + 0.06 * baseW + 0.05 * rainW;
-    float horizAmp = 0.022 * towerW + 0.016 * anvilW + 0.012 * stratusW + 0.01 * baseW + 0.008 * cirrusW + 0.016 * rainW;
-    float lift = (n - 0.35) * vertAmp + (n2 - 0.42) * vertAmp * 0.45;
-    vec3 sp = pos + vec3((n - 0.5) * horizAmp, lift, (n2 - 0.5) * horizAmp);
-    vec3 w = sp * uScale;
-    float lobe = noise2(vec2(w.x * 0.00072 + w.y * 0.0008, w.z * 0.00072 - w.y * 0.0007));
-    float lobeB = noise2(vec2(w.x * 0.00036 + w.y * 0.0004, w.z * 0.00036 - w.y * 0.00034) + 3.7);
-    float billow = lobe * 0.58 + lobeB * 0.42;
-    float roll = noise2(vec2(w.x * 0.00018 + w.y * 0.00016, w.z * 0.00018 - w.y * 0.00012));
-    float veil = noise2(vec2(w.x * 0.0003, w.z * 0.00016 + w.y * 0.00008) + 2.0);
-    vec4 mass = sampleMass(sp);
-    kind = mass.a;
-    float qc = mass.r;
-    float anvilB = mix(billow, roll, 0.4);
-    float soft = smoothstep(0.3, 0.78, billow);
-    float shape = (0.48 + 0.52 * soft) * towerW
-      + (0.55 + 0.45 * smoothstep(0.28, 0.75, anvilB)) * anvilW
-      + (0.62 + 0.38 * soft) * stratusW
-      + (0.7 + 0.3 * soft) * baseW
-      + veil * cirrusW
-      + (0.6 + 0.4 * n) * rainW;
-    float cloud = max(0.0, qc * shape - 0.01);
-    cloud *= mix(1.0, 0.42 + 0.58 * n, rainW);
-    cloud *= mix(1.0, 0.45, cirrusW);
-    cloud *= smoothstep(0.0, 0.28, cloud);
-    // Same lumps as the cloud, and the shaft stays partly present inside it
-    // so the base fades into the rain instead of ending on a line.
-    // mass.b is 0 at 5 dBZ and 1 at 70 dBZ. A small billow keeps the edge soft
-    // without lifting a green echo up to an opaque curtain.
-    float shaft = mass.b * mix(0.82, 1.0, clamp(shape, 0.0, 1.0));
-    shaft *= mix(0.65, 1.0, 1.0 - smoothstep(0.04, 0.7, cloud));
-    float d = cloud + shaft * shaft;
-    float stepLen = d > 0.045 ? uStep * 0.75 : (d > 0.008 ? uStep : uStep * 2.6);
-    if (d > 0.008) {
-      float shadow = sampleMass(sp + sunLocal * (uStep * 2.2)).r;
-      shadow += sampleMass(sp + sunLocal * (uStep * 4.8)).r;
-      shadow += sampleMass(sp + sunLocal * (uStep * 8.5)).r;
-      float light = exp(-shadow * 0.28);
-      light *= mix(1.0, mix(0.84, 1.0, billow), clamp(towerW + anvilW, 0.0, 1.0));
-      float wet = smoothstep(0.0, 0.55, shaft / max(cloud + shaft, 0.04));
-      vec3 dry = mix(vec3(0.62, 0.68, 0.76), vec3(1.0, 0.995, 0.99), light);
-      vec3 damp = mix(vec3(0.48, 0.54, 0.62), vec3(0.78, 0.82, 0.88), light * 0.55 + 0.25);
-      vec3 albedo = mix(dry, damp, wet);
-      vec3 sheet = mix(vec3(0.62, 0.66, 0.72), vec3(0.93, 0.95, 0.97), light);
-      albedo = mix(albedo, sheet, stratusW * (1.0 - wet));
-      vec3 underside = mix(vec3(0.52, 0.56, 0.62), vec3(0.84, 0.87, 0.90), light * 0.65 + 0.15);
-      albedo = mix(albedo, underside, baseW * (1.0 - wet));
-      albedo = mix(albedo, vec3(0.97, 0.98, 1.0), cirrusW);
-      vec3 lit = mix(vec3(0.16, 0.18, 0.24), albedo, sunVis);
-      float sunAmt = sunVis * mix(1.0, 0.35, wet);
-      float phase = mix(0.62, 0.62 + 0.22 * sheen * smoothstep(0.35, 0.8, billow), towerW + anvilW);
-      phase = mix(phase, 0.62, cirrusW);
-      vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
-      float flashDist = length((sp - uFlashLocal) * uScale);
-      float glow = uFlash * exp(-flashDist * flashDist / (2200.0 * 2200.0));
-      col += uFlashColor * glow * 1.6;
-      float ext = mix(8.0, 2.8, wet);
-      ext = mix(ext, 1.4, cirrusW);
-      float a = 1.0 - exp(-d * ext * stepLen / max(uStep, 1e-4));
-      a = clamp(a, 0.0, mix(1.0, shaft * 0.55 + 0.02, wet));
-      a = mix(a, min(a, 0.35), cirrusW);
-      acc.rgb += (1.0 - acc.a) * col * a;
-      acc.a += (1.0 - acc.a) * a;
-    }
-    if (acc.a > 0.96) break;
-    pos += rayDir * stepLen;
-    if (pos.y < -0.5 || any(greaterThan(abs(pos), vec3(0.52)))) break;
-  }
-
-  if (acc.a < 0.01) discard;
-  fragColor = acc;
-}
-`;
+import {
+  applyLookdevPreset,
+  LOOKDEV_PRESETS,
+} from "./clouds/lookdevPresets";
+import {
+  createCloudMesh,
+  DEFAULT_LOOK,
+  VolumetricCloudMaterial,
+} from "./clouds/VolumetricCloudMaterial";
+import { computeSkyLighting } from "./clouds/sunLighting";
 
 const skyVert = /* glsl */ `
 out vec3 vDir;
@@ -200,25 +31,25 @@ const skyFrag = /* glsl */ `
 precision highp float;
 in vec3 vDir;
 uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uSkyColor;
+uniform vec3 uHazeColor;
 out vec4 fragColor;
 
 void main() {
   vec3 dir = normalize(vDir);
-  float day = smoothstep(-0.05, 0.25, uSunDir.y);
-  vec3 zenith = mix(vec3(0.015, 0.02, 0.06), vec3(0.16, 0.42, 0.86), day);
-  vec3 horiz = mix(vec3(0.04, 0.05, 0.10), vec3(0.78, 0.84, 0.90), day);
   float up = pow(clamp(dir.y, 0.0, 1.0), 0.42);
-  vec3 col = mix(horiz, zenith, up);
+  vec3 col = mix(uHazeColor, uSkyColor, up);
   col = mix(col * vec3(0.45, 0.5, 0.55), col, smoothstep(-0.2, 0.02, dir.y));
   vec3 sun = normalize(uSunDir);
   float sunDot = dot(dir, sun);
   float disc = smoothstep(0.9985, 0.9995, sunDot);
   float glare = pow(max(sunDot, 0.0), 8.0);
   float wide = pow(max(sunDot, 0.0), 2.0);
-  vec3 sunCol = mix(vec3(1.0, 0.40, 0.16), vec3(1.0, 0.98, 0.92), day);
   float vis = smoothstep(-0.04, 0.12, sun.y);
-  col += sunCol * (disc * 3.2 + glare * 0.65 + wide * 0.16) * vis;
-  fragColor = vec4(col, 1.0);
+  col += uSunColor * (disc * 3.2 + glare * 0.65 + wide * 0.16) * vis;
+  // The scene target is linear. The present pass encodes to sRGB.
+  fragColor = vec4(max(col, vec3(0.0)), 1.0);
 }
 `;
 
@@ -236,7 +67,53 @@ uniform sampler2D uTex;
 in vec2 vUv;
 out vec4 fragColor;
 void main() {
-  fragColor = texture(uTex, vUv);
+  vec4 c = texture(uTex, vUv);
+  float a = max(c.a, 1e-4);
+  vec3 lin = c.rgb / a;
+  fragColor = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)) * c.a, c.a);
+}
+`;
+
+const presentFrag = /* glsl */ `
+precision highp float;
+uniform sampler2D uTex;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  vec3 lin = texture(uTex, vUv).rgb;
+  fragColor = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
+}
+`;
+
+const resolveFrag = /* glsl */ `
+precision highp float;
+uniform sampler2D uCurrent;
+uniform sampler2D uHistory;
+uniform sampler2D uDepth;
+uniform mat4 uInvViewProj;
+uniform mat4 uPrevViewProj;
+uniform float uMix;
+uniform float uValid;
+in vec2 vUv;
+out vec4 fragColor;
+
+void main() {
+  vec4 curr = texture(uCurrent, vUv);
+  if (uValid < 0.5) {
+    fragColor = curr;
+    return;
+  }
+  float depth = texture(uDepth, vUv).r;
+  vec4 ndc = vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+  vec4 world = uInvViewProj * ndc;
+  world /= max(world.w, 1e-6);
+  vec4 prev = uPrevViewProj * vec4(world.xyz, 1.0);
+  prev /= max(prev.w, 1e-6);
+  vec2 puv = prev.xy * 0.5 + 0.5;
+  float inside = step(0.0, puv.x) * step(puv.x, 1.0) * step(0.0, puv.y) * step(puv.y, 1.0);
+  float stable = inside * step(length(puv - vUv), 0.1);
+  vec4 hist = texture(uHistory, puv);
+  fragColor = mix(curr, mix(curr, hist, uMix), stable);
 }
 `;
 
@@ -245,10 +122,14 @@ export class CloudRainRenderer {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   private volumeTex: THREE.Data3DTexture | null = null;
-  private volumePrevTex: THREE.Data3DTexture | null = null;
   private volumeMesh: THREE.Mesh | null = null;
   private volumeData: Uint8Array | null = null;
-  private volumePrevData: Uint8Array | null = null;
+  private cloudMat: VolumetricCloudMaterial | null = null;
+  /** Empty string follows the sim sun. A preset name locks sun and look. */
+  private lookdev: "" | keyof typeof LOOKDEV_PRESETS = "";
+  /** Environmental wind, m/s. +east, +north. */
+  private envEast = 1;
+  private envNorth = 0;
   private radarTex: THREE.DataTexture | null = null;
   private radarMesh: THREE.Mesh | null = null;
   /** Native grid image, before the view-detail upsample. */
@@ -260,9 +141,6 @@ export class CloudRainRenderer {
   private radarScale = 2;
   private domainSpan = 2;
   /** Domain size in meters. X east, Z north-south (north is −Z), Y up. */
-  private volNx = 1;
-  private volNy = 1;
-  private volNz = 1;
   private spanX = 1000;
   private spanZ = 1000;
   private spanY = 1000;
@@ -295,6 +173,23 @@ export class CloudRainRenderer {
   private overlay = new THREE.Scene();
   private overlayCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private cloudTarget: THREE.WebGLRenderTarget | null = null;
+  private cloudHistory: THREE.WebGLRenderTarget | null = null;
+  private cloudResolved: THREE.WebGLRenderTarget | null = null;
+  private historyValid = false;
+  private sceneTarget: THREE.WebGLRenderTarget | null = null;
+  private presentScene = new THREE.Scene();
+  private sceneBlit: THREE.Mesh;
+  private resolveScene = new THREE.Scene();
+  private resolveMesh: THREE.Mesh;
+  private prevViewProj = new THREE.Matrix4();
+  private currViewProj = new THREE.Matrix4();
+  private invViewProj = new THREE.Matrix4();
+  private tune = {
+    gain: 1,
+    sigmaLiquid: DEFAULT_LOOK.sigmaLiquid,
+    erosionLiquid: DEFAULT_LOOK.erosionLiquid,
+    erosionIce: DEFAULT_LOOK.erosionIce,
+  };
   private sky: THREE.Mesh;
   private blitMesh: THREE.Mesh;
   private sunDir = new THREE.Vector3(0.25, 0.75, 0.2);
@@ -302,11 +197,6 @@ export class CloudRainRenderer {
   private volumeClear = false;
   private lastVolumeMs = 0;
   private clearScratch = new THREE.Color();
-  private cloudScratch: Uint8Array | null = null;
-  private cloudScratchB: Uint8Array | null = null;
-  /** Columns that need the cloud/rain blur. Empty sky is left alone. */
-  private colLive: Uint8Array | null = null;
-  private colSeed: Uint8Array | null = null;
   private liveBolts: {
     i: number;
     j: number;
@@ -367,6 +257,7 @@ export class CloudRainRenderer {
           transparent: true,
           opacity: 0,
           fog: false,
+          depthWrite: false,
         }),
       );
       bolt.visible = false;
@@ -395,6 +286,7 @@ export class CloudRainRenderer {
         color: 0x3a5070,
         transparent: true,
         opacity: 0.55,
+        depthWrite: false,
       }),
     );
     this.scene.add(this.domainBox);
@@ -403,7 +295,12 @@ export class CloudRainRenderer {
       glslVersion: THREE.GLSL3,
       vertexShader: skyVert,
       fragmentShader: skyFrag,
-      uniforms: { uSunDir: { value: this.sunDir } },
+      uniforms: {
+        uSunDir: { value: this.sunDir },
+        uSunColor: { value: new THREE.Vector3(1, 1, 1) },
+        uSkyColor: { value: new THREE.Vector3(0.16, 0.28, 0.55) },
+        uHazeColor: { value: new THREE.Vector3(0.45, 0.55, 0.7) },
+      },
       side: THREE.BackSide,
       depthTest: false,
       depthWrite: false,
@@ -422,10 +319,47 @@ export class CloudRainRenderer {
       transparent: true,
       depthTest: false,
       depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
     });
     this.blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMat);
     this.blitMesh.frustumCulled = false;
     this.overlay.add(this.blitMesh);
+
+    const sceneBlitMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: blitVert,
+      fragmentShader: presentFrag,
+      uniforms: { uTex: { value: null } },
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.sceneBlit = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), sceneBlitMat);
+    this.sceneBlit.frustumCulled = false;
+    this.presentScene.add(this.sceneBlit);
+
+    const resolveMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: blitVert,
+      fragmentShader: resolveFrag,
+      uniforms: {
+        uCurrent: { value: null },
+        uHistory: { value: null },
+        uDepth: { value: null },
+        uInvViewProj: { value: this.invViewProj },
+        uPrevViewProj: { value: this.prevViewProj },
+        uMix: { value: 0.85 },
+        uValid: { value: 0 },
+      },
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.resolveMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), resolveMat);
+    this.resolveMesh.frustumCulled = false;
+    this.resolveScene.add(this.resolveMesh);
+
+    this.syncSky();
 
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.container);
@@ -440,6 +374,22 @@ export class CloudRainRenderer {
     this.renderer.setSize(w, h, true);
     const bw = Math.max(1, this.renderer.domElement.width);
     const bh = Math.max(1, this.renderer.domElement.height);
+    if (!this.sceneTarget || this.sceneTarget.width !== bw || this.sceneTarget.height !== bh) {
+      this.sceneTarget?.dispose();
+      const depth = new THREE.DepthTexture(bw, bh);
+      depth.format = THREE.DepthFormat;
+      depth.type = THREE.UnsignedIntType;
+      this.sceneTarget = new THREE.WebGLRenderTarget(bw, bh, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        depthTexture: depth,
+        depthBuffer: true,
+      });
+      const present = this.sceneBlit.material as THREE.ShaderMaterial;
+      present.uniforms.uTex.value = this.sceneTarget.texture;
+    }
     const hw = Math.max(1, Math.floor(bw * 0.5));
     const hh = Math.max(1, Math.floor(bh * 0.5));
     if (
@@ -448,20 +398,26 @@ export class CloudRainRenderer {
       this.cloudTarget.height !== hh
     ) {
       this.cloudTarget?.dispose();
-      this.cloudTarget = new THREE.WebGLRenderTarget(hw, hh, {
-        minFilter: THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        format: THREE.RGBAFormat,
-        type: THREE.UnsignedByteType,
-        depthBuffer: false,
-      });
-      const blit = this.blitMesh.material as THREE.ShaderMaterial;
-      blit.uniforms.uTex.value = this.cloudTarget.texture;
+      this.cloudHistory?.dispose();
+      this.cloudResolved?.dispose();
+      const half = () =>
+        new THREE.WebGLRenderTarget(hw, hh, {
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+          format: THREE.RGBAFormat,
+          type: THREE.UnsignedByteType,
+          depthBuffer: false,
+        });
+      this.cloudTarget = half();
+      this.cloudHistory = half();
+      this.cloudResolved = half();
+      this.historyValid = false;
     }
   }
 
   setVolumeVisible(on: boolean): void {
     this.cloudsOn = on;
+    if (!on) this.historyValid = false;
     if (this.volumeMesh) this.volumeMesh.visible = on;
   }
 
@@ -597,6 +553,145 @@ export class CloudRainRenderer {
       0.62 + up * 0.34,
       Math.max(0.25, 0.78 + up * 0.14 - warm * 0.4),
     );
+    this.applyCloudSun();
+  }
+
+  /** Environmental wind in m/s. East is +X, north is +Y in the sim and −Z in the view. */
+  setEnvironmentWind(east: number, north: number): void {
+    this.envEast = east;
+    this.envNorth = north;
+    this.applyCloudWind();
+  }
+
+  /**
+   * Photo-matching look. Pass "" to follow the sim sun again.
+   * A preset is reapplied each frame so a camera turn keeps the sun angle.
+   */
+  setCloudLook(name: string): void {
+    if (name && name in LOOKDEV_PRESETS) {
+      this.lookdev = name as keyof typeof LOOKDEV_PRESETS;
+      if (this.cloudMat) {
+        this.cloudMat.setLook({ ...DEFAULT_LOOK });
+        applyLookdevPreset(this.cloudMat, this.camera, this.lookdev);
+        this.captureTuneFromMaterial();
+        this.cloudMat.setFieldGain(this.tune.gain);
+      }
+      return;
+    }
+    this.lookdev = "";
+    this.tune.sigmaLiquid = DEFAULT_LOOK.sigmaLiquid;
+    this.tune.erosionLiquid = DEFAULT_LOOK.erosionLiquid;
+    this.tune.erosionIce = DEFAULT_LOOK.erosionIce;
+    if (this.cloudMat) {
+      this.cloudMat.setLook({ ...DEFAULT_LOOK });
+      this.applyTune();
+    }
+    this.applyCloudSun();
+  }
+
+  cloudTune(): { gain: number; sigmaLiquid: number; erosionLiquid: number; erosionIce: number } {
+    return { ...this.tune };
+  }
+
+  /** Live knobs. fieldGain is one multiplier for liquid, ice, and rain. */
+  setCloudTune(partial: {
+    gain?: number;
+    sigmaLiquid?: number;
+    erosionLiquid?: number;
+    erosionIce?: number;
+  }): void {
+    if (partial.gain != null) this.tune.gain = partial.gain;
+    if (partial.sigmaLiquid != null) this.tune.sigmaLiquid = partial.sigmaLiquid;
+    if (partial.erosionLiquid != null) this.tune.erosionLiquid = partial.erosionLiquid;
+    if (partial.erosionIce != null) this.tune.erosionIce = partial.erosionIce;
+    this.applyTune();
+  }
+
+  private captureTuneFromMaterial(): void {
+    if (!this.cloudMat) return;
+    const s = this.cloudMat.lookSnapshot();
+    this.tune.sigmaLiquid = s.sigmaLiquid;
+    this.tune.erosionLiquid = s.erosionLiquid;
+    this.tune.erosionIce = s.erosionIce;
+  }
+
+  private applyTune(): void {
+    if (!this.cloudMat) return;
+    this.cloudMat.setFieldGain(this.tune.gain);
+    this.cloudMat.setLook({
+      sigmaLiquid: this.tune.sigmaLiquid,
+      erosionLiquid: this.tune.erosionLiquid,
+      erosionIce: this.tune.erosionIce,
+    });
+  }
+
+  private syncSky(): void {
+    const sky = this.sky.material as THREE.ShaderMaterial;
+    let sun: THREE.Vector3;
+    let zenith: THREE.Vector3;
+    let haze: THREE.Vector3;
+    let dir = this.sunDir;
+    if (this.cloudMat) {
+      sun = this.cloudMat.uniforms.uSunColor.value as THREE.Vector3;
+      zenith = this.cloudMat.uniforms.uSkyColor.value as THREE.Vector3;
+      haze = this.cloudMat.uniforms.uHazeColor.value as THREE.Vector3;
+      dir = this.cloudMat.uniforms.uSunDir.value as THREE.Vector3;
+    } else {
+      const el = (Math.asin(Math.min(1, Math.max(-1, this.sunDir.y))) * 180) / Math.PI;
+      const c = computeSkyLighting(el);
+      sun = c.sun;
+      zenith = c.sky;
+      haze = c.haze;
+    }
+    (sky.uniforms.uSunColor.value as THREE.Vector3).copy(sun);
+    (sky.uniforms.uSkyColor.value as THREE.Vector3).copy(zenith);
+    (sky.uniforms.uHazeColor.value as THREE.Vector3).copy(haze);
+    (sky.uniforms.uSunDir.value as THREE.Vector3).copy(dir);
+  }
+
+  private uploadFlashes(): void {
+    if (!this.cloudMat) return;
+    const flashes: {
+      x: number;
+      y: number;
+      z: number;
+      r: number;
+      g: number;
+      b: number;
+      amount: number;
+    }[] = [];
+    for (const bolt of this.liveBolts) {
+      if (flashes.length >= 4) break;
+      const alpha = Math.max(0, 1 - bolt.age / bolt.life);
+      const pulse = alpha * alpha * bolt.brightness;
+      this.boltTint(bolt.x, bolt.y, bolt.z);
+      const c = bolt.kind === "sprite" ? this.spriteTint : this.flashTint;
+      flashes.push({
+        x: bolt.x,
+        y: bolt.y,
+        z: bolt.z,
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        amount: pulse,
+      });
+    }
+    this.cloudMat.setFlashes(flashes);
+  }
+
+  private applyCloudSun(): void {
+    if (!this.cloudMat || this.lookdev) return;
+    const d = this.sunDir;
+    const az = (Math.atan2(d.x, -d.z) * 180) / Math.PI;
+    const el = (Math.asin(Math.min(1, Math.max(-1, d.y))) * 180) / Math.PI;
+    this.cloudMat.setSun(az, el);
+  }
+
+  private applyCloudWind(): void {
+    if (!this.cloudMat) return;
+    const spd = Math.hypot(this.envEast, this.envNorth);
+    if (spd < 0.05) this.cloudMat.setWind(1, 0, 0);
+    else this.cloudMat.setWind(this.envEast, -this.envNorth, spd);
   }
 
   setGrid(grid: Grid3D): void {
@@ -626,16 +721,12 @@ export class CloudRainRenderer {
       this.volumeMesh.geometry.dispose();
       (this.volumeMesh.material as THREE.Material).dispose();
       this.volumeMesh = null;
+      this.cloudMat = null;
     }
     if (this.volumeTex) {
       this.volumeTex.dispose();
       this.volumeTex = null;
     }
-    if (this.volumePrevTex) {
-      this.volumePrevTex.dispose();
-      this.volumePrevTex = null;
-    }
-    this.volumePrevData = null;
     this.disposeRadar();
     this.disposeWinds();
 
@@ -648,52 +739,32 @@ export class CloudRainRenderer {
     const disp = volumeDisplaySize(grid.nx, grid.ny, grid.nz);
     const bytes = disp.nx * disp.ny * disp.nz * 4;
     this.volumeData = new Uint8Array(new ArrayBuffer(bytes));
-    this.volumePrevData = new Uint8Array(new ArrayBuffer(bytes));
-    this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.ny, disp.nz);
-    this.volumePrevTex = this.makeVolumeTexture(
-      this.volumePrevData,
-      disp.nx,
-      disp.ny,
-      disp.nz,
-    );
+    // Texture axes are the world box: X east, Y up, Z south.
+    this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
 
-    const step = Math.min(0.012, Math.max(0.004, 0.55 / Math.max(disp.nz, 16)));
-
-    const mat = new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: volumeVert,
-      fragmentShader: volumeFrag,
-      uniforms: {
-        uVolume: { value: this.volumeTex },
-        uVolumePrev: { value: this.volumePrevTex },
-        uFade: { value: 1 },
-        uCameraPos: { value: new THREE.Vector3() },
-        uStep: { value: step },
-        uSunWorld: { value: this.sunDir.clone() },
-        uScale: { value: new THREE.Vector3(sx, height, sz) },
-        uFlashLocal: { value: new THREE.Vector3(0, -2, 0) },
-        uFlash: { value: 0 },
-        uFlashColor: { value: new THREE.Color(0.75, 0.86, 1.0) },
-      },
-      transparent: true,
-      blending: THREE.NoBlending,
-      depthWrite: false,
-      depthTest: false,
-      side: THREE.BackSide,
-      fog: false,
+    const boxMin = new THREE.Vector3(-sx / 2, this.groundY, -sz / 2);
+    const boxMax = new THREE.Vector3(sx / 2, this.groundY + height, sz / 2);
+    this.cloudMat = new VolumetricCloudMaterial({
+      fields: this.volumeTex,
+      boxMin,
+      boxMax,
+      fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
+      quality: { maxSteps: 64 },
     });
-
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    this.volumeMesh = new THREE.Mesh(geo, mat);
-    this.volumeMesh.scale.set(sx, height, sz);
-    this.volumeMesh.frustumCulled = false;
+    this.volumeMesh = createCloudMesh(this.cloudMat, boxMin, boxMax);
     this.volumeMesh.visible = this.cloudsOn;
     this.cloudScene.add(this.volumeMesh);
     this.volumeClear = false;
     this.lastVolumeMs = 0;
-    this.volNx = disp.nx;
-    this.volNy = disp.ny;
-    this.volNz = disp.nz;
+    this.applyCloudSun();
+    this.applyCloudWind();
+    if (this.lookdev) {
+      this.cloudMat.setLook({ ...DEFAULT_LOOK });
+      applyLookdevPreset(this.cloudMat, this.camera, this.lookdev);
+      this.captureTuneFromMaterial();
+    }
+    this.applyTune();
+    this.historyValid = false;
 
     // Radar composite plane (just above ground)
     this.radarNx = grid.nx;
@@ -733,6 +804,9 @@ export class CloudRainRenderer {
     const divisions = Math.max(4, Math.round(span / 5000));
     this.kmGrid = new THREE.GridHelper(span, divisions, 0x8fbf9a, 0x3f6a4c);
     this.kmGrid.position.y = this.groundY + 1.5;
+    const gridMat = this.kmGrid.material;
+    const mats = Array.isArray(gridMat) ? gridMat : [gridMat];
+    for (const m of mats) m.depthWrite = false;
     this.scene.add(this.kmGrid);
   }
 
@@ -742,24 +816,19 @@ export class CloudRainRenderer {
     rainMax = 0,
     force = false,
   ): void {
-    if (!this.volumeData || !this.volumeTex || !this.volumePrevData || !this.volumePrevTex) {
-      return;
-    }
+    if (!this.volumeData || !this.volumeTex) return;
     const empty = cloudMax < 1e-6 && rainMax < 1e-6;
     const now = performance.now();
     if (!force) {
       if (empty && this.volumeClear) return;
       if (now - this.lastVolumeMs < 125) return;
     }
-    this.volumePrevData.set(this.volumeData);
-    this.volumePrevTex.needsUpdate = true;
     this.lastVolumeMs = now;
     if (empty) {
       this.volumeData.fill(0);
       this.volumeClear = true;
     } else {
       pack(this.volumeData);
-      this.shapeVolume(this.volumeData, this.volNx, this.volNy, this.volNz);
       this.volumeClear = false;
     }
     this.volumeTex.needsUpdate = true;
@@ -774,285 +843,6 @@ export class CloudRainRenderer {
           "Stormforge: cloudMax > 0 but packed volume alpha is 0 — check pack gains.",
         );
         this.warnedEmpty = true;
-      }
-    }
-  }
-
-  /**
-   * Soften the coarse cloud slabs, then hang rain down the column and
-   * spread it in the lowest levels so shafts and the downburst foot show.
-   */
-  private shapeVolume(data: Uint8Array, nx: number, ny: number, nz: number): void {
-    if (nx < 2 || ny < 2 || nz < 2) return;
-    const n = nx * ny * nz;
-    if (!this.cloudScratch || this.cloudScratch.length < n) {
-      this.cloudScratch = new Uint8Array(n);
-      this.cloudScratchB = new Uint8Array(n);
-    }
-    const a = this.cloudScratch;
-    const b = this.cloudScratchB!;
-    const nxy = nx * ny;
-    if (!this.colLive || this.colLive.length < nxy) {
-      this.colLive = new Uint8Array(nxy);
-      this.colSeed = new Uint8Array(nxy);
-    }
-    const live = this.colLive;
-    const seed = this.colSeed!;
-    seed.fill(0);
-    const at = (i: number, j: number, k: number) => i + nx * (j + ny * k);
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        const ij = i + nx * j;
-        for (let k = 0; k < nz; k++) {
-          const o = at(i, j, k) * 4;
-          if (data[o] > 0 || data[o + 1] > 0) {
-            seed[ij] = 1;
-            break;
-          }
-        }
-      }
-    }
-    // Blur kernels reach 4 cells past a cloudy column.
-    live.set(seed);
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        if (!seed[i + nx * j]) continue;
-        for (let dj = -4; dj <= 4; dj++) {
-          const jj = j + dj;
-          if (jj < 0 || jj >= ny) continue;
-          const row = jj * nx;
-          const i0 = i - 4 < 0 ? 0 : i - 4;
-          const i1 = i + 4 >= nx ? nx - 1 : i + 4;
-          for (let ii = i0; ii <= i1; ii++) live[row + ii] = 1;
-        }
-      }
-    }
-    a.fill(0);
-    b.fill(0);
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        if (live[i + nx * j]) continue;
-        for (let k = 0; k < nz; k++) data[at(i, j, k) * 4 + 2] = 0;
-      }
-    }
-    const wz = [2, 5, 2];
-
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          let acc = 0;
-          let wt = 0;
-          for (let dk = -1; dk <= 1; dk++) {
-            const kk = k + dk;
-            if (kk < 0 || kk >= nz) continue;
-            const ww = wz[dk + 1];
-            acc += data[at(i, j, kk) * 4] * ww;
-            wt += ww;
-          }
-          a[at(i, j, k)] = (acc / wt + 0.5) | 0;
-        }
-      }
-    }
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          let acc = a[at(i, j, k)] * 4;
-          let wt = 4;
-          if (i > 0) {
-            acc += a[at(i - 1, j, k)] * 2;
-            wt += 2;
-          }
-          if (i > 1) {
-            acc += a[at(i - 2, j, k)];
-            wt++;
-          }
-          if (i + 1 < nx) {
-            acc += a[at(i + 1, j, k)] * 2;
-            wt += 2;
-          }
-          if (i + 2 < nx) {
-            acc += a[at(i + 2, j, k)];
-            wt++;
-          }
-          b[at(i, j, k)] = (acc / wt + 0.5) | 0;
-        }
-      }
-    }
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          let acc = b[at(i, j, k)] * 4;
-          let wt = 4;
-          if (j > 0) {
-            acc += b[at(i, j - 1, k)] * 2;
-            wt += 2;
-          }
-          if (j > 1) {
-            acc += b[at(i, j - 2, k)];
-            wt++;
-          }
-          if (j + 1 < ny) {
-            acc += b[at(i, j + 1, k)] * 2;
-            wt += 2;
-          }
-          if (j + 2 < ny) {
-            acc += b[at(i, j + 2, k)];
-            wt++;
-          }
-          data[at(i, j, k) * 4] = (acc / wt + 0.5) | 0;
-        }
-      }
-    }
-
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        if (!live[i + nx * j]) continue;
-        let fall = 0;
-        for (let k = nz - 1; k >= 0; k--) {
-          // G is 0 at 5 dBZ and 255 at 70 dBZ. Light rain fades in a few levels.
-          const rain = data[at(i, j, k) * 4 + 1];
-          const decay = 0.86 + 0.1 * (Math.max(rain, fall) / 255);
-          fall = rain > fall ? rain : fall * decay;
-          data[at(i, j, k) * 4 + 2] = Math.min(255, fall) | 0;
-        }
-      }
-    }
-
-    const shaftW = [1, 3, 5, 3, 1];
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          let acc = 0;
-          let wt = 0;
-          for (let dk = -2; dk <= 2; dk++) {
-            const kk = k + dk;
-            if (kk < 0 || kk >= nz) continue;
-            const ww = shaftW[dk + 2];
-            acc += data[at(i, j, kk) * 4 + 2] * ww;
-            wt += ww;
-          }
-          b[at(i, j, k)] = (acc / wt + 0.5) | 0;
-        }
-      }
-    }
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          data[at(i, j, k) * 4 + 2] = b[at(i, j, k)];
-        }
-      }
-    }
-
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          // Aloft the shaft stays one column wide. The foot below does the spreading.
-          a[at(i, j, k)] = data[at(i, j, k) * 4 + 2];
-        }
-      }
-    }
-
-    const kFoot = Math.max(1, (nz * 0.12) | 0);
-    for (let k = 0; k <= kFoot; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          const core = a[at(i, j, k)];
-          const t = core / 255;
-          // Width opens only as the echo approaches the top of the dBZ scale.
-          const rad = t >= 0.72 ? (k === 0 ? 2 : 1) : t >= 0.35 ? 1 : 0;
-          if (rad === 0) {
-            b[at(i, j, k)] = core;
-            continue;
-          }
-          const spread = t >= 0.72 ? 0.72 : 0.42;
-          let m = 0;
-          for (let dj = -rad; dj <= rad; dj++) {
-            const jj = j + dj;
-            if (jj < 0 || jj >= ny) continue;
-            for (let di = -rad; di <= rad; di++) {
-              const ii = i + di;
-              if (ii < 0 || ii >= nx) continue;
-              const v = a[at(ii, jj, k)];
-              if (v > m) m = v;
-            }
-          }
-          b[at(i, j, k)] = Math.max(core, (m * spread) | 0);
-        }
-      }
-    }
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (!live[i + nx * j]) continue;
-          const id = at(i, j, k);
-          data[id * 4 + 2] = k <= kFoot ? b[id] : a[id];
-        }
-      }
-    }
-
-    // Alpha is the texture: stratus, tower, base, anvil, cirrus, or rain.
-    const layerLevels = Math.max(
-      2,
-      Math.round((1500 / Math.max(this.spanY, 1)) * nz),
-    );
-    const cloudMin = 18;
-    const cirrusMax = 60;
-    const TYPE_STRATUS = 50;
-    const TYPE_TOWER = 100;
-    const TYPE_BASE = 150;
-    const TYPE_ANVIL = 190;
-    const TYPE_CIRRUS = 225;
-    const TYPE_RAIN = 255;
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        const ij = i + nx * j;
-        if (!live[ij]) {
-          for (let k = 0; k < nz; k++) data[at(i, j, k) * 4 + 3] = 0;
-          continue;
-        }
-        let kBase = -1;
-        let kTop = -1;
-        for (let k = 0; k < nz; k++) {
-          if (data[at(i, j, k) * 4] > cloudMin) {
-            if (kBase < 0) kBase = k;
-            kTop = k;
-          }
-        }
-        if (kBase < 0) {
-          for (let k = 0; k < nz; k++) {
-            const shaft = data[at(i, j, k) * 4 + 2];
-            data[at(i, j, k) * 4 + 3] = shaft > 40 ? TYPE_RAIN : 0;
-          }
-          continue;
-        }
-        const depth = kTop - kBase + 1;
-        const deep = depth > layerLevels;
-        const anvilSpan = Math.max(1, Math.round(depth * 0.25));
-        const anvilFrom =
-          deep && kTop >= nz * 0.5 ? kTop - anvilSpan + 1 : nz;
-        const baseTop = kBase + Math.max(0, Math.round(depth * 0.2) - 1);
-        const highDeck = kBase >= nz * 0.5;
-        for (let k = 0; k < nz; k++) {
-          const o = at(i, j, k) * 4;
-          const shaft = data[o + 2];
-          const cloud = data[o];
-          const nearBase = k <= baseTop;
-          let type = 0;
-          if (shaft > 90 && (nearBase || cloud <= cloudMin)) type = TYPE_RAIN;
-          else if (cloud <= cloudMin) type = 0;
-          else if (nearBase) type = TYPE_BASE;
-          else if (k >= anvilFrom) type = cloud < cirrusMax ? TYPE_CIRRUS : TYPE_ANVIL;
-          else if (!deep) type = highDeck ? TYPE_CIRRUS : TYPE_STRATUS;
-          else type = TYPE_TOWER;
-          data[o + 3] = type;
-        }
       }
     }
   }
@@ -1135,6 +925,7 @@ export class CloudRainRenderer {
         emissiveIntensity: 0.35,
         roughness: 0.55,
         metalness: 0.05,
+        depthWrite: false,
       });
       this.windMesh = new THREE.InstancedMesh(geo, mat, samples.length);
       this.windMesh.frustumCulled = false;
@@ -1180,51 +971,91 @@ export class CloudRainRenderer {
   render(): void {
     if (
       this.renderer.domElement.width < 2 ||
-      this.renderer.domElement.height < 2
+      this.renderer.domElement.height < 2 ||
+      !this.sceneTarget
     ) {
       this.resize();
     }
+    if (!this.sceneTarget || !this.cloudTarget || !this.cloudHistory || !this.cloudResolved) {
+      return;
+    }
+
+    this.camera.updateMatrixWorld();
+    this.camera.updateProjectionMatrix();
+    this.currViewProj.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    this.invViewProj.copy(this.currViewProj).invert();
+
+    if (this.cloudMat) {
+      this.cloudMat.update(performance.now() * 0.001);
+      if (this.lookdev) {
+        const preset = LOOKDEV_PRESETS[this.lookdev];
+        this.cloudMat.setSunRelativeToCamera(
+          this.camera,
+          preset.sunRelativeAzimuthDeg,
+          preset.sunElevationDeg,
+        );
+      }
+      this.uploadFlashes();
+      const depth = this.sceneTarget.depthTexture;
+      if (depth) {
+        this.cloudMat.setSceneDepth(
+          depth,
+          this.camera,
+          new THREE.Vector2(this.cloudTarget.width, this.cloudTarget.height),
+        );
+      }
+    }
+    this.syncSky();
+
     this.sky.position.copy(this.camera.position);
     this.sky.scale.setScalar(this.camera.far * 0.9);
-    this.renderer.setRenderTarget(null);
+    this.renderer.setRenderTarget(this.sceneTarget);
     this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
 
-    const drawClouds =
-      this.cloudsOn && this.volumeMesh?.visible && this.cloudTarget;
-    if (drawClouds && this.volumeMesh && this.cloudTarget) {
-      const mat = this.volumeMesh.material as THREE.ShaderMaterial;
-      mat.uniforms.uCameraPos.value.copy(
-        this.volumeMesh.worldToLocal(this.camera.position.clone()),
-      );
-      (mat.uniforms.uSunWorld.value as THREE.Vector3).copy(this.sunDir);
-      (mat.uniforms.uScale.value as THREE.Vector3).set(
-        this.spanX,
-        this.spanY,
-        this.spanZ,
-      );
-      // Show the volume that just arrived. Blending back to the previous
-      // upload kept the first empty texture on screen.
-      mat.uniforms.uFade.value = 1;
-      this.applyFlashUniforms(mat);
+    const drawClouds = this.cloudsOn && !!this.volumeMesh?.visible && !!this.cloudMat;
+    if (drawClouds && this.cloudMat) {
       this.renderer.getClearColor(this.clearScratch);
       const prevA = this.renderer.getClearAlpha();
       this.renderer.setRenderTarget(this.cloudTarget);
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.clear(true, false, false);
       this.renderer.render(this.cloudScene, this.camera);
-      this.renderer.setRenderTarget(null);
+
+      const resolve = this.resolveMesh.material as THREE.ShaderMaterial;
+      resolve.uniforms.uCurrent.value = this.cloudTarget.texture;
+      resolve.uniforms.uHistory.value = this.cloudHistory.texture;
+      resolve.uniforms.uDepth.value = this.sceneTarget.depthTexture;
+      resolve.uniforms.uValid.value = this.historyValid ? 1 : 0;
+      this.renderer.setRenderTarget(this.cloudResolved);
+      this.renderer.clear(true, false, false);
+      this.renderer.render(this.resolveScene, this.overlayCam);
       this.renderer.setClearColor(this.clearScratch, prevA);
+
+      const blit = this.blitMesh.material as THREE.ShaderMaterial;
+      blit.uniforms.uTex.value = this.cloudResolved.texture;
       this.blitMesh.visible = true;
+      this.historyValid = true;
+      const previous = this.cloudHistory;
+      this.cloudHistory = this.cloudResolved;
+      this.cloudResolved = previous;
     } else {
       this.blitMesh.visible = false;
+      this.historyValid = false;
     }
 
+    this.renderer.setRenderTarget(null);
+    this.renderer.autoClear = true;
+    this.renderer.render(this.presentScene, this.overlayCam);
     if (this.blitMesh.visible) {
       this.renderer.autoClear = false;
       this.renderer.render(this.overlay, this.overlayCam);
       this.renderer.autoClear = true;
     }
+    this.prevViewProj.copy(this.currViewProj);
   }
 
   /** A bolt inside a storm. World position is meters; i/j are grid columns. */
@@ -1383,22 +1214,6 @@ export class CloudRainRenderer {
     this.flashTint.setRGB(0.75, 0.86, 1).lerp(this.flashFar, tint);
   }
 
-  private applyFlashUniforms(mat: THREE.ShaderMaterial): void {
-    const lead = this.liveBolts.find((bolt) => bolt.kind !== "sprite");
-    if (!lead || !this.volumeMesh) {
-      mat.uniforms.uFlash.value = 0;
-      return;
-    }
-    const alpha = Math.max(0, 1 - lead.age / lead.life);
-    mat.uniforms.uFlash.value = alpha * alpha * lead.brightness;
-    this.boltTint(lead.x, lead.y, lead.z);
-    (mat.uniforms.uFlashColor.value as THREE.Color).copy(this.flashTint);
-    const local = this.volumeMesh.worldToLocal(
-      new THREE.Vector3(lead.x, lead.y, lead.z),
-    );
-    (mat.uniforms.uFlashLocal.value as THREE.Vector3).copy(local);
-  }
-
   private makeVolumeTexture(
     data: Uint8Array,
     nx: number,
@@ -1458,22 +1273,28 @@ export class CloudRainRenderer {
       this.volumeMesh.geometry.dispose();
       (this.volumeMesh.material as THREE.Material).dispose();
       this.volumeMesh = null;
+      this.cloudMat = null;
     }
     this.cloudTarget?.dispose();
     this.cloudTarget = null;
+    this.cloudHistory?.dispose();
+    this.cloudHistory = null;
+    this.cloudResolved?.dispose();
+    this.cloudResolved = null;
+    this.sceneTarget?.dispose();
+    this.sceneTarget = null;
     this.sky.geometry.dispose();
     (this.sky.material as THREE.Material).dispose();
     this.blitMesh.geometry.dispose();
     (this.blitMesh.material as THREE.Material).dispose();
+    this.sceneBlit.geometry.dispose();
+    (this.sceneBlit.material as THREE.Material).dispose();
+    this.resolveMesh.geometry.dispose();
+    (this.resolveMesh.material as THREE.Material).dispose();
     if (this.volumeTex) {
       this.volumeTex.dispose();
       this.volumeTex = null;
     }
-    if (this.volumePrevTex) {
-      this.volumePrevTex.dispose();
-      this.volumePrevTex = null;
-    }
-    this.volumePrevData = null;
     if (this.kmGrid) {
       this.scene.remove(this.kmGrid);
       this.kmGrid.geometry.dispose();

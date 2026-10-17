@@ -496,6 +496,32 @@ label {
   margin: 0;
 }
 
+.cloud-tune {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.cloud-tune label {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.cloud-tune input[type="range"] {
+  width: 100%;
+}
+
+.cloud-tune span {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  min-width: 2.8rem;
+  text-align: right;
+}
+
 .sun-controls {
   display: flex;
   flex-direction: column;

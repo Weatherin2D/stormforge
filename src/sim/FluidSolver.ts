@@ -14,7 +14,6 @@ import {
   packLightning,
   packMapProduct as packMapProductRGBA,
   reflectivityDbz,
-  dbzOpacity,
 } from "./mapProducts";
 import { volumeDisplaySize } from "./Grid3D";
 import {
@@ -1262,35 +1261,59 @@ export class FluidSolver {
     }
   }
 
-  /** Pack the display volume. R = cloud, G = rain opacity on the 5–70 dBZ scale. */
+  /**
+   * Pack the volumetric-cloud field.
+   * Axes match the world box: X = east, Y = up, Z = south (north is −Z,
+   * so grid j = ny−1 is texture Z = 0).
+   * R = liquid, G = ice, B = rain. Warm-rain qc is split by temperature
+   * (all liquid at 0°C, all ice at −20°C). 2 g/kg of cloud and 1.5 g/kg of
+   * rain pack to 1.0, which is what fieldGain = 1 expects for a dense core.
+   * A = max channel, used only by the empty-volume check.
+   */
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
-    const nxny = nx * ny;
-    const write = (id: number, o: number): void => {
-      const qc = Math.min(1, f.qc[id] * 3800);
-      const ww =
-        id + nxny < f.w.length ? 0.5 * (f.w[id] + f.w[id + nxny]) : 0;
-      const rain = dbzOpacity(reflectivityDbz(f.qr[id], f.qc[id], ww));
-      out[o] = (qc * 255) | 0;
-      out[o + 1] = (rain * 255) | 0;
-      out[o + 2] = 0;
-      out[o + 3] = Math.min(255, ((qc * 0.75 + rain * 0.55) * 255) | 0);
+    const ex = this.exner;
+    const cloudUnit = 0.002;
+    const rainUnit = 0.0015;
+    const byte = (q: number, unit: number): number => {
+      if (q <= 0) return 0;
+      const v = (q / unit) * 255;
+      return v >= 255 ? 255 : v | 0;
+    };
+    const write = (id: number, k: number, o: number): void => {
+      const tC = f.theta[id] * ex[k] - 273.15;
+      const iceFrac = tC >= 0 ? 0 : tC <= -20 ? 1 : -tC / 20;
+      const qc = f.qc[id];
+      const liq = byte(qc * (1 - iceFrac), cloudUnit);
+      const ice = byte(qc * iceFrac, cloudUnit);
+      const rain = byte(f.qr[id], rainUnit);
+      out[o] = liq;
+      out[o + 1] = ice;
+      out[o + 2] = rain;
+      const m = liq > ice ? liq : ice;
+      out[o + 3] = m > rain ? m : rain;
     };
     if (out.length >= n * 4) {
-      for (let i = 0; i < n; i++) write(i, i * 4);
+      for (let k = 0; k < nz; k++) {
+        for (let j = 0; j < ny; j++) {
+          const row = k + nz * (ny - 1 - j);
+          for (let i = 0; i < nx; i++) {
+            write(i + nx * (j + ny * k), k, (i + nx * row) * 4);
+          }
+        }
+      }
       return;
     }
     const d = volumeDisplaySize(nx, ny, nz);
     for (let k = 0; k < d.nz; k++) {
       const ks = Math.min(nz - 1, k * d.sz);
-      const kBase = ks * nxny;
       for (let j = 0; j < d.ny; j++) {
         const js = Math.min(ny - 1, j * d.sy);
-        const row = kBase + js * nx;
+        const row = k + d.nz * (d.ny - 1 - j);
         for (let i = 0; i < d.nx; i++) {
           const is = Math.min(nx - 1, i * d.sx);
-          write(row + is, (i + d.nx * (j + d.ny * k)) * 4);
+          write(is + nx * (js + ny * ks), ks, (i + d.nx * row) * 4);
         }
       }
     }

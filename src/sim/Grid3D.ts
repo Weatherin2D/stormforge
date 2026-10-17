@@ -153,14 +153,17 @@ export function copyFullVolumeToDisplay(
     dst.set(src.subarray(0, need));
     return;
   }
+  // Same layout as packVolumeRGBA: X east, Y up, Z south.
   for (let k = 0; k < d.nz; k++) {
     const ks = Math.min(nz - 1, k * d.sz);
     for (let j = 0; j < d.ny; j++) {
       const js = Math.min(ny - 1, j * d.sy);
+      const srcRow = ks + nz * (ny - 1 - js);
+      const dstRow = k + d.nz * (d.ny - 1 - j);
       for (let i = 0; i < d.nx; i++) {
         const is = Math.min(nx - 1, i * d.sx);
-        const s = (is + nx * (js + ny * ks)) * 4;
-        const o = (i + d.nx * (j + d.ny * k)) * 4;
+        const s = (is + nx * srcRow) * 4;
+        const o = (i + d.nx * dstRow) * 4;
         dst[o] = src[s];
         dst[o + 1] = src[s + 1];
         dst[o + 2] = src[s + 2];
