@@ -680,7 +680,7 @@ export class CloudRainRenderer {
       if (bolt.kind === "sprite") continue;
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
-      const gain = 15;
+      const gain = 3;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number) => {
         if (flashes.length >= 4) return;
@@ -1199,7 +1199,7 @@ export class CloudRainRenderer {
         light.color.copy(this.flashTint);
         const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
-        light.intensity = 1.6e8 * pulse;
+        light.intensity = 3.2e7 * pulse;
       }
       const count = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -1236,7 +1236,7 @@ export class CloudRainRenderer {
     }
     if (this.groundFlashMesh) {
       const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = groundPulse * 0.22;
+      mat.opacity = groundPulse * 0.044;
       this.groundFlashMesh.visible = groundPulse > 0.01;
     }
   }
