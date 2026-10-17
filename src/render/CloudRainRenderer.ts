@@ -210,6 +210,7 @@ export class CloudRainRenderer {
     seed: number;
     brightness: number;
   }[] = [];
+  private groundFlashMesh: THREE.Mesh | null = null;
   private flashTint = new THREE.Color(0.75, 0.86, 1);
   private flashFar = new THREE.Color(1, 0.92, 0.55);
   private spriteTint = new THREE.Color(1, 0.28, 0.38);
@@ -251,7 +252,7 @@ export class CloudRainRenderer {
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {
-      const light = new THREE.PointLight(0xdbe7ff, 0, 32000, 2);
+      const light = new THREE.PointLight(0xdbe7ff, 0, 48000, 1.6);
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
@@ -259,6 +260,21 @@ export class CloudRainRenderer {
       this.boltRibbons.push(ribbon);
       this.boltScene.add(ribbon);
     }
+    // Ground flash plane — lit additively during CG strikes
+    const gfGeo = new THREE.PlaneGeometry(1, 1);
+    const gfMat = new THREE.MeshBasicMaterial({
+      color: 0xdbe7ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.groundFlashMesh = new THREE.Mesh(gfGeo, gfMat);
+    this.groundFlashMesh.rotation.x = -Math.PI / 2;
+    this.groundFlashMesh.position.y = -0.5;
+    this.groundFlashMesh.frustumCulled = false;
+    this.scene.add(this.groundFlashMesh);
     this.scene.fog = new THREE.Fog(0x8fb4d4, 18000, 70000);
     this.renderer.setClearColor(0x8fb4d4, 1);
 
@@ -664,7 +680,7 @@ export class CloudRainRenderer {
       if (bolt.kind === "sprite") continue;
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
-      const gain = bolt.kind === "crawler" ? 16 : 12;
+      const gain = 15;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number) => {
         if (flashes.length >= 4) return;
@@ -678,15 +694,7 @@ export class CloudRainRenderer {
           amount: pulse * gain,
         });
       };
-      if (bolt.kind === "crawler") {
-        const n = this.fillBoltPoints(bolt, this.boltScratch);
-        const a = this.boltScratch[Math.max(0, Math.floor(n * 0.22))];
-        const b = this.boltScratch[Math.min(n - 1, Math.floor(n * 0.72))];
-        if (a) pushAt(a.x, a.y, a.z);
-        if (b) pushAt(b.x, b.y, b.z);
-      } else {
-        pushAt(bolt.x, bolt.y, bolt.z);
-      }
+      pushAt(bolt.x, bolt.y, bolt.z);
     }
     this.cloudMat.setFlashes(flashes);
   }
@@ -718,6 +726,10 @@ export class CloudRainRenderer {
     this.domainBox.scale.set(sx, height, sz);
     this.ground.scale.set(sx * 1.12, sz * 1.12, 1);
     this.ground.position.y = this.groundY;
+    if (this.groundFlashMesh) {
+      this.groundFlashMesh.scale.set(sx * 1.12, sz * 1.12, 1);
+      this.groundFlashMesh.position.y = this.groundY + 1;
+    }
     this.camera.far = Math.max(8000, this.domainSpan * 3);
     this.camera.updateProjectionMatrix();
     const haze = Math.max(4000, this.domainSpan * 0.28);
@@ -1127,17 +1139,13 @@ export class CloudRainRenderer {
   }): void {
     const kind = hit.kind;
     const life =
-      kind === "crawler"
-        ? 0.9 + Math.random() * 0.5
-        : kind === "sprite"
-          ? 0.12 + Math.random() * 0.2
-          : 0.28 + Math.random() * 0.38;
+      kind === "sprite"
+        ? 0.12 + Math.random() * 0.2
+        : 0.28 + Math.random() * 0.38;
     const brightness =
-      kind === "crawler"
-        ? 0.85 + Math.random() * 0.15
-        : kind === "sprite"
-          ? 0.45 + Math.random() * 0.4
-          : 0.55 + Math.random() * 0.45;
+      kind === "sprite"
+        ? 0.45 + Math.random() * 0.4
+        : 0.55 + Math.random() * 0.45;
     this.liveBolts.unshift({
       ...hit,
       age: 0,
@@ -1191,12 +1199,11 @@ export class CloudRainRenderer {
         light.color.copy(this.flashTint);
         const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
-        light.intensity = (bolt.kind === "crawler" ? 9e7 : 1.6e8) * pulse;
+        light.intensity = 1.6e8 * pulse;
       }
       const count = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const half =
-        bolt.kind === "crawler" ? 160 : bolt.kind === "sprite" ? 90 : 70;
+      const half = bolt.kind === "sprite" ? 90 : 70;
       const eye = this.camera.position;
       for (let s = 0; s < count; s++) {
         const p = this.boltScratch[s];
@@ -1217,8 +1224,20 @@ export class CloudRainRenderer {
       const mat = ribbon.material as THREE.MeshBasicMaterial;
       if (sprite) mat.color.copy(this.spriteTint);
       else mat.color.copy(this.flashTint);
-      mat.opacity = alpha * (sprite ? 0.7 : bolt.kind === "crawler" ? 1 : 0.9);
+      mat.opacity = alpha * (sprite ? 0.7 : 0.9);
       ribbon.visible = alpha > 0.04 && count >= 2;
+    }
+    // Ground flash: brightest active CG bolt drives a 10-25% additive overlay
+    let groundPulse = 0;
+    for (const bolt of this.liveBolts) {
+      if (bolt.kind !== "cg") continue;
+      const a = Math.max(0, 1 - bolt.age / bolt.life);
+      groundPulse = Math.max(groundPulse, a * a * bolt.brightness);
+    }
+    if (this.groundFlashMesh) {
+      const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = groundPulse * 0.22;
+      this.groundFlashMesh.visible = groundPulse > 0.01;
     }
   }
 
@@ -1250,34 +1269,40 @@ export class CloudRainRenderer {
       }
       return steps + 1;
     }
-    if (bolt.kind === "crawler") {
-      const steps = Math.min(24, cap - 1);
-      const stepLen = 420 + (seed % 1) * 280;
-      let heading = seed * 6.2831853;
-      let px = bolt.x;
-      let py = bolt.y;
-      let pz = bolt.z;
-      for (let s = 0; s <= steps; s++) {
-        out[s].set(px, py, pz);
-        heading += Math.sin(seed * 2.1 + s * 1.31) * 0.62;
-        px += Math.cos(heading) * stepLen;
-        pz += Math.sin(heading) * stepLen;
-        py += Math.sin(seed * 3.1 + s * 1.7) * 90;
-      }
-      return steps + 1;
-    }
-    const steps = Math.min(16, cap - 1);
+const steps = Math.min(16, cap - 1);
     const drop = Math.max(80, bolt.y - this.groundY);
+    // Main channel with stepped leader jags
     let px = bolt.x;
     let py = bolt.y;
     let pz = bolt.z;
     for (let s = 0; s <= steps; s++) {
       out[s].set(px, s === steps ? this.groundY + 2 : py, pz);
-      px += Math.sin(seed + s * 2.17) * 140;
-      pz += Math.cos(seed * 1.3 + s) * 140;
+      // Larger horizontal jag every ~3 steps (stepped leader)
+      const jag = (s % 3 === 1) ? 280 : 120;
+      px += Math.sin(seed + s * 2.17) * jag;
+      pz += Math.cos(seed * 1.3 + s) * jag;
       py -= drop / steps;
     }
-    return steps + 1;
+    const mainCount = steps + 1;
+    // One branch: splits off at ~40% down, runs 5 steps then fades
+    const branchStart = Math.floor(steps * 0.4);
+    const branchPt = out[branchStart];
+    const branchSteps = Math.min(5, cap - mainCount - 1);
+    if (branchSteps >= 2 && mainCount + branchSteps < cap) {
+      let bx = branchPt.x;
+      let by = branchPt.y;
+      let bz = branchPt.z;
+      const bSeed = seed + 3.7;
+      const bDrop = (drop / steps) * 1.1;
+      for (let s = 0; s <= branchSteps; s++) {
+        out[mainCount + s].set(bx, by, bz);
+        bx += Math.sin(bSeed + s * 1.9) * 180;
+        bz += Math.cos(bSeed * 1.5 + s) * 180;
+        by -= bDrop;
+      }
+      return mainCount + branchSteps + 1;
+    }
+    return mainCount;
   }
 
   /** Close bolts are blue-white. Distant ones shift toward yellow. */

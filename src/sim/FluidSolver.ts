@@ -27,7 +27,7 @@ import {
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
 
-export type LightningKind = "cg" | "crawler" | "sprite";
+export type LightningKind = "cg" | "sprite";
 
 export interface LightningStrike {
   i: number;
@@ -1390,23 +1390,6 @@ export class FluidSolver {
     hits.sort((a, b) => b.rate - a.rate);
     const picked = hits.slice(0, 4);
     const out: LightningStrike[] = [];
-    // Crawlers live in the anvil, not at the rain-weighted core. Most anvil
-    // flashes grow one so the channel is a regular part of a mature storm.
-    for (const hit of picked) {
-      if (out.length >= 4) break;
-      let anvilK = -1;
-      let anvilQc = 0;
-      for (let k = Math.floor(nz * 0.55); k < nz - 1; k++) {
-        const qc = f.qc[hit.i + nx * (hit.j + ny * k)];
-        if (qc > anvilQc) {
-          anvilQc = qc;
-          anvilK = k;
-        }
-      }
-      if (anvilK >= 0 && anvilQc > 2e-4 && Math.random() < 0.8) {
-        out.push({ i: hit.i, j: hit.j, k: anvilK, kind: "crawler" });
-      }
-    }
     for (const hit of picked) {
       if (out.length >= 4) break;
       out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "cg" });

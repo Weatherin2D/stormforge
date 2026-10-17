@@ -126,9 +126,9 @@ vec3 flashLight(vec3 p) {
     if (amt <= 0.0) continue;
     vec3 d = p - uFlashPos[f];
     float d2 = dot(d, d);
-    float core = exp(-d2 / (2800.0 * 2800.0));
-    float wide = exp(-d2 / (9000.0 * 9000.0));
-    flash += uFlashColor[f] * amt * (core + 0.55 * wide);
+    float core = exp(-d2 / (3500.0 * 3500.0));
+    float wide = exp(-d2 / (14000.0 * 14000.0));
+    flash += uFlashColor[f] * amt * (core + 0.7 * wide);
   }
   return flash;
 }
