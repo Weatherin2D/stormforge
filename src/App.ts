@@ -56,6 +56,7 @@ export class App {
   private paused = false;
   /** Freeze sun/clock only; simulation keeps running. */
   private clockPaused = false;
+  private lightningFreq = 1;
   private raf = 0;
   private lastTs = 0;
   private runName = "Stormforge Run";
@@ -170,6 +171,11 @@ export class App {
                 Rain shaft thickness
                 <input id="cloud-sigma-rain" type="range" min="0.005" max="0.12" step="0.005" value="0.045" />
                 <span id="cloud-sigma-rain-val">0.045</span>
+              </label>
+              <label>
+                Lightning frequency
+                <input id="lightning-freq" type="range" min="0" max="1" step="0.01" value="1" />
+                <span id="lightning-freq-val">100%</span>
               </label>
             </div>
             <div class="sun-controls">
@@ -661,6 +667,7 @@ export class App {
     const sigmaRainEl = q("#cloud-sigma-rain") as HTMLInputElement;
     const erosionEl = q("#cloud-erosion") as HTMLInputElement;
     const erosionIceEl = q("#cloud-erosion-ice") as HTMLInputElement;
+    const lightningFreqEl = q("#lightning-freq") as HTMLInputElement;
     const showTune = () => {
       const tune = this.renderer?.cloudTune();
       if (!tune) return;
@@ -695,6 +702,10 @@ export class App {
     for (const el of [gainEl, sigmaEl, sigmaRainEl, erosionEl, erosionIceEl]) {
       el.addEventListener("input", pushTune);
     }
+    lightningFreqEl.addEventListener("input", () => {
+      this.lightningFreq = Number(lightningFreqEl.value);
+      (q("#lightning-freq-val") as HTMLElement).textContent = Math.round(this.lightningFreq * 100) + "%";
+    });
 
     const liveHour = q("#live-hour") as HTMLInputElement;
     const liveLat = q("#live-lat") as HTMLInputElement;
@@ -1301,6 +1312,7 @@ export class App {
         simSpeed,
         cloudLookPreset: lookPreset,
         cloudTune: { ...tune },
+        lightningFreq: this.lightningFreq,
         clockPaused: this.clockPaused,
       },
     };
@@ -1389,6 +1401,12 @@ export class App {
     setSlider("#cloud-sigma-rain", ct.sigmaRain, 3);
     setSlider("#cloud-erosion", ct.erosionLiquid, 2);
     setSlider("#cloud-erosion-ice", ct.erosionIce, 2);
+    const lf = v.lightningFreq ?? 1;
+    this.lightningFreq = lf;
+    const lfEl = this.simScreen.querySelector("#lightning-freq") as HTMLInputElement | null;
+    if (lfEl) lfEl.value = String(lf);
+    const lfVal = this.simScreen.querySelector("#lightning-freq-val") as HTMLElement | null;
+    if (lfVal) lfVal.textContent = Math.round(lf * 100) + "%";
 
     // ── Clock pause ───────────────────────────────────────────────────────────
     this.setClockPaused(v.clockPaused);
@@ -1654,7 +1672,9 @@ export class App {
       if (this.showRadar2d && this.radar2d) this.radar2d.updateWinds(st.winds);
       else this.renderer.updateWinds(st.winds);
     }
-    for (const hit of st.strikes) this.placeStrike(hit);
+    for (const hit of st.strikes) {
+      if (this.lightningFreq >= 1 || Math.random() < this.lightningFreq) this.placeStrike(hit);
+    }
     this.syncSunUi(true);
     this.updateStatsLine(false);
   }

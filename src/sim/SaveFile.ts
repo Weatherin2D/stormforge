@@ -30,6 +30,7 @@ export interface SavedView {
     erosionLiquid: number;
     erosionIce: number;
   };
+  lightningFreq: number;
   clockPaused: boolean;
 }
 
