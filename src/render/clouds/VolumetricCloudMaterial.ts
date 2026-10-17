@@ -32,7 +32,7 @@ export interface CloudLook {
 export const DEFAULT_LOOK: CloudLook = {
   sigmaLiquid: 0.06,
   sigmaIce: 0.008,
-  sigmaRain: 0.01,
+  sigmaRain: 0.045,
   erosionLiquid: 0.6,
   erosionIce: 0.25,
   iceStretch: [0.25, 0.6, 2.5],
@@ -239,9 +239,10 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     return this.u<THREE.Vector3>('uFieldGain').value.x;
   }
 
-  lookSnapshot(): { sigmaLiquid: number; erosionLiquid: number; erosionIce: number } {
+  lookSnapshot(): { sigmaLiquid: number; sigmaRain: number; erosionLiquid: number; erosionIce: number } {
     return {
       sigmaLiquid: this.look.sigmaLiquid,
+      sigmaRain: this.look.sigmaRain,
       erosionLiquid: this.look.erosionLiquid,
       erosionIce: this.look.erosionIce,
     };

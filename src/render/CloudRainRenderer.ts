@@ -187,6 +187,7 @@ export class CloudRainRenderer {
   private tune = {
     gain: 1,
     sigmaLiquid: DEFAULT_LOOK.sigmaLiquid,
+    sigmaRain: DEFAULT_LOOK.sigmaRain,
     erosionLiquid: DEFAULT_LOOK.erosionLiquid,
     erosionIce: DEFAULT_LOOK.erosionIce,
   };
@@ -213,7 +214,16 @@ export class CloudRainRenderer {
   private flashFar = new THREE.Color(1, 0.92, 0.55);
   private spriteTint = new THREE.Color(1, 0.28, 0.38);
   private flashLights: THREE.PointLight[] = [];
-  private boltLines: THREE.Line[] = [];
+  private boltScene = new THREE.Scene();
+  private boltRibbons: THREE.Mesh[] = [];
+  private readonly boltPointCount = 28;
+  private readonly boltScratch: THREE.Vector3[] = Array.from(
+    { length: 28 },
+    () => new THREE.Vector3(),
+  );
+  private readonly boltRight = new THREE.Vector3();
+  private readonly boltTangent = new THREE.Vector3();
+  private readonly boltToCam = new THREE.Vector3();
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -241,29 +251,13 @@ export class CloudRainRenderer {
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {
-      const light = new THREE.PointLight(0xdbe7ff, 0, 8000, 2);
+      const light = new THREE.PointLight(0xdbe7ff, 0, 32000, 2);
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute(
-        "position",
-        new THREE.BufferAttribute(new Float32Array(24 * 3), 3),
-      );
-      const bolt = new THREE.Line(
-        geo,
-        new THREE.LineBasicMaterial({
-          color: 0xf3f7ff,
-          transparent: true,
-          opacity: 0,
-          fog: false,
-          depthWrite: false,
-        }),
-      );
-      bolt.visible = false;
-      bolt.frustumCulled = false;
-      this.boltLines.push(bolt);
-      this.scene.add(bolt);
+      const ribbon = this.makeBoltRibbon();
+      this.boltRibbons.push(ribbon);
+      this.boltScene.add(ribbon);
     }
     this.scene.fog = new THREE.Fog(0x8fb4d4, 18000, 70000);
     this.renderer.setClearColor(0x8fb4d4, 1);
@@ -580,6 +574,7 @@ export class CloudRainRenderer {
     }
     this.lookdev = "";
     this.tune.sigmaLiquid = DEFAULT_LOOK.sigmaLiquid;
+    this.tune.sigmaRain = DEFAULT_LOOK.sigmaRain;
     this.tune.erosionLiquid = DEFAULT_LOOK.erosionLiquid;
     this.tune.erosionIce = DEFAULT_LOOK.erosionIce;
     if (this.cloudMat) {
@@ -589,7 +584,7 @@ export class CloudRainRenderer {
     this.applyCloudSun();
   }
 
-  cloudTune(): { gain: number; sigmaLiquid: number; erosionLiquid: number; erosionIce: number } {
+  cloudTune(): { gain: number; sigmaLiquid: number; sigmaRain: number; erosionLiquid: number; erosionIce: number } {
     return { ...this.tune };
   }
 
@@ -597,11 +592,13 @@ export class CloudRainRenderer {
   setCloudTune(partial: {
     gain?: number;
     sigmaLiquid?: number;
+    sigmaRain?: number;
     erosionLiquid?: number;
     erosionIce?: number;
   }): void {
     if (partial.gain != null) this.tune.gain = partial.gain;
     if (partial.sigmaLiquid != null) this.tune.sigmaLiquid = partial.sigmaLiquid;
+    if (partial.sigmaRain != null) this.tune.sigmaRain = partial.sigmaRain;
     if (partial.erosionLiquid != null) this.tune.erosionLiquid = partial.erosionLiquid;
     if (partial.erosionIce != null) this.tune.erosionIce = partial.erosionIce;
     this.applyTune();
@@ -611,6 +608,7 @@ export class CloudRainRenderer {
     if (!this.cloudMat) return;
     const s = this.cloudMat.lookSnapshot();
     this.tune.sigmaLiquid = s.sigmaLiquid;
+    this.tune.sigmaRain = s.sigmaRain;
     this.tune.erosionLiquid = s.erosionLiquid;
     this.tune.erosionIce = s.erosionIce;
   }
@@ -620,6 +618,7 @@ export class CloudRainRenderer {
     this.cloudMat.setFieldGain(this.tune.gain);
     this.cloudMat.setLook({
       sigmaLiquid: this.tune.sigmaLiquid,
+      sigmaRain: this.tune.sigmaRain,
       erosionLiquid: this.tune.erosionLiquid,
       erosionIce: this.tune.erosionIce,
     });
@@ -662,19 +661,32 @@ export class CloudRainRenderer {
     }[] = [];
     for (const bolt of this.liveBolts) {
       if (flashes.length >= 4) break;
+      if (bolt.kind === "sprite") continue;
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
       const pulse = alpha * alpha * bolt.brightness;
+      const gain = bolt.kind === "crawler" ? 16 : 12;
       this.boltTint(bolt.x, bolt.y, bolt.z);
-      const c = bolt.kind === "sprite" ? this.spriteTint : this.flashTint;
-      flashes.push({
-        x: bolt.x,
-        y: bolt.y,
-        z: bolt.z,
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        amount: pulse,
-      });
+      const pushAt = (x: number, y: number, z: number) => {
+        if (flashes.length >= 4) return;
+        flashes.push({
+          x,
+          y,
+          z,
+          r: this.flashTint.r,
+          g: this.flashTint.g,
+          b: this.flashTint.b,
+          amount: pulse * gain,
+        });
+      };
+      if (bolt.kind === "crawler") {
+        const n = this.fillBoltPoints(bolt, this.boltScratch);
+        const a = this.boltScratch[Math.max(0, Math.floor(n * 0.22))];
+        const b = this.boltScratch[Math.min(n - 1, Math.floor(n * 0.72))];
+        if (a) pushAt(a.x, a.y, a.z);
+        if (b) pushAt(b.x, b.y, b.z);
+      } else {
+        pushAt(bolt.x, bolt.y, bolt.z);
+      }
     }
     this.cloudMat.setFlashes(flashes);
   }
@@ -1030,6 +1042,7 @@ export class CloudRainRenderer {
       resolve.uniforms.uHistory.value = this.cloudHistory.texture;
       resolve.uniforms.uDepth.value = this.sceneTarget.depthTexture;
       resolve.uniforms.uValid.value = this.historyValid ? 1 : 0;
+      resolve.uniforms.uMix.value = this.lightningMix();
       this.renderer.setRenderTarget(this.cloudResolved);
       this.renderer.clear(true, false, false);
       this.renderer.render(this.resolveScene, this.overlayCam);
@@ -1053,9 +1066,54 @@ export class CloudRainRenderer {
     if (this.blitMesh.visible) {
       this.renderer.autoClear = false;
       this.renderer.render(this.overlay, this.overlayCam);
-      this.renderer.autoClear = true;
     }
+    if (this.boltRibbons.some((ribbon) => ribbon.visible)) {
+      this.renderer.autoClear = false;
+      this.renderer.render(this.boltScene, this.camera);
+    }
+    this.renderer.autoClear = true;
     this.prevViewProj.copy(this.currViewProj);
+  }
+
+  /** Drop history while a bolt is bright so the flash is not blended away. */
+  private lightningMix(): number {
+    for (const bolt of this.liveBolts) {
+      if (bolt.kind === "sprite") continue;
+      const alpha = 1 - bolt.age / bolt.life;
+      if (alpha > 0.45) return 0;
+    }
+    return 0.85;
+  }
+
+  private makeBoltRibbon(): THREE.Mesh {
+    const n = this.boltPointCount;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3),
+    );
+    const index: number[] = [];
+    for (let s = 0; s < n - 1; s++) {
+      const a = s * 2;
+      index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    geo.setIndex(index);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xf4f7ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    mesh.renderOrder = 10;
+    return mesh;
   }
 
   /** A bolt inside a storm. World position is meters; i/j are grid columns. */
@@ -1070,16 +1128,16 @@ export class CloudRainRenderer {
     const kind = hit.kind;
     const life =
       kind === "crawler"
-        ? 0.7 + Math.random() * 0.4
+        ? 0.9 + Math.random() * 0.5
         : kind === "sprite"
           ? 0.12 + Math.random() * 0.2
           : 0.28 + Math.random() * 0.38;
     const brightness =
       kind === "crawler"
-        ? 0.25 + Math.random() * 0.35
+        ? 0.85 + Math.random() * 0.15
         : kind === "sprite"
           ? 0.45 + Math.random() * 0.4
-          : 0.35 + Math.random() * 0.65;
+          : 0.55 + Math.random() * 0.45;
     this.liveBolts.unshift({
       ...hit,
       age: 0,
@@ -1113,13 +1171,14 @@ export class CloudRainRenderer {
   }
 
   private syncBoltVisuals(): void {
+    this.camera.updateMatrixWorld();
     for (let n = 0; n < 6; n++) {
       const bolt = this.liveBolts[n];
       const light = this.flashLights[n];
-      const line = this.boltLines[n];
-      if (!bolt || !light || !line) {
+      const ribbon = this.boltRibbons[n];
+      if (!bolt || !light || !ribbon) {
         if (light) light.intensity = 0;
-        if (line) line.visible = false;
+        if (ribbon) ribbon.visible = false;
         continue;
       }
       const alpha = Math.max(0, 1 - bolt.age / bolt.life);
@@ -1130,27 +1189,41 @@ export class CloudRainRenderer {
       } else {
         this.boltTint(bolt.x, bolt.y, bolt.z);
         light.color.copy(this.flashTint);
-        const litY =
-          bolt.kind === "cg" ? bolt.y * 0.55 + this.groundY * 0.45 : bolt.y;
+        const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
-        light.intensity = (bolt.kind === "crawler" ? 2.2e6 : 6e6) * pulse;
+        light.intensity = (bolt.kind === "crawler" ? 9e7 : 1.6e8) * pulse;
       }
-      const pos = line.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const count = this.writeBoltPath(bolt, pos);
+      const count = this.fillBoltPoints(bolt, this.boltScratch);
+      const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const half =
+        bolt.kind === "crawler" ? 160 : bolt.kind === "sprite" ? 90 : 70;
+      const eye = this.camera.position;
+      for (let s = 0; s < count; s++) {
+        const p = this.boltScratch[s];
+        const prev = this.boltScratch[Math.max(0, s - 1)];
+        const next = this.boltScratch[Math.min(count - 1, s + 1)];
+        this.boltTangent.subVectors(next, prev);
+        this.boltToCam.subVectors(eye, p);
+        this.boltRight.crossVectors(this.boltTangent, this.boltToCam);
+        if (this.boltRight.lengthSq() < 1) {
+          this.boltRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+        }
+        this.boltRight.normalize().multiplyScalar(half);
+        pos.setXYZ(s * 2, p.x + this.boltRight.x, p.y + this.boltRight.y, p.z + this.boltRight.z);
+        pos.setXYZ(s * 2 + 1, p.x - this.boltRight.x, p.y - this.boltRight.y, p.z - this.boltRight.z);
+      }
       pos.needsUpdate = true;
-      line.geometry.setDrawRange(0, count);
-      const mat = line.material as THREE.LineBasicMaterial;
+      ribbon.geometry.setDrawRange(0, Math.max(0, (count - 1) * 6));
+      const mat = ribbon.material as THREE.MeshBasicMaterial;
       if (sprite) mat.color.copy(this.spriteTint);
       else mat.color.copy(this.flashTint);
-      const body =
-        bolt.kind === "crawler" ? 0.35 + 0.4 * bolt.brightness : 0.55 + 0.45 * bolt.brightness;
-      mat.opacity = alpha * (sprite ? 0.55 : body);
-      line.visible = alpha > 0.04;
+      mat.opacity = alpha * (sprite ? 0.7 : bolt.kind === "crawler" ? 1 : 0.9);
+      ribbon.visible = alpha > 0.04 && count >= 2;
     }
   }
 
-  /** Jagged channel. Returns how many vertices to draw. */
-  private writeBoltPath(
+  /** Jagged channel. Writes world points and returns how many. */
+  private fillBoltPoints(
     bolt: {
       kind: LightningKind;
       x: number;
@@ -1158,18 +1231,18 @@ export class CloudRainRenderer {
       z: number;
       seed: number;
     },
-    pos: THREE.BufferAttribute,
+    out: THREE.Vector3[],
   ): number {
     const seed = bolt.seed;
+    const cap = Math.min(out.length, this.boltPointCount);
     if (bolt.kind === "sprite") {
-      const steps = 16;
+      const steps = Math.min(16, cap - 1);
       const y0 = this.groundY + 15000;
       const y1 = this.groundY + 70000;
       for (let s = 0; s <= steps; s++) {
         const t = s / steps;
         const spread = 90 + t * t * 1600;
-        pos.setXYZ(
-          s,
+        out[s].set(
           bolt.x + Math.sin(seed + s * 1.7) * spread,
           y0 + (y1 - y0) * t,
           bolt.z + Math.cos(seed * 1.1 + s) * spread * 0.65,
@@ -1178,29 +1251,30 @@ export class CloudRainRenderer {
       return steps + 1;
     }
     if (bolt.kind === "crawler") {
-      const steps = 18;
-      const stepLen = 220 + (seed % 1) * 180;
+      const steps = Math.min(24, cap - 1);
+      const stepLen = 420 + (seed % 1) * 280;
+      let heading = seed * 6.2831853;
       let px = bolt.x;
       let py = bolt.y;
       let pz = bolt.z;
       for (let s = 0; s <= steps; s++) {
-        pos.setXYZ(s, px, py, pz);
-        const wander = Math.sin(seed * 1.7 + s * 0.9) * 0.45;
-        px += Math.cos(seed + wander) * stepLen;
-        pz += Math.sin(seed + wander) * stepLen;
-        py += Math.sin(seed * 2.2 + s) * 35;
+        out[s].set(px, py, pz);
+        heading += Math.sin(seed * 2.1 + s * 1.31) * 0.62;
+        px += Math.cos(heading) * stepLen;
+        pz += Math.sin(heading) * stepLen;
+        py += Math.sin(seed * 3.1 + s * 1.7) * 90;
       }
       return steps + 1;
     }
-    const steps = 16;
+    const steps = Math.min(16, cap - 1);
     const drop = Math.max(80, bolt.y - this.groundY);
     let px = bolt.x;
     let py = bolt.y;
     let pz = bolt.z;
     for (let s = 0; s <= steps; s++) {
-      pos.setXYZ(s, px, s === steps ? this.groundY : py, pz);
-      px += Math.sin(seed + s * 2.17) * 120;
-      pz += Math.cos(seed * 1.3 + s) * 120;
+      out[s].set(px, s === steps ? this.groundY + 2 : py, pz);
+      px += Math.sin(seed + s * 2.17) * 140;
+      pz += Math.cos(seed * 1.3 + s) * 140;
       py -= drop / steps;
     }
     return steps + 1;
@@ -1300,6 +1374,10 @@ export class CloudRainRenderer {
       this.kmGrid.geometry.dispose();
       (this.kmGrid.material as THREE.Material).dispose();
       this.kmGrid = null;
+    }
+    for (const ribbon of this.boltRibbons) {
+      ribbon.geometry.dispose();
+      (ribbon.material as THREE.Material).dispose();
     }
     this.unbindLook?.();
     this.unbindLook = null;

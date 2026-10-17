@@ -158,6 +158,11 @@ export class App {
                 <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.25" />
                 <span id="cloud-erosion-ice-val">0.25</span>
               </label>
+              <label>
+                Rain shaft thickness
+                <input id="cloud-sigma-rain" type="range" min="0.005" max="0.12" step="0.005" value="0.045" />
+                <span id="cloud-sigma-rain-val">0.045</span>
+              </label>
             </div>
             <div class="sun-controls">
               <span id="sun-clock" class="sun-clock">12:00 · day</span>
@@ -645,6 +650,7 @@ export class App {
     const lookEl = q("#cloud-look") as HTMLSelectElement;
     const gainEl = q("#cloud-gain") as HTMLInputElement;
     const sigmaEl = q("#cloud-sigma") as HTMLInputElement;
+    const sigmaRainEl = q("#cloud-sigma-rain") as HTMLInputElement;
     const erosionEl = q("#cloud-erosion") as HTMLInputElement;
     const erosionIceEl = q("#cloud-erosion-ice") as HTMLInputElement;
     const showTune = () => {
@@ -652,21 +658,25 @@ export class App {
       if (!tune) return;
       gainEl.value = String(tune.gain);
       sigmaEl.value = String(tune.sigmaLiquid);
+      sigmaRainEl.value = String(tune.sigmaRain);
       erosionEl.value = String(tune.erosionLiquid);
       erosionIceEl.value = String(tune.erosionIce);
       (q("#cloud-gain-val") as HTMLElement).textContent = tune.gain.toFixed(2);
       (q("#cloud-sigma-val") as HTMLElement).textContent = tune.sigmaLiquid.toFixed(3);
+      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = tune.sigmaRain.toFixed(3);
       (q("#cloud-erosion-val") as HTMLElement).textContent = tune.erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = tune.erosionIce.toFixed(2);
     };
     const pushTune = () => {
       const gain = Number(gainEl.value);
       const sigmaLiquid = Number(sigmaEl.value);
+      const sigmaRain = Number(sigmaRainEl.value);
       const erosionLiquid = Number(erosionEl.value);
       const erosionIce = Number(erosionIceEl.value);
-      this.renderer?.setCloudTune({ gain, sigmaLiquid, erosionLiquid, erosionIce });
+      this.renderer?.setCloudTune({ gain, sigmaLiquid, sigmaRain, erosionLiquid, erosionIce });
       (q("#cloud-gain-val") as HTMLElement).textContent = gain.toFixed(2);
       (q("#cloud-sigma-val") as HTMLElement).textContent = sigmaLiquid.toFixed(3);
+      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = sigmaRain.toFixed(3);
       (q("#cloud-erosion-val") as HTMLElement).textContent = erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = erosionIce.toFixed(2);
     };
@@ -674,7 +684,7 @@ export class App {
       this.renderer?.setCloudLook(lookEl.value);
       showTune();
     });
-    for (const el of [gainEl, sigmaEl, erosionEl, erosionIceEl]) {
+    for (const el of [gainEl, sigmaEl, sigmaRainEl, erosionEl, erosionIceEl]) {
       el.addEventListener("input", pushTune);
     }
 
