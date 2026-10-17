@@ -1142,11 +1142,11 @@ export class CloudRainRenderer {
     const kind = hit.kind;
     const life =
       kind === "sprite"
-        ? 0.12 + Math.random() * 0.2
+        ? 0.3 + Math.random() * 0.3
         : 0.28 + Math.random() * 0.38;
     const brightness =
       kind === "sprite"
-        ? 0.45 + Math.random() * 0.4
+        ? 0.7 + Math.random() * 0.3
         : 0.55 + Math.random() * 0.45;
     this.liveBolts.unshift({
       ...hit,

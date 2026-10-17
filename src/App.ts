@@ -1619,10 +1619,13 @@ export class App {
   }): void {
     if (!this.solver || !this.renderer) return;
     const g = this.solver.grid;
+    // 90% of strikes are in-cloud flashes only (no visible bolt or ground contact)
+    const kind: LightningKind =
+      hit.kind === "cg" && Math.random() > 0.1 ? "sprite" : hit.kind;
     this.renderer.addLightning({
       i: hit.i,
       j: hit.j,
-      kind: hit.kind,
+      kind,
       x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
       z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
       y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,
