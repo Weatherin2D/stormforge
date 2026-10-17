@@ -771,7 +771,7 @@ label {
   right: 12px;
   bottom: 12px;
   z-index: 5;
-  width: 140px;
+  width: 220px;
   padding: 0.45rem 0.55rem;
   background: rgba(11, 18, 32, 0.82);
   border: 1px solid var(--border);
@@ -815,12 +815,24 @@ label {
   color: var(--muted);
 }
 
+.radar-legend-ticks.scaled {
+  position: relative;
+  display: block;
+  height: 0.95rem;
+}
+
+.radar-legend-ticks.scaled span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+
 .radar2d-panel {
   position: absolute;
   inset: 0;
   z-index: 8;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   background: #070b14;
 }
@@ -834,14 +846,22 @@ label {
   flex-direction: column;
   align-items: center;
   gap: 0.45rem;
-  width: min(92%, 720px);
-  height: min(92%, 720px);
+  width: min(96%, 820px);
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 8px 0 6px;
 }
 
 .radar2d-canvas-wrap {
   position: relative;
-  display: inline-block;
-  max-width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .radar2d-frame canvas {
@@ -907,7 +927,33 @@ label {
 
 .radar2d-legend {
   width: 100%;
-  max-width: 280px;
+  max-width: 100%;
+}
+
+.map2d-detail {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.55rem;
+  width: min(100%, 420px);
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.map2d-detail input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 8rem;
+  height: 1.2rem;
+  margin: 0;
+}
+
+.map2d-detail span {
+  min-width: 1.6rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .map2d-tabs {

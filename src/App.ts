@@ -9,7 +9,7 @@ import { SkewTEditor } from "./skewt/SkewTEditor";
 import { HodographEditor } from "./skewt/HodographEditor";
 import { defaultSounding, SoundingLevel } from "./sim/thermo";
 import { formatSolarClock, sunDirection } from "./sim/SurfaceRadiation";
-import { MapProductId } from "./sim/mapProducts";
+import { MAP_PRODUCTS, MapProductId, paintLegend } from "./sim/mapProducts";
 import { sampleSurfaceWinds } from "./sim/surfaceWinds";
 import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
@@ -239,6 +239,11 @@ export class App {
       </div>
     `;
     this.host.appendChild(this.simScreen);
+    paintLegend(
+      this.simScreen.querySelector("#radar-legend .radar-legend-bar") as HTMLElement,
+      this.simScreen.querySelector("#radar-legend .radar-legend-ticks") as HTMLElement,
+      MAP_PRODUCTS.refl,
+    );
 
     this.viewport = this.simScreen.querySelector("#viewport") as HTMLElement;
     this.statsEl = this.simScreen.querySelector("#sim-stats") as HTMLElement;
@@ -1025,6 +1030,10 @@ export class App {
         this.showPlaybackFrame(this.playbackIndex);
       }
     });
+    this.radar2d.setOnDetailChange((scale) => {
+      this.renderer?.setRadarDetail(scale);
+    });
+    this.renderer.setRadarDetail(this.radar2d.getDetail());
     this.radar2d.setVisible(false);
     this.radar2d.setWindsVisible(false);
     this.renderer.setWindsVisible(false);

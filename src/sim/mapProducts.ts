@@ -17,6 +17,12 @@ export type MapProductId =
   | "vis"
   | "ir";
 
+export interface MapScale {
+  min: number;
+  max: number;
+  values: number[];
+}
+
 export interface MapProductMeta {
   id: MapProductId;
   title: string;
@@ -24,32 +30,131 @@ export interface MapProductMeta {
   /** CSS linear-gradient for legend bar */
   legendCss: string;
   ticks: string[];
+  /** When set, tick labels sit at (value − min) / (max − min). */
+  scale?: MapScale;
 }
+
+type RgbaStop = [number, number, number, number];
+
+/** Map panel background. No-echo and low CAPE use this so they stay solid. */
+const MAP_BG: RgbaStop = [0, 10, 16, 28];
+
+function hex2(n: number): string {
+  return Math.max(0, Math.min(255, n | 0)).toString(16).padStart(2, "0");
+}
+
+/** Legend position is (value − min) / (max − min), same span as the pixels. */
+function legendFromStops(stops: RgbaStop[], min: number, max: number): string {
+  const span = Math.max(1e-6, max - min);
+  const parts = stops.map(([v, r, g, b]) => {
+    const p = Math.min(100, Math.max(0, ((v - min) / span) * 100));
+    return `#${hex2(r)}${hex2(g)}${hex2(b)} ${p.toFixed(1)}%`;
+  });
+  return `linear-gradient(90deg,${parts.join(",")})`;
+}
+
+/** RadarScope standard reflectivity, 5–75 dBZ. */
+const REFL_STOPS: RgbaStop[] = [
+  [5, 29, 37, 60],
+  [17.5, 89, 155, 171],
+  [22.5, 33, 186, 72],
+  [32.5, 5, 101, 1],
+  [37.5, 251, 252, 0],
+  [42.5, 253, 149, 2],
+  [50, 253, 38, 0],
+  [60, 193, 148, 179],
+  [70, 165, 2, 215],
+  [75, 135, 255, 253],
+];
+
+/** RadarScope velocity: inbound green, near-zero gray, outbound red. */
+const VEL_STOPS: RgbaStop[] = [
+  [-30, 0, 70, 0],
+  [-18, 0, 170, 40],
+  [-6, 140, 230, 140],
+  [-1, 90, 90, 90],
+  [1, 90, 90, 90],
+  [6, 240, 140, 140],
+  [18, 230, 30, 30],
+  [30, 140, 0, 0],
+];
+
+/** Pivotal-style surface temperature, −15°C to 40°C. */
+const TEMP_STOPS: RgbaStop[] = [
+  [-15, 110, 0, 170],
+  [-5, 20, 40, 200],
+  [5, 0, 190, 220],
+  [12, 40, 180, 50],
+  [20, 250, 230, 40],
+  [28, 255, 140, 0],
+  [35, 220, 20, 20],
+  [40, 120, 0, 0],
+];
+
+/** Pivotal-style dewpoint: brown when dry, dark green when moist. */
+const DEW_STOPS: RgbaStop[] = [
+  [-5, 120, 70, 30],
+  [2, 190, 150, 80],
+  [10, 230, 210, 60],
+  [16, 140, 200, 60],
+  [22, 0, 150, 40],
+  [28, 0, 80, 40],
+];
+
+/** Pivotal-style CAPE. The legend holds the dark floor from 0 to 100 J/kg. */
+const CAPE_STOPS: RgbaStop[] = [
+  [100, 255, 255, 190],
+  [500, 255, 230, 40],
+  [1000, 255, 200, 0],
+  [2000, 255, 110, 0],
+  [3000, 210, 20, 20],
+  [4000, 180, 0, 120],
+  [5000, 100, 0, 160],
+];
+const CAPE_LEGEND: RgbaStop[] = [
+  [0, 10, 16, 28],
+  [100, 10, 16, 28],
+  ...CAPE_STOPS,
+];
+
+const IR_STOPS: RgbaStop[] = [
+  [-90, 180, 0, 220],
+  [-80, 128, 128, 128],
+  [-70, 80, 0, 0],
+  [-60, 255, 0, 0],
+  [-50, 255, 140, 0],
+  [-40, 255, 255, 0],
+  [-30, 180, 255, 0],
+  [-20, 0, 200, 0],
+  [0, 0, 0, 180],
+  [20, 0, 80, 255],
+  [40, 0, 255, 255],
+];
 
 export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   refl: {
     id: "refl",
     title: "Column-max reflectivity",
     units: "dBZ",
-    legendCss:
-      "linear-gradient(90deg,#00a000 0%,#00dc00 25%,#ffff00 45%,#ff8c00 60%,#ff0000 75%,#ff00ff 90%,#ffffff 100%)",
-    ticks: ["5", "30", "50", "70"],
+    legendCss: legendFromStops(REFL_STOPS, 5, 75),
+    ticks: ["5", "20", "35", "50", "65", "75"],
+    scale: { min: 5, max: 75, values: [5, 20, 35, 50, 65, 75] },
   },
   doppler: {
     id: "doppler",
     title: "Radial velocity (center radar)",
     units: "m/s",
-    legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    legendCss: legendFromStops(VEL_STOPS, -30, 30),
     ticks: ["-30", "0", "+30"],
+    scale: { min: -30, max: 30, values: [-30, 0, 30] },
   },
   cape: {
     id: "cape",
     title: "Surface-based CAPE",
     units: "J/kg",
-    legendCss:
-      "linear-gradient(90deg,#1a2030 0%,#fff7c0 25%,#ffb040 55%,#ff4020 80%,#c00080 100%)",
-    ticks: ["0", "1000", "3000", "5000"],
+    legendCss: legendFromStops(CAPE_LEGEND, 0, 5000),
+    ticks: ["0", "1000", "2500", "5000"],
+    scale: { min: 0, max: 5000, values: [0, 1000, 2500, 5000] },
   },
   cin: {
     id: "cin",
@@ -63,17 +168,17 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "tsfc",
     title: "Surface temperature",
     units: "°C",
-    legendCss:
-      "linear-gradient(90deg,#2030a0 0%,#40c0ff 25%,#f0f0f0 45%,#ffc040 70%,#ff2020 100%)",
-    ticks: ["0", "15", "25", "35"],
+    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
+    ticks: ["-15", "0", "15", "30", "40"],
+    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
   },
   td: {
     id: "td",
     title: "Surface dewpoint",
     units: "°C",
-    legendCss:
-      "linear-gradient(90deg,#2030a0 0%,#40c0ff 25%,#f0f0f0 45%,#ffc040 70%,#ff2020 100%)",
-    ticks: ["0", "10", "20", "28"],
+    legendCss: legendFromStops(DEW_STOPS, -5, 28),
+    ticks: ["-5", "5", "15", "22", "28"],
+    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
   },
   wspd: {
     id: "wspd",
@@ -111,11 +216,37 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "ir",
     title: "Infrared satellite",
     units: "°C",
-    legendCss:
-      "linear-gradient(90deg,#00ffff 0%,#0050ff 14%,#0000b4 24%,#00c800 40%,#ffff00 52%,#ff8c00 64%,#ff0000 74%,#500000 84%,#808080 92%,#b400dc 100%)",
+    legendCss: legendFromStops(IR_STOPS, -90, 40),
     ticks: ["40", "0", "-40", "-70", "-90"],
+    scale: { min: -90, max: 40, values: [40, 0, -40, -70, -90] },
   },
 };
+
+/** Paint a legend bar and its ticks from one product definition. */
+export function paintLegend(
+  bar: HTMLElement,
+  ticks: HTMLElement,
+  meta: MapProductMeta,
+): void {
+  bar.style.background = meta.legendCss;
+  ticks.classList.toggle("scaled", !!meta.scale);
+  ticks.innerHTML = legendTickHtml(meta);
+}
+
+/** Tick labels. Scaled products place each label on its value. */
+export function legendTickHtml(meta: MapProductMeta): string {
+  const scale = meta.scale;
+  if (!scale) return meta.ticks.map((t) => `<span>${t}</span>`).join("");
+  const span = Math.max(1e-6, scale.max - scale.min);
+  return scale.values
+    .map((v, i) => {
+      const p = ((v - scale.min) / span) * 100;
+      const label = meta.ticks[i] ?? String(v);
+      const shift = p <= 1 ? "0" : p >= 99 ? "-100%" : "-50%";
+      return `<span style="left:${p.toFixed(2)}%;transform:translateX(${shift})">${label}</span>`;
+    })
+    .join("");
+}
 
 export function packMapProduct(
   id: MapProductId,
@@ -208,42 +339,37 @@ function packVisible(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   }
 }
 
-/** Infrared: cold cloud tops are bright. Clear columns use the warm surface. */
+/**
+ * Infrared brightness temperature. Optical depth is accumulated from the top,
+ * so a clear column stays at the surface temperature, a thin edge stays warmer,
+ * and only a thick core takes the cold cloud temperature.
+ */
 function packInfrared(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny, nz } = grid;
+  const { nx, ny, nz, dz } = grid;
   const nxny = nx * ny;
+  const dzN = dz / 300;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      let kTop = -1;
-      for (let k = nz - 1; k >= 0; k--) {
-        const id = i + j * nx + k * nxny;
-        if (f.qc[id] + f.qr[id] > 1.5e-4) {
-          kTop = k;
-          break;
-        }
+      const sfc = i + j * nx;
+      const tSfc = TFromTheta(f.theta[sfc], f.p0[0]) - 273.15;
+      let trans = 1;
+      let acc = 0;
+      for (let k = nz - 1; k >= 0 && trans > 0.02; k--) {
+        const id = sfc + k * nxny;
+        const dTau = (f.qc[id] * 40 + f.qr[id] * 18) * dzN;
+        if (dTau <= 1e-6) continue;
+        const emit = 1 - Math.exp(-dTau);
+        const tC = TFromTheta(f.theta[id], f.p0[k]) - 273.15;
+        acc += tC * emit * trans;
+        trans *= Math.exp(-dTau);
       }
-      const id = i + j * nx + (kTop < 0 ? 0 : kTop) * nxny;
-      const tC = TFromTheta(f.theta[id], f.p0[kTop < 0 ? 0 : kTop]) - 273.15;
-      irToRgba(tC, out, mapPix(i, j, nx, ny));
+      irToRgba(acc + tSfc * trans, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function irToRgba(tC: number, out: Uint8Array, o: number): void {
-  const stops: [number, number, number, number][] = [
-    [-90, 180, 0, 220],
-    [-80, 128, 128, 128],
-    [-70, 80, 0, 0],
-    [-60, 255, 0, 0],
-    [-50, 255, 140, 0],
-    [-40, 255, 255, 0],
-    [-30, 180, 255, 0],
-    [-20, 0, 200, 0],
-    [0, 0, 0, 180],
-    [20, 0, 80, 255],
-    [40, 0, 255, 255],
-  ];
-  lerpStops(Math.min(40, Math.max(-90, tC)), stops, out, o, 255);
+  lerpStops(Math.min(40, Math.max(-90, tC)), IR_STOPS, out, o, 255);
 }
 
 /** Storm-relative radial velocity toward domain-center virtual radar, ~1.5 km. */
@@ -281,7 +407,7 @@ function packDoppler(grid: Grid3D, f: SimFields, out: Uint8Array): void {
         const vRel = grid.vCenter(f.v, i, j, kRadar) - vBar;
         vr = (uRel * dx + vRel * dy) / r;
       }
-      divergingToRgba(vr, -30, 30, out, mapPix(i, j, nx, ny));
+      velocityToRgba(vr, out, mapPix(i, j, nx, ny));
     }
   }
 }
@@ -351,7 +477,7 @@ function packSurfaceT(grid: Grid3D, f: SimFields, out: Uint8Array): void {
     for (let i = 0; i < nx; i++) {
       const th = f.theta[grid.idx(i, j, 0)];
       const tC = TFromTheta(th, p0) - 273.15;
-      thermalToRgba(tC, 0, 38, out, mapPix(i, j, nx, ny));
+      tempToRgba(tC, out, mapPix(i, j, nx, ny));
     }
   }
 }
@@ -364,7 +490,7 @@ function packDewpoint(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       const qv = Math.max(0, f.qv[grid.idx(i, j, 0)]);
       const e = (qv * p0) / (0.622 + qv);
       const tdC = dewpointFromE(Math.max(1, e));
-      thermalToRgba(tdC, 0, 28, out, mapPix(i, j, nx, ny));
+      dewToRgba(tdC, out, mapPix(i, j, nx, ny));
     }
   }
 }
@@ -443,22 +569,25 @@ export function reflectivityDbz(qr: number, qc: number, w = 0): number {
 
 function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
   if (dbz < 5) {
-    out[o] = 0;
-    out[o + 1] = 0;
-    out[o + 2] = 0;
-    out[o + 3] = 0;
+    out[o] = MAP_BG[1];
+    out[o + 1] = MAP_BG[2];
+    out[o + 2] = MAP_BG[3];
+    out[o + 3] = 255;
     return;
   }
-  const stops: [number, number, number, number][] = [
-    [5, 0, 160, 0],
-    [20, 0, 220, 0],
-    [30, 255, 255, 0],
-    [40, 255, 140, 0],
-    [50, 255, 0, 0],
-    [60, 255, 0, 255],
-    [70, 255, 255, 255],
-  ];
-  lerpStops(dbz, stops, out, o, 220);
+  lerpStops(Math.min(75, dbz), REFL_STOPS, out, o, 255);
+}
+
+function velocityToRgba(vr: number, out: Uint8Array, o: number): void {
+  lerpStops(Math.min(30, Math.max(-30, vr)), VEL_STOPS, out, o, 255);
+}
+
+function tempToRgba(tC: number, out: Uint8Array, o: number): void {
+  lerpStops(Math.min(40, Math.max(-15, tC)), TEMP_STOPS, out, o, 255);
+}
+
+function dewToRgba(tdC: number, out: Uint8Array, o: number): void {
+  lerpStops(Math.min(28, Math.max(-5, tdC)), DEW_STOPS, out, o, 255);
 }
 
 function cinToRgba(cin: number, out: Uint8Array, o: number): void {
@@ -506,38 +635,14 @@ function lightningToRgba(rate: number, out: Uint8Array, o: number): void {
 }
 
 function capeToRgba(cape: number, out: Uint8Array, o: number): void {
-  if (cape < 50) {
-    out[o] = 20;
-    out[o + 1] = 24;
-    out[o + 2] = 36;
+  if (cape < 100) {
+    out[o] = MAP_BG[1];
+    out[o + 1] = MAP_BG[2];
+    out[o + 2] = MAP_BG[3];
     out[o + 3] = 255;
     return;
   }
-  const stops: [number, number, number, number][] = [
-    [50, 255, 247, 192],
-    [800, 255, 196, 64],
-    [1800, 255, 96, 32],
-    [3200, 210, 24, 56],
-    [5000, 150, 0, 140],
-  ];
-  lerpStops(Math.min(5000, Math.max(0, cape)), stops, out, o, 255);
-}
-
-function thermalToRgba(
-  tC: number,
-  tMin: number,
-  tMax: number,
-  out: Uint8Array,
-  o: number,
-): void {
-  const stops: [number, number, number, number][] = [
-    [tMin, 32, 48, 160],
-    [tMin + (tMax - tMin) * 0.25, 64, 192, 255],
-    [tMin + (tMax - tMin) * 0.45, 240, 240, 240],
-    [tMin + (tMax - tMin) * 0.7, 255, 192, 64],
-    [tMax, 255, 32, 32],
-  ];
-  lerpStops(Math.min(tMax, Math.max(tMin, tC)), stops, out, o, 255);
+  lerpStops(Math.min(5000, cape), CAPE_STOPS, out, o, 255);
 }
 
 function divergingToRgba(

@@ -2,7 +2,9 @@ import {
   MAP_PRODUCTS,
   MapProductId,
   MapProductMeta,
+  paintLegend,
 } from "../sim/mapProducts";
+import { upsampleRgba } from "./upsampleRgba";
 import {
   SurfaceWindSample,
   windSpeedScale,
@@ -33,6 +35,11 @@ export class Radar2DView {
   private lightning: { i: number; j: number; alpha: number }[] = [];
   private blitCanvas: HTMLCanvasElement | null = null;
   private blitCtx: CanvasRenderingContext2D | null = null;
+  private upImage: ImageData | null = null;
+  /** Display samples per grid cell. 1 keeps the view pixelated. */
+  private detail = 2;
+  private onDetailChange: ((scale: number) => void) | null = null;
+  private detailVal: HTMLElement | null = null;
 
   constructor(host: HTMLElement) {
     this.root = document.createElement("div");
@@ -52,6 +59,11 @@ export class Radar2DView {
           <button type="button" data-product="vis">Visible</button>
           <button type="button" data-product="ir">Infrared</button>
         </div>
+        <label class="map2d-detail">
+          View detail
+          <input id="map2d-detail" type="range" min="1" max="4" step="1" value="2" />
+          <span id="map2d-detail-val">2×</span>
+        </label>
         <div class="radar2d-canvas-wrap">
           <canvas id="radar2d-canvas"></canvas>
           <div class="map2d-compass" aria-hidden="true">
@@ -97,12 +109,32 @@ export class Radar2DView {
 
     this.applyMeta(MAP_PRODUCTS.refl);
 
+    this.detailVal = this.root.querySelector("#map2d-detail-val");
+    const detailInput = this.root.querySelector(
+      "#map2d-detail",
+    ) as HTMLInputElement;
+    detailInput.addEventListener("input", () => {
+      const next = Math.max(1, Math.min(4, Number(detailInput.value) || 1));
+      this.detail = next;
+      if (this.detailVal) this.detailVal.textContent = `${next}×`;
+      this.layout();
+      this.onDetailChange?.(next);
+    });
+
     this.ro = new ResizeObserver(() => this.layout());
     this.ro.observe(this.root);
   }
 
   setOnProductChange(cb: (id: MapProductId) => void): void {
     this.onProductChange = cb;
+  }
+
+  setOnDetailChange(cb: (scale: number) => void): void {
+    this.onDetailChange = cb;
+  }
+
+  getDetail(): number {
+    return this.detail;
   }
 
   setProduct(id: MapProductId): void {
@@ -138,10 +170,7 @@ export class Radar2DView {
   private applyMeta(meta: MapProductMeta): void {
     this.titleEl.textContent = meta.title;
     this.unitsEl.textContent = meta.units;
-    this.legendBar.style.background = meta.legendCss;
-    this.legendTicks.innerHTML = meta.ticks
-      .map((t) => `<span>${t}</span>`)
-      .join("");
+    paintLegend(this.legendBar, this.legendTicks, meta);
   }
 
   setVisible(on: boolean): void {
@@ -177,9 +206,10 @@ export class Radar2DView {
 
   private layout(): void {
     if (this.root.classList.contains("hidden")) return;
-    const frame = this.root.querySelector(".radar2d-frame") as HTMLElement;
-    const w = Math.max(1, frame.clientWidth);
-    const h = Math.max(1, frame.clientHeight - 96);
+    const wrap = this.root.querySelector(".radar2d-canvas-wrap") as HTMLElement;
+    const w = Math.max(1, wrap.clientWidth);
+    const h = Math.max(1, wrap.clientHeight);
+    if (h < 40) return;
     if (this.nx < 1 || this.ny < 1) return;
 
     const aspect = this.nx / this.ny;
@@ -194,20 +224,20 @@ export class Radar2DView {
     this.canvas.style.height = `${ch}px`;
     this.canvas.width = Math.max(1, Math.floor(cw * dpr));
     this.canvas.height = Math.max(1, Math.floor(ch * dpr));
-    this.ctx.imageSmoothingEnabled = false;
+    this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
     this.draw();
   }
 
-  private blitTarget(): CanvasRenderingContext2D {
+  private blitTarget(w: number, h: number): CanvasRenderingContext2D {
     if (
       !this.blitCanvas ||
       !this.blitCtx ||
-      this.blitCanvas.width !== this.nx ||
-      this.blitCanvas.height !== this.ny
+      this.blitCanvas.width !== w ||
+      this.blitCanvas.height !== h
     ) {
       this.blitCanvas = document.createElement("canvas");
-      this.blitCanvas.width = this.nx;
-      this.blitCanvas.height = this.ny;
+      this.blitCanvas.width = w;
+      this.blitCanvas.height = h;
       this.blitCtx = this.blitCanvas.getContext("2d");
     }
     return this.blitCtx!;
@@ -215,18 +245,29 @@ export class Radar2DView {
 
   private draw(): void {
     if (!this.image) return;
-    const tctx = this.blitTarget();
-    tctx.putImageData(this.image, 0, 0);
+    const f = this.detail;
+    const tw = this.nx * f;
+    const th = this.ny * f;
+    const tctx = this.blitTarget(tw, th);
+    if (f <= 1) {
+      tctx.putImageData(this.image, 0, 0);
+    } else {
+      if (!this.upImage || this.upImage.width !== tw || this.upImage.height !== th) {
+        this.upImage = new ImageData(tw, th);
+      }
+      upsampleRgba(this.image.data, this.nx, this.ny, f, this.upImage.data);
+      tctx.putImageData(this.upImage, 0, 0);
+    }
 
     this.ctx.fillStyle = "#0a101c";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.imageSmoothingEnabled = false;
+    this.ctx.imageSmoothingEnabled = f > 1;
     this.ctx.drawImage(
       this.blitCanvas!,
       0,
       0,
-      this.nx,
-      this.ny,
+      tw,
+      th,
       0,
       0,
       this.canvas.width,

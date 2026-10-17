@@ -4,6 +4,7 @@ import {
   SurfaceWindSample,
   windSpeedScale,
 } from "../sim/surfaceWinds";
+import { upsampleRgba } from "./upsampleRgba";
 
 const volumeVert = /* glsl */ `
 out vec3 vPos;
@@ -214,9 +215,13 @@ export class CloudRainRenderer {
   private volumePrevData: Uint8Array | null = null;
   private radarTex: THREE.DataTexture | null = null;
   private radarMesh: THREE.Mesh | null = null;
+  /** Native grid image, before the view-detail upsample. */
+  private radarNative: Uint8Array | null = null;
   private radarData: Uint8Array | null = null;
   private radarNx = 0;
   private radarNy = 0;
+  /** Display samples per grid cell. 1 keeps the cells blocky. */
+  private radarScale = 2;
   private domainSpan = 2;
   /** Domain size in meters. X east, Z north-south (north is −Z), Y up. */
   private volNx = 1;
@@ -655,23 +660,10 @@ export class CloudRainRenderer {
     // Radar composite plane (just above ground)
     this.radarNx = grid.nx;
     this.radarNy = grid.ny;
-    this.radarData = new Uint8Array(new ArrayBuffer(grid.nx * grid.ny * 4));
-    this.radarTex = new THREE.DataTexture(
-      this.radarData as unknown as BufferSource,
-      grid.nx,
-      grid.ny,
-      THREE.RGBAFormat,
-      THREE.UnsignedByteType,
-    );
-    this.radarTex.minFilter = THREE.NearestFilter;
-    this.radarTex.magFilter = THREE.NearestFilter;
-    // mapPix packs north in row 0 (same as 2D maps). flipY puts that on +Z
-    // after the plane rotation so volume + radar stay north-aligned.
-    this.radarTex.flipY = true;
-    this.radarTex.needsUpdate = true;
-    if ("colorSpace" in this.radarTex) {
-      (this.radarTex as THREE.DataTexture).colorSpace = THREE.NoColorSpace;
-    }
+    this.radarNative = new Uint8Array(grid.nx * grid.ny * 4);
+    this.radarData = null;
+    this.radarTex = null;
+    this.ensureRadarTexture();
 
     const radarMat = new THREE.MeshBasicMaterial({
       map: this.radarTex,
@@ -968,9 +960,63 @@ export class CloudRainRenderer {
     }
   }
 
+  /** 1×–4× display samples per grid cell. Does not change the simulation. */
+  setRadarDetail(scale: number): void {
+    const next = Math.max(1, Math.min(4, scale | 0));
+    if (next === this.radarScale && this.radarTex) return;
+    this.radarScale = next;
+    this.ensureRadarTexture();
+  }
+
   updateRadar(pack: (out: Uint8Array) => void): void {
-    if (!this.radarData || !this.radarTex) return;
-    pack(this.radarData);
+    if (!this.radarNative) return;
+    pack(this.radarNative);
+    this.uploadRadar();
+  }
+
+  private ensureRadarTexture(): void {
+    const f = this.radarScale;
+    const w = this.radarNx * f;
+    const h = this.radarNy * f;
+    if (this.radarTex && this.radarData && this.radarData.length === w * h * 4) {
+      this.uploadRadar();
+      return;
+    }
+    this.radarData = new Uint8Array(w * h * 4);
+    const tex = new THREE.DataTexture(
+      this.radarData as unknown as BufferSource,
+      w,
+      h,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType,
+    );
+    const filter = f <= 1 ? THREE.NearestFilter : THREE.LinearFilter;
+    tex.minFilter = filter;
+    tex.magFilter = filter;
+    tex.flipY = true;
+    tex.needsUpdate = true;
+    if ("colorSpace" in tex) tex.colorSpace = THREE.NoColorSpace;
+    this.radarTex?.dispose();
+    this.radarTex = tex;
+    const mat = this.radarMesh?.material as THREE.MeshBasicMaterial | undefined;
+    if (mat) {
+      mat.map = tex;
+      mat.needsUpdate = true;
+    }
+    this.uploadRadar();
+  }
+
+  private uploadRadar(): void {
+    if (!this.radarNative || !this.radarData || !this.radarTex) return;
+    const f = this.radarScale;
+    if (f <= 1) this.radarData.set(this.radarNative);
+    else upsampleRgba(this.radarNative, this.radarNx, this.radarNy, f, this.radarData);
+    // No-echo is the opaque map background. On the 3D plane that color is
+    // punched out so the ground still shows outside the echo.
+    const data = this.radarData;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] === 10 && data[i + 1] === 16 && data[i + 2] === 28) data[i + 3] = 0;
+    }
     this.radarTex.needsUpdate = true;
   }
 
