@@ -48,22 +48,6 @@ float noise2(vec2 p) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Round cells. 1 at the lump center, 0 in the crack between lumps.
-float worley(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  float d = 1.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int x = -1; x <= 1; x++) {
-      vec2 g = vec2(float(x), float(y));
-      vec2 cell = i + g;
-      vec2 o = vec2(hash21(cell), hash21(cell + vec2(19.1, 7.7)));
-      d = min(d, length(g + o - f));
-    }
-  }
-  return 1.0 - d;
-}
-
 // Physics: i + nx*(j + ny*k), k = height, +j = north.
 // Display: flip j like 2D mapPix so north sits on −Z (viewed from +Z).
 // R = softened cloud, G = rain, B = shaft hung below the rain.
@@ -118,37 +102,37 @@ void main() {
   float kind = 0.39;
 
   for (int i = 0; i < 56; i++) {
-    vec2 xz = pos.xz * uScale.xz;
-    float yb = pos.y * 7.5;
-    float n = noise2(xz * 0.0005 + vec2(yb, -yb * 0.6));
-    float n2 = noise2(xz * 0.00135 + vec2(yb * 1.8, yb * 0.7) + 9.0);
+    vec3 w0 = pos * uScale;
+    float n = noise2(vec2(w0.x * 0.00072 + w0.y * 0.0008, w0.z * 0.00072 - w0.y * 0.00068));
+    float n2 = noise2(vec2(w0.x * 0.00036 + w0.y * 0.0004, w0.z * 0.00036 + w0.y * 0.00034) + 6.0);
     float rainW = smoothstep(0.94, 0.99, kind);
     float cirrusW = smoothstep(0.82, 0.88, kind) * (1.0 - smoothstep(0.94, 0.99, kind));
     float anvilW = smoothstep(0.68, 0.74, kind) * (1.0 - smoothstep(0.80, 0.86, kind));
     float baseW = smoothstep(0.52, 0.58, kind) * (1.0 - smoothstep(0.66, 0.74, kind));
     float stratusW = smoothstep(0.10, 0.16, kind) * (1.0 - smoothstep(0.28, 0.36, kind));
     float towerW = clamp(1.0 - rainW - cirrusW - anvilW - baseW - stratusW, 0.0, 1.0);
-    float vertAmp = 0.13 * towerW + 0.012 * anvilW + 0.006 * stratusW + 0.016 * baseW + 0.05 * rainW;
-    float horizAmp = 0.04 * towerW + 0.018 * anvilW + 0.012 * stratusW + 0.012 * baseW + 0.008 * cirrusW + 0.025 * rainW;
-    vec3 sp = pos + vec3((n - 0.5) * horizAmp, (n - 0.5) * vertAmp + (n2 - 0.5) * vertAmp * 1.1, (n2 - 0.5) * horizAmp);
-    float yMix = towerW + baseW * 0.2 + anvilW * 0.06 + rainW * 0.35;
-    // Cells stay larger than a march step, so the lumps read as lobes instead of grain.
-    float freq = max(8.0, 14.0 * towerW + 22.0 * anvilW + 9.0 * baseW + 12.0 * rainW);
-    vec2 bulkUV = vec2(pos.x * freq + pos.y * 11.0 * yMix, pos.z * freq - pos.y * 10.0 * yMix);
-    float bulk = worley(bulkUV);
-    float fine = worley(bulkUV * 1.7 + vec2(4.2, 1.3));
-    float lump = mix(bulk, fine, 0.34 + 0.30 * anvilW);
-    float streak = noise2(xz * vec2(0.00085, 0.00028) + vec2(pos.y * 0.4, 3.0));
+    float vertAmp = 0.16 * towerW + 0.07 * anvilW + 0.1 * stratusW + 0.06 * baseW + 0.05 * rainW;
+    float horizAmp = 0.022 * towerW + 0.016 * anvilW + 0.012 * stratusW + 0.01 * baseW + 0.008 * cirrusW + 0.016 * rainW;
+    float lift = (n - 0.35) * vertAmp + (n2 - 0.42) * vertAmp * 0.45;
+    vec3 sp = pos + vec3((n - 0.5) * horizAmp, lift, (n2 - 0.5) * horizAmp);
+    vec3 w = sp * uScale;
+    float lobe = noise2(vec2(w.x * 0.00072 + w.y * 0.0008, w.z * 0.00072 - w.y * 0.0007));
+    float lobeB = noise2(vec2(w.x * 0.00036 + w.y * 0.0004, w.z * 0.00036 - w.y * 0.00034) + 3.7);
+    float billow = lobe * 0.58 + lobeB * 0.42;
+    float roll = noise2(vec2(w.x * 0.00018 + w.y * 0.00016, w.z * 0.00018 - w.y * 0.00012));
+    float veil = noise2(vec2(w.x * 0.0003, w.z * 0.00016 + w.y * 0.00008) + 2.0);
     vec4 mass = sampleMass(sp);
     kind = mass.a;
     float qc = mass.r;
-    float shape = smoothstep(0.46, 0.78, lump) * towerW
-      + smoothstep(0.38, 0.72, lump) * anvilW
-      + (0.72 + 0.28 * n) * stratusW
-      + smoothstep(0.40, 0.82, mix(n, bulk, 0.35)) * baseW
-      + streak * cirrusW
-      + n * rainW;
-    float cloud = max(0.0, qc * shape - 0.018);
+    float anvilB = mix(billow, roll, 0.4);
+    float soft = smoothstep(0.3, 0.78, billow);
+    float shape = (0.48 + 0.52 * soft) * towerW
+      + (0.55 + 0.45 * smoothstep(0.28, 0.75, anvilB)) * anvilW
+      + (0.62 + 0.38 * soft) * stratusW
+      + (0.7 + 0.3 * soft) * baseW
+      + veil * cirrusW
+      + (0.6 + 0.4 * n) * rainW;
+    float cloud = max(0.0, qc * shape - 0.01);
     cloud *= mix(1.0, 0.42 + 0.58 * n, rainW);
     cloud *= mix(1.0, 0.45, cirrusW);
     cloud *= smoothstep(0.0, 0.28, cloud);
@@ -165,19 +149,19 @@ void main() {
       shadow += sampleMass(sp + sunLocal * (uStep * 4.8)).r;
       shadow += sampleMass(sp + sunLocal * (uStep * 8.5)).r;
       float light = exp(-shadow * 0.28);
-      light *= mix(1.0, mix(0.28, 1.0, smoothstep(0.35, 0.92, lump)), clamp(towerW + anvilW, 0.0, 1.0));
+      light *= mix(1.0, mix(0.84, 1.0, billow), clamp(towerW + anvilW, 0.0, 1.0));
       float wet = smoothstep(0.0, 0.55, shaft / max(cloud + shaft, 0.04));
       vec3 dry = mix(vec3(0.62, 0.68, 0.76), vec3(1.0, 0.995, 0.99), light);
       vec3 damp = mix(vec3(0.48, 0.54, 0.62), vec3(0.78, 0.82, 0.88), light * 0.55 + 0.25);
       vec3 albedo = mix(dry, damp, wet);
       vec3 sheet = mix(vec3(0.62, 0.66, 0.72), vec3(0.93, 0.95, 0.97), light);
       albedo = mix(albedo, sheet, stratusW * (1.0 - wet));
-      vec3 underside = mix(vec3(0.38, 0.42, 0.48), vec3(0.70, 0.74, 0.78), light * 0.5 + 0.1);
+      vec3 underside = mix(vec3(0.52, 0.56, 0.62), vec3(0.84, 0.87, 0.90), light * 0.65 + 0.15);
       albedo = mix(albedo, underside, baseW * (1.0 - wet));
       albedo = mix(albedo, vec3(0.97, 0.98, 1.0), cirrusW);
       vec3 lit = mix(vec3(0.16, 0.18, 0.24), albedo, sunVis);
       float sunAmt = sunVis * mix(1.0, 0.35, wet);
-      float phase = mix(0.62, 0.62 + 0.35 * sheen * smoothstep(0.4, 0.92, lump), towerW + anvilW);
+      float phase = mix(0.62, 0.62 + 0.22 * sheen * smoothstep(0.35, 0.8, billow), towerW + anvilW);
       phase = mix(phase, 0.62, cirrusW);
       vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
       float flashDist = length((sp - uFlashLocal) * uScale);
