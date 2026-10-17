@@ -48,10 +48,27 @@ float noise2(vec2 p) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// Round cells. 1 at the lump center, 0 in the crack between lumps.
+float worley(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float d = 1.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 g = vec2(float(x), float(y));
+      vec2 cell = i + g;
+      vec2 o = vec2(hash21(cell), hash21(cell + vec2(19.1, 7.7)));
+      d = min(d, length(g + o - f));
+    }
+  }
+  return 1.0 - d;
+}
+
 // Physics: i + nx*(j + ny*k), k = height, +j = north.
 // Display: flip j like 2D mapPix so north sits on −Z (viewed from +Z).
 // R = softened cloud, G = rain, B = shaft hung below the rain.
-// A = cloud texture: layer ~0.27, tower ~0.55, anvil ~0.82, rain base 1.
+// A = cloud texture: stratus ~0.20, tower ~0.39, base ~0.59,
+// anvil ~0.75, cirrus ~0.88, rain base 1.
 vec4 sampleMass(vec3 p) {
   vec3 uv = vec3(p.x + 0.5, 1.0 - (p.z + 0.5), p.y + 0.5);
   if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
@@ -88,7 +105,7 @@ void main() {
   float sunLen = length(sunLocal);
   sunLocal = sunLen > 1e-5 ? sunLocal / sunLen : vec3(0.0, 1.0, 0.0);
   float mu = dot(worldRay, normalize(uSunWorld));
-  float phase = 0.55 + 0.85 * pow(max(mu, 0.0), 4.0);
+  float sheen = pow(max(mu, 0.0), 8.0);
   float elev = uSunWorld.y;
   float day = smoothstep(-0.02, 0.30, elev);
   float sunVis = smoothstep(-0.04, 0.16, elev);
@@ -98,36 +115,48 @@ void main() {
   float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   pos += rayDir * uStep * jitter * 0.12;
   vec4 acc = vec4(0.0);
-  float kind = 0.55;
+  float kind = 0.39;
 
   for (int i = 0; i < 56; i++) {
     vec2 xz = pos.xz * uScale.xz;
     float yb = pos.y * 7.5;
     float n = noise2(xz * 0.0005 + vec2(yb, -yb * 0.6));
     float n2 = noise2(xz * 0.00135 + vec2(yb * 1.8, yb * 0.7) + 9.0);
-    float rainW = smoothstep(0.90, 0.99, kind);
-    float anvilW = smoothstep(0.64, 0.80, kind) * (1.0 - rainW);
-    float layerW = smoothstep(0.15, 0.28, kind) * (1.0 - smoothstep(0.40, 0.52, kind));
-    float towerW = clamp(1.0 - rainW - anvilW - layerW, 0.0, 1.0);
-    float vertAmp = 0.10 * towerW + 0.025 * anvilW + 0.01 * layerW + 0.05 * rainW;
-    float horizAmp = 0.045 * towerW + 0.08 * anvilW + 0.02 * layerW + 0.03 * rainW;
-    vec3 sp = pos + vec3((n - 0.5) * horizAmp, (n - 0.5) * vertAmp + (n2 - 0.5) * vertAmp * 1.2, (n2 - 0.5) * horizAmp);
-    float puff = noise2(vec2(pos.x * 13.0 + pos.y * 17.0, pos.z * 13.0 - pos.y * 15.0));
-    float puffB = noise2(vec2(pos.x * 6.5 - pos.y * 8.0, pos.z * 6.5 + pos.y * 7.0) + 4.2);
-    float fiber = noise2(xz * vec2(0.0024, 0.00045) + vec2(0.0, pos.y * 1.6));
+    float rainW = smoothstep(0.94, 0.99, kind);
+    float cirrusW = smoothstep(0.82, 0.88, kind) * (1.0 - smoothstep(0.94, 0.99, kind));
+    float anvilW = smoothstep(0.68, 0.74, kind) * (1.0 - smoothstep(0.80, 0.86, kind));
+    float baseW = smoothstep(0.52, 0.58, kind) * (1.0 - smoothstep(0.66, 0.74, kind));
+    float stratusW = smoothstep(0.10, 0.16, kind) * (1.0 - smoothstep(0.28, 0.36, kind));
+    float towerW = clamp(1.0 - rainW - cirrusW - anvilW - baseW - stratusW, 0.0, 1.0);
+    float vertAmp = 0.13 * towerW + 0.012 * anvilW + 0.006 * stratusW + 0.016 * baseW + 0.05 * rainW;
+    float horizAmp = 0.04 * towerW + 0.018 * anvilW + 0.012 * stratusW + 0.012 * baseW + 0.008 * cirrusW + 0.025 * rainW;
+    vec3 sp = pos + vec3((n - 0.5) * horizAmp, (n - 0.5) * vertAmp + (n2 - 0.5) * vertAmp * 1.1, (n2 - 0.5) * horizAmp);
+    float yMix = towerW + baseW * 0.2 + anvilW * 0.06 + rainW * 0.35;
+    // Cells stay larger than a march step, so the lumps read as lobes instead of grain.
+    float freq = max(8.0, 14.0 * towerW + 22.0 * anvilW + 9.0 * baseW + 12.0 * rainW);
+    vec2 bulkUV = vec2(pos.x * freq + pos.y * 11.0 * yMix, pos.z * freq - pos.y * 10.0 * yMix);
+    float bulk = worley(bulkUV);
+    float fine = worley(bulkUV * 1.7 + vec2(4.2, 1.3));
+    float lump = mix(bulk, fine, 0.34 + 0.30 * anvilW);
+    float streak = noise2(xz * vec2(0.00085, 0.00028) + vec2(pos.y * 0.4, 3.0));
     vec4 mass = sampleMass(sp);
     kind = mass.a;
     float qc = mass.r;
-    float fbmTower = puff * 0.62 + puffB * 0.38;
-    float fbm = fbmTower * towerW + fiber * anvilW + mix(fiber, puff, 0.25) * layerW + n * rainW;
-    float cloud = max(0.0, qc * (0.35 + fbm * 0.65) - 0.012);
+    float shape = smoothstep(0.46, 0.78, lump) * towerW
+      + smoothstep(0.38, 0.72, lump) * anvilW
+      + (0.72 + 0.28 * n) * stratusW
+      + smoothstep(0.40, 0.82, mix(n, bulk, 0.35)) * baseW
+      + streak * cirrusW
+      + n * rainW;
+    float cloud = max(0.0, qc * shape - 0.018);
     cloud *= mix(1.0, 0.42 + 0.58 * n, rainW);
+    cloud *= mix(1.0, 0.45, cirrusW);
     cloud *= smoothstep(0.0, 0.28, cloud);
     // Same lumps as the cloud, and the shaft stays partly present inside it
     // so the base fades into the rain instead of ending on a line.
     // mass.b is 0 at 5 dBZ and 1 at 70 dBZ. A small billow keeps the edge soft
     // without lifting a green echo up to an opaque curtain.
-    float shaft = mass.b * mix(0.82, 1.0, fbm);
+    float shaft = mass.b * mix(0.82, 1.0, clamp(shape, 0.0, 1.0));
     shaft *= mix(0.65, 1.0, 1.0 - smoothstep(0.04, 0.7, cloud));
     float d = cloud + shaft * shaft;
     float stepLen = d > 0.045 ? uStep * 0.75 : (d > 0.008 ? uStep : uStep * 2.6);
@@ -136,21 +165,29 @@ void main() {
       shadow += sampleMass(sp + sunLocal * (uStep * 4.8)).r;
       shadow += sampleMass(sp + sunLocal * (uStep * 8.5)).r;
       float light = exp(-shadow * 0.28);
+      light *= mix(1.0, mix(0.28, 1.0, smoothstep(0.35, 0.92, lump)), clamp(towerW + anvilW, 0.0, 1.0));
       float wet = smoothstep(0.0, 0.55, shaft / max(cloud + shaft, 0.04));
       vec3 dry = mix(vec3(0.62, 0.68, 0.76), vec3(1.0, 0.995, 0.99), light);
       vec3 damp = mix(vec3(0.48, 0.54, 0.62), vec3(0.78, 0.82, 0.88), light * 0.55 + 0.25);
       vec3 albedo = mix(dry, damp, wet);
-      vec3 sheet = mix(vec3(0.55, 0.58, 0.64), vec3(0.90, 0.92, 0.94), light);
-      albedo = mix(albedo, sheet, layerW * (1.0 - wet));
+      vec3 sheet = mix(vec3(0.62, 0.66, 0.72), vec3(0.93, 0.95, 0.97), light);
+      albedo = mix(albedo, sheet, stratusW * (1.0 - wet));
+      vec3 underside = mix(vec3(0.38, 0.42, 0.48), vec3(0.70, 0.74, 0.78), light * 0.5 + 0.1);
+      albedo = mix(albedo, underside, baseW * (1.0 - wet));
+      albedo = mix(albedo, vec3(0.97, 0.98, 1.0), cirrusW);
       vec3 lit = mix(vec3(0.16, 0.18, 0.24), albedo, sunVis);
       float sunAmt = sunVis * mix(1.0, 0.35, wet);
+      float phase = mix(0.62, 0.62 + 0.35 * sheen * smoothstep(0.4, 0.92, lump), towerW + anvilW);
+      phase = mix(phase, 0.62, cirrusW);
       vec3 col = lit * (amb + sunCol * light * phase * sunAmt);
       float flashDist = length((sp - uFlashLocal) * uScale);
       float glow = uFlash * exp(-flashDist * flashDist / (2200.0 * 2200.0));
       col += uFlashColor * glow * 1.6;
       float ext = mix(8.0, 2.8, wet);
+      ext = mix(ext, 1.4, cirrusW);
       float a = 1.0 - exp(-d * ext * stepLen / max(uStep, 1e-4));
       a = clamp(a, 0.0, mix(1.0, shaft * 0.55 + 0.02, wet));
+      a = mix(a, min(a, 0.35), cirrusW);
       acc.rgb += (1.0 - acc.a) * col * a;
       acc.a += (1.0 - acc.a) * a;
     }
@@ -973,15 +1010,18 @@ export class CloudRainRenderer {
       }
     }
 
-    // Alpha is the texture: layer, tower, anvil, or rain base.
+    // Alpha is the texture: stratus, tower, base, anvil, cirrus, or rain.
     const layerLevels = Math.max(
       2,
       Math.round((1500 / Math.max(this.spanY, 1)) * nz),
     );
     const cloudMin = 18;
-    const TYPE_LAYER = 70;
-    const TYPE_TOWER = 140;
-    const TYPE_ANVIL = 210;
+    const cirrusMax = 60;
+    const TYPE_STRATUS = 50;
+    const TYPE_TOWER = 100;
+    const TYPE_BASE = 150;
+    const TYPE_ANVIL = 190;
+    const TYPE_CIRRUS = 225;
     const TYPE_RAIN = 255;
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
@@ -1007,21 +1047,22 @@ export class CloudRainRenderer {
         }
         const depth = kTop - kBase + 1;
         const deep = depth > layerLevels;
+        const anvilSpan = Math.max(1, Math.round(depth * 0.25));
         const anvilFrom =
-          deep && kTop >= nz * 0.5
-            ? kTop - Math.max(1, (depth * 0.25) | 0)
-            : nz;
-        const baseBand = Math.max(1, Math.round(depth * 0.22));
+          deep && kTop >= nz * 0.5 ? kTop - anvilSpan + 1 : nz;
+        const baseTop = kBase + Math.max(0, Math.round(depth * 0.2) - 1);
+        const highDeck = kBase >= nz * 0.5;
         for (let k = 0; k < nz; k++) {
           const o = at(i, j, k) * 4;
           const shaft = data[o + 2];
           const cloud = data[o];
-          const nearBase = k <= kBase + baseBand;
+          const nearBase = k <= baseTop;
           let type = 0;
           if (shaft > 90 && (nearBase || cloud <= cloudMin)) type = TYPE_RAIN;
           else if (cloud <= cloudMin) type = 0;
-          else if (k >= anvilFrom) type = TYPE_ANVIL;
-          else if (!deep) type = TYPE_LAYER;
+          else if (nearBase) type = TYPE_BASE;
+          else if (k >= anvilFrom) type = cloud < cirrusMax ? TYPE_CIRRUS : TYPE_ANVIL;
+          else if (!deep) type = highDeck ? TYPE_CIRRUS : TYPE_STRATUS;
           else type = TYPE_TOWER;
           data[o + 3] = type;
         }
