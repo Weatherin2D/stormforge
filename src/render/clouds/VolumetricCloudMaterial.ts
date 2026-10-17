@@ -30,9 +30,9 @@ export interface CloudLook {
 }
 
 export const DEFAULT_LOOK: CloudLook = {
-  sigmaLiquid: 0.06,
+  sigmaLiquid: 0.08,
   sigmaIce: 0.008,
-  sigmaRain: 0.045,
+  sigmaRain: 0.18,
   erosionLiquid: 0.6,
   erosionIce: 0.25,
   iceStretch: [0.25, 0.6, 2.5],
