@@ -24,7 +24,7 @@ export function stepMicrophysics(
   const condRate = 2.0; // less explosive than 3.5 on long batch runs
   const evapCloud = 0.35;
   // ~1 K/min under a rain shaft when the air is a few g/kg below saturation.
-  const evapRain = 0.004;
+  const evapRain = 0.028; // strong enough to produce virga in dry sub-cloud air
   const qcCap = 0.006; // thicker shield before leftover cloud is forced into rain
   const condFac = 1 - Math.exp(-condRate * dt);
   const evapCloudFac = 1 - Math.exp(-evapCloud * dt);
