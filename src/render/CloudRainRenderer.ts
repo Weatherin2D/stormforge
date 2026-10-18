@@ -111,9 +111,11 @@ void main() {
   prev /= max(prev.w, 1e-6);
   vec2 puv = prev.xy * 0.5 + 0.5;
   float inside = step(0.0, puv.x) * step(puv.x, 1.0) * step(0.0, puv.y) * step(puv.y, 1.0);
-  float stable = inside * step(length(puv - vUv), 0.1);
+  float stable = inside * step(length(puv - vUv), 0.15);
   vec4 hist = texture(uHistory, puv);
-  fragColor = mix(curr, mix(curr, hist, uMix), stable);
+  // When history is invalid, still blend slightly to avoid hard pop
+  float blendMix = uValid > 0.5 ? uMix : 0.0;
+  fragColor = mix(curr, mix(curr, hist, blendMix), stable);
 }
 `;
 
@@ -428,7 +430,6 @@ export class CloudRainRenderer {
 
   setVolumeVisible(on: boolean): void {
     this.cloudsOn = on;
-    if (!on) this.historyValid = false;
     if (this.volumeMesh) this.volumeMesh.visible = on;
   }
 
@@ -847,7 +848,7 @@ export class CloudRainRenderer {
     const now = performance.now();
     if (!force) {
       if (empty && this.volumeClear) return;
-      if (now - this.lastVolumeMs < 125) return;
+      if (now - this.lastVolumeMs < 50) return;
     }
     this.lastVolumeMs = now;
     if (empty) {
@@ -1080,7 +1081,7 @@ export class CloudRainRenderer {
       this.cloudResolved = previous;
     } else {
       this.blitMesh.visible = false;
-      this.historyValid = false;
+      // Don't invalidate history — keep the last good frame so re-enabling clouds doesn't cold-start
     }
 
     this.renderer.setRenderTarget(null);
@@ -1098,14 +1099,14 @@ export class CloudRainRenderer {
     this.prevViewProj.copy(this.currViewProj);
   }
 
-  /** Drop history while a bolt is bright so the flash is not blended away. */
+  /** Reduce TAA blend while a bolt is bright so the flash isn't smeared, but never drop to 0. */
   private lightningMix(): number {
     for (const bolt of this.liveBolts) {
       if (bolt.kind === "sprite") continue;
       const alpha = 1 - bolt.age / bolt.life;
-      if (alpha > 0.45) return 0;
+      if (alpha > 0.45) return 0.3;
     }
-    return 0.85;
+    return 0.88;
   }
 
   private makeBoltRibbon(): THREE.Mesh {
