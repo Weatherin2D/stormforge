@@ -26,6 +26,13 @@ import {
   buildLandMask,
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
+import {
+  stepIceMicrophysics,
+  stepCloudTopCooling,
+  stepBLMixing,
+  stepSynopticOmega,
+  stepMarineStratus,
+} from "./stepDynamics";
 
 export type LightningKind = "cg" | "sprite";
 
@@ -76,6 +83,7 @@ export class FluidSolver {
   /** Recent flash rate, flashes per minute, decaying over ~5 minutes. */
   private flash: Float32Array;
   private vortScratch: Float32Array = new Float32Array(0);
+  private iceScratch: Float32Array = new Float32Array(0);
   private mgLevels: MgLevel[] = [];
   private lastBubbleOpts: InitOptions = { bubbleStrength: 3 };
   radiation: RadiationOptions = { ...DEFAULT_RADIATION };
@@ -124,6 +132,7 @@ export class FluidSolver {
     this.plumeCooldown = new Float32Array(g.nx * g.ny);
     this.flash = new Float32Array(g.nx * g.ny);
     this.vortScratch = new Float32Array(g.n * 3);
+    this.iceScratch = new Float32Array(g.n);
     this.buildMg();
   }
 
@@ -244,6 +253,11 @@ export class FluidSolver {
         this.radiation,
       );
       stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
+      stepIceMicrophysics(this.grid, this.fields, h, this.exner, this.iceScratch);
+      stepCloudTopCooling(this.grid, this.fields, h, this.exner);
+      stepBLMixing(this.grid, this.fields, h, this.exner);
+      stepSynopticOmega(this.grid, this.fields, h);
+      stepMarineStratus(this.grid, this.fields, h, this.exner, this.landMask);
       this.updateLightning(h);
       this.applySponge(h);
       if (!this.clockPaused) {
