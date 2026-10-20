@@ -51,6 +51,10 @@ export class SynopticEditor {
   private jetstreamRow: HTMLElement;
   private jetstreamSlider: HTMLInputElement;
   private jetstreamVal: HTMLElement;
+  private moveToggle: HTMLInputElement;
+  private moveRow: HTMLElement;
+  private moveSpeed: HTMLInputElement;
+  private moveSpeedVal: HTMLElement;
   private setup: SynopticSetup = defaultSynoptic();
   private tool: Tool = "cold";
   private selectedId: string | null = null;
@@ -97,6 +101,15 @@ export class SynopticEditor {
           <input id="sf-jetstream-south" type="range" min="0" max="1" step="0.01" value="0.5" />
           <span id="sf-jetstream-val">50%</span>
         </div>
+        <label class="front-marine">
+          <input id="sf-move-toggle" type="checkbox" checked />
+          Move west→east
+        </label>
+        <div class="front-strength" id="sf-move-row">
+          Move speed
+          <input id="sf-move-speed" type="range" min="0" max="0.3" step="0.01" value="0.08" />
+          <span id="sf-move-speed-val">0.08</span>
+        </div>
         <div class="front-list" id="sf-front-list"></div>
         <label class="front-strength" id="sf-front-strength">
           Strength
@@ -122,6 +135,10 @@ export class SynopticEditor {
     this.jetstreamRow = this.root.querySelector("#sf-jetstream-row") as HTMLElement;
     this.jetstreamSlider = this.root.querySelector("#sf-jetstream-south") as HTMLInputElement;
     this.jetstreamVal = this.root.querySelector("#sf-jetstream-val") as HTMLElement;
+    this.moveToggle = this.root.querySelector("#sf-move-toggle") as HTMLInputElement;
+    this.moveRow = this.root.querySelector("#sf-move-row") as HTMLElement;
+    this.moveSpeed = this.root.querySelector("#sf-move-speed") as HTMLInputElement;
+    this.moveSpeedVal = this.root.querySelector("#sf-move-speed-val") as HTMLElement;
 
     this.root.querySelector("#sf-front-tools")!.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest(
@@ -151,10 +168,15 @@ export class SynopticEditor {
       }
       this.draw();
     });
-    this.jetstreamSlider.addEventListener("input", () => {
-      const v = Number(this.jetstreamSlider.value);
-      this.setup.jetstreamSouth = v;
-      if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round(v * 100) + "%";
+    this.moveToggle.addEventListener("change", () => {
+      this.setup.move = this.moveToggle.checked;
+      if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
+      this.draw();
+    });
+    this.moveSpeed.addEventListener("input", () => {
+      const v = Number(this.moveSpeed.value);
+      this.setup.moveSpeed = v;
+      if (this.moveSpeedVal) this.moveSpeedVal.textContent = v.toFixed(2);
       this.draw();
     });
 
@@ -181,6 +203,14 @@ export class SynopticEditor {
       if (this.jetstreamSlider) {
         this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
         if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+      }
+      if (this.moveToggle) {
+        this.moveToggle.checked = this.setup.move !== false;
+        if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
+      }
+      if (this.moveSpeed) {
+        this.moveSpeed.value = String(this.setup.moveSpeed ?? 0.08);
+        if (this.moveSpeedVal) this.moveSpeedVal.textContent = (this.setup.moveSpeed ?? 0.08).toFixed(2);
       }
       this.syncSelectionUi();
       this.renderList();
@@ -233,6 +263,14 @@ export class SynopticEditor {
     if (this.jetstreamSlider) {
       this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
       if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+    }
+    if (this.moveToggle) {
+      this.moveToggle.checked = this.setup.move !== false;
+      if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
+    }
+    if (this.moveSpeed) {
+      this.moveSpeed.value = String(this.setup.moveSpeed ?? 0.08);
+      if (this.moveSpeedVal) this.moveSpeedVal.textContent = (this.setup.moveSpeed ?? 0.08).toFixed(2);
     }
     if (this.marineInput) this.marineInput.checked = this.setup.marine !== false;
   }

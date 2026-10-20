@@ -8,7 +8,7 @@ import {
 } from "./InitFromSounding";
 import { stepMicrophysics } from "./Microphysics";
 import { SoundingLevel, G, TFromTheta, exnerFromP, qsat } from "./thermo";
-import { getActiveSynoptic, sampleSynoptic } from "./synoptic";
+import { getActiveSynoptic, sampleSynoptic, advanceSynoptic } from "./synoptic";
 import {
   MapProductId,
   packLightning,
@@ -258,6 +258,7 @@ export class FluidSolver {
       stepBLMixing(this.grid, this.fields, h, this.exner);
       stepSynopticOmega(this.grid, this.fields, h);
       stepMarineStratus(this.grid, this.fields, h, this.exner, this.landMask);
+      advanceSynoptic(h);
       this.updateLightning(h);
       this.applySponge(h);
       if (!this.clockPaused) {

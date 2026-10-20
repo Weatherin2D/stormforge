@@ -47,6 +47,10 @@ export interface SynopticSetup {
   jetstream?: boolean;
   /** How far south the jetstream can reach, 0-1 normalized (higher = further south). */
   jetstreamSouth?: number;
+  /** Move systems west->east through the domain over time. */
+  move?: boolean;
+  /** Translation speed in domain units per second (0-1 scale). */
+  moveSpeed?: number;
 }
 
 export interface SynopticSample {
@@ -145,6 +149,8 @@ export function defaultSynoptic(): SynopticSetup {
     enabled: false,
     jetstream: false,
     jetstreamSouth: 0.5,
+    move: true,
+    moveSpeed: 0.08,
     fronts: [
       {
         id: "front-cold",
@@ -184,6 +190,8 @@ export function cloneSynoptic(setup: SynopticSetup): SynopticSetup {
     enabled: setup.enabled,
     jetstream: setup.jetstream,
     jetstreamSouth: setup.jetstreamSouth,
+    move: setup.move,
+    moveSpeed: setup.moveSpeed,
     fronts: setup.fronts.map((f) => ({
       ...f,
       points: f.points.map((p) => ({ x: p.x, y: p.y })),
@@ -200,6 +208,34 @@ export function setActiveSynoptic(setup: SynopticSetup | undefined): void {
 
 export function getActiveSynoptic(): SynopticSetup {
   return active;
+}
+
+let advectedTime = 0;
+
+export function advanceSynoptic(dt: number): void {
+  if (active.enabled === false) return;
+  if (!active.move) return;
+  const speed = active.moveSpeed !== undefined ? Math.max(0, active.moveSpeed) : 0.08;
+  advectedTime += dt;
+  const dx = speed * dt;
+  if (Math.abs(dx) < 1e-12) return;
+  // Move all fronts to the east
+  for (const front of active.fronts) {
+    if (!front.enabled) continue;
+    for (const p of front.points) {
+      p.x += dx;
+      // Wrap around domain
+      if (p.x > 1.05) p.x -= 1.1;
+      if (p.x < -0.05) p.x += 1.1;
+    }
+  }
+  // Move pressure centers
+  for (const c of active.centers) {
+    if (!c.enabled) continue;
+    c.x += dx;
+    if (c.x > 1.05) c.x -= 1.1;
+    if (c.x < -0.05) c.x += 1.1;
+  }
 }
 
 export interface PolyHit {
