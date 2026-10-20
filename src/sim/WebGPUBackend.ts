@@ -673,17 +673,31 @@ export class WebGPUBackend implements SimBackend {
 
   private allocBuffers(g: Grid3D) {
     const d = this.dev();
-    const mk = (count: number) => d.createBuffer(this.byteLen(count), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+    const maxBuf = Math.min(d.limits.maxBufferSize, d.limits.maxStorageBufferBindingSize);
+    const mk = (count: number, label: string): GPUBuffer | null => {
+      const bytes = this.byteLen(count);
+      if (bytes > maxBuf) {
+        this.initError = `${label} buffer ${bytes} bytes exceeds device limit ${maxBuf} bytes — grid too large for WebGPU backend`;
+        return null;
+      }
+      return d.createBuffer(bytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+    };
     const totalReadback = 5 * g.n + g.nu + g.nv + g.nw;
     const readback = d.createReadbackBuffer(this.byteLen(totalReadback));
+    if (this.byteLen(totalReadback) > maxBuf) {
+      this.initError = `Readback buffer ${this.byteLen(totalReadback)} bytes exceeds device limit ${maxBuf} bytes — grid too large for WebGPU backend`;
+      return null;
+    }
+    const theta = mk(g.n, "theta");
+    if (!theta) return null;
     return {
-      theta: mk(g.n), qv: mk(g.n), qc: mk(g.n), qr: mk(g.n), p: mk(g.n),
-      u: mk(g.nu), v: mk(g.nv), w: mk(g.nw),
-      thetaNext: mk(g.n), qvNext: mk(g.n), qcNext: mk(g.n), qrNext: mk(g.n),
-      uNext: mk(g.nu), vNext: mk(g.nv), wNext: mk(g.nw),
-      div: mk(g.n), pNext: mk(g.n),
-      theta0: mk(g.nz), qv0: mk(g.nz), p0: mk(g.nz), rho0: mk(g.nz), rho0w: mk(g.nz + 1),
-      u0: mk(g.nz), v0: mk(g.nz),
+      theta, qv: mk(g.n, "qv")!, qc: mk(g.n, "qc")!, qr: mk(g.n, "qr")!, p: mk(g.n, "p")!,
+      u: mk(g.nu, "u")!, v: mk(g.nv, "v")!, w: mk(g.nw, "w")!,
+      thetaNext: mk(g.n, "thetaNext")!, qvNext: mk(g.n, "qvNext")!, qcNext: mk(g.n, "qcNext")!, qrNext: mk(g.n, "qrNext")!,
+      uNext: mk(g.nu, "uNext")!, vNext: mk(g.nv, "vNext")!, wNext: mk(g.nw, "wNext")!,
+      div: mk(g.n, "div")!, pNext: mk(g.n, "pNext")!,
+      theta0: mk(g.nz, "theta0")!, qv0: mk(g.nz, "qv0")!, p0: mk(g.nz, "p0")!, rho0: mk(g.nz, "rho0")!, rho0w: mk(g.nz + 1, "rho0w")!,
+      u0: mk(g.nz, "u0")!, v0: mk(g.nz, "v0")!,
       uniforms: d.createBuffer(this.byteLen(UNIFORM_COUNT), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
       readback,
     };
@@ -739,7 +753,7 @@ export class WebGPUBackend implements SimBackend {
         binding: idx,
         visibility: GPUShaderStage.COMPUTE,
         buffer: {
-          type: (s.readonly ? "read-only-storage" : "read-write-storage") as GPUBufferBindingType,
+          type: (s.readonly ? "read-only-storage" : "storage") as GPUBufferBindingType,
         },
       }));
       const layout = d.device.createBindGroupLayout({ entries: storageEntries });
@@ -765,11 +779,15 @@ export class WebGPUBackend implements SimBackend {
     this.time = 0;
     this.stepCount = 0;
     initFromSounding(grid, sounding, this.fields, opts);
-    this.b = this.allocBuffers(grid);
+    const b = this.allocBuffers(grid);
+    if (!b) {
+      this.ready = false;
+      return;
+    }
+    this.b = b;
     this.uploadFields(this.fields, grid, this.b);
     this.buildPipelines(grid);
     const d = this.dev();
-    const b = this.b!;
     // Uniform bind group (shared)
     this.unifBG = d.device.createBindGroup({
       layout: this.unifLayout!,

@@ -1110,6 +1110,18 @@ export class App {
       bubbleStrength: values.bubbleStrength,
       synoptic: this.synoptic,
     });
+    // If the WebGPU backend could not allocate device-sized buffers
+    // (e.g. a continental grid exceeding maxBufferSize), fall back to CPU.
+    if (this.solver instanceof WebGPUBackend && this.solver.initFailure) {
+      console.warn(
+        `WebGPU backend unavailable for this grid: ${this.solver.initFailure}. Falling back to CPU.`,
+      );
+      this.solver = new FluidSolver(grid);
+      this.solver.rebuild(grid, this.sounding, {
+        bubbleStrength: values.bubbleStrength,
+        synoptic: this.synoptic,
+      });
+    }
     this.solver.hydrostatic = values.hydrostatic ? "on" : "off";
     const radiation = {
       enabled: true,
