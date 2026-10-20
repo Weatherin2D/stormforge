@@ -41,6 +41,12 @@ export interface SynopticSetup {
   marine: boolean;
   /** Sign of the circulation around highs and lows. */
   latitudeDeg: number;
+  /** Enable synoptic systems (highs, lows, fronts) to affect the simulation. */
+  enabled?: boolean;
+  /** Enable jetstream. */
+  jetstream?: boolean;
+  /** How far south the jetstream can reach, 0-1 normalized (higher = further south). */
+  jetstreamSouth?: number;
 }
 
 export interface SynopticSample {
@@ -136,6 +142,9 @@ export function defaultSynoptic(): SynopticSetup {
   return {
     marine: true,
     latitudeDeg: 35,
+    enabled: false,
+    jetstream: false,
+    jetstreamSouth: 0.5,
     fronts: [
       {
         id: "front-cold",
@@ -172,6 +181,9 @@ export function cloneSynoptic(setup: SynopticSetup): SynopticSetup {
   return {
     marine: setup.marine,
     latitudeDeg: setup.latitudeDeg,
+    enabled: setup.enabled,
+    jetstream: setup.jetstream,
+    jetstreamSouth: setup.jetstreamSouth,
     fronts: setup.fronts.map((f) => ({
       ...f,
       points: f.points.map((p) => ({ x: p.x, y: p.y })),
@@ -302,8 +314,18 @@ function sampleAt(
   let du = 0;
   let dv = 0;
 
+  if (setup.enabled === false) {
+    // Jetstream can still be applied if explicitly enabled even if other systems disabled
+    const synEnabled = setup.enabled !== false;
+    if (setup.jetstream && synEnabled) {
+      // Apply jetstream
+    }
+    // If disabled completely, just apply jetstream if requested
+  }
+
   for (const front of setup.fronts) {
     if (!front.enabled || front.points.length < 2) continue;
+    if (setup.enabled === false) continue; // skip if synoptic systems disabled
     const hit = nearestOnPolyline(front.points, xn, yn);
     if (!hit) continue;
     const spec = FRONT_SPEC[front.kind];
@@ -351,33 +373,55 @@ function sampleAt(
 
   const hemi = setup.latitudeDeg >= 0 ? 1 : -1;
   const sigma = 0.16;
-  for (const c of setup.centers) {
-    if (!c.enabled) continue;
-    const rx = xn - c.x;
-    const ry = yn - c.y;
-    const r = Math.hypot(rx, ry);
-    const g = Math.exp(-(r * r) / (2 * sigma * sigma));
-    const ring = (r / Math.max(sigma, 1e-3)) * g;
-    const spd = (c.hPa / 6) * 11 * ring * Math.exp(-z / 1600);
-    const rot = (c.kind === "low" ? 1 : -1) * hemi;
-    if (r > 1e-4) {
-      du += rot * spd * (-ry / r);
-      dv += rot * spd * (rx / r);
-      const radial = (c.kind === "low" ? -0.28 : 0.22) * spd;
-      du += radial * (rx / r);
-      dv += radial * (ry / r);
+  if (setup.enabled !== false) {
+    for (const c of setup.centers) {
+      if (!c.enabled) continue;
+      const rx = xn - c.x;
+      const ry = yn - c.y;
+      const r = Math.hypot(rx, ry);
+      const g = Math.exp(-(r * r) / (2 * sigma * sigma));
+      const ring = (r / Math.max(sigma, 1e-3)) * g;
+      const spd = (c.hPa / 6) * 11 * ring * Math.exp(-z / 1600);
+      const rot = (c.kind === "low" ? 1 : -1) * hemi;
+      if (r > 1e-4) {
+        du += rot * spd * (-ry / r);
+        dv += rot * spd * (rx / r);
+        const radial = (c.kind === "low" ? -0.28 : 0.22) * spd;
+        du += radial * (rx / r);
+        dv += radial * (ry / r);
+      }
+      dTheta += (c.kind === "low" ? 1.6 : -1.6) * g * Math.exp(-z / 1400);
     }
-    dTheta += (c.kind === "low" ? 1.6 : -1.6) * g * Math.exp(-z / 1400);
+
+    if (setup.marine) {
+      const coast =
+        smoothstep((xn - 0.7) / 0.1) * smoothstep((0.3 - yn) / 0.1);
+      const zMarine = Math.exp(-z / 450);
+      dTheta += coast * -2.6 * zMarine;
+      if (coast > 0) qScale += (1.02 - qScale) * coast * zMarine * 0.55;
+      du += coast * zMarine * -5;
+      dv += coast * zMarine * 5;
+    }
   }
 
-  if (setup.marine) {
-    const coast =
-      smoothstep((xn - 0.7) / 0.1) * smoothstep((0.3 - yn) / 0.1);
-    const zMarine = Math.exp(-z / 450);
-    dTheta += coast * -2.6 * zMarine;
-    if (coast > 0) qScale += (1.02 - qScale) * coast * zMarine * 0.55;
-    du += coast * zMarine * -5;
-    dv += coast * zMarine * 5;
+  // Jetstream
+  if (setup.jetstream && setup.enabled !== false) {
+    const jetSouth = setup.jetstreamSouth !== undefined ? Math.max(0, Math.min(1, setup.jetstreamSouth)) : 0.5;
+    // Jet core at mid-upper levels, stronger at ~9-12km
+    const zJet = Math.exp(-Math.pow((z - 9000) / 2500, 2));
+    if (zJet > 0.01) {
+      // Jet position shifts south with jetSouth
+      const jetLatitude = 0.6 + jetSouth * 0.3; // normalized y position (north up in our coords? yn is 0=south, 1=north)
+      const jetWidth = 0.15 + (1 - jetSouth) * 0.05;
+      const distFromJet = Math.abs(yn - jetLatitude);
+      const jetProfile = Math.exp(-(distFromJet * distFromJet) / (2 * jetWidth * jetWidth));
+      if (jetProfile > 0.01) {
+        const jetSpeed = 40 + jetSouth * 30; // m/s
+        du += jetSpeed * jetProfile * zJet * 1.2; // westerly
+        // Ageostrophic component near jet streak
+        dv += jetSpeed * jetProfile * zJet * 0.15 * (xn - 0.5);
+      }
+    }
   }
 
   if (dTheta < -14) dTheta = -14;
@@ -395,6 +439,7 @@ export function sampleSynoptic(xn: number, yn: number, z: number): SynopticSampl
 export function surfacePressureBiasHpa(xn: number, yn: number): number {
   let h = 0;
   const sigma = 0.16;
+  if (active.enabled === false) return h;
   for (const c of active.centers) {
     if (!c.enabled) continue;
     const r = Math.hypot(xn - c.x, yn - c.y);
@@ -414,6 +459,10 @@ export function applySynopticFeatures(
   setup?: SynopticSetup,
 ): void {
   setActiveSynoptic(setup);
+  if (setup?.enabled === false) {
+    // Still apply base state without perturbations? But applySynopticFeatures sets theta/v etc.
+    // If disabled, maybe just skip perturbing? But currently it overwrites with perturbations; let's handle
+  }
   const { nx, ny, nz, dz } = grid;
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);

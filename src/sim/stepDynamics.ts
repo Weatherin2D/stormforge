@@ -246,6 +246,7 @@ export function stepSynopticOmega(
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);
   const synoptic = getActiveSynoptic();
+  if (synoptic.enabled === false) return;
   if (!synoptic.centers.length) return;
 
   for (let j = 0; j < ny; j++) {

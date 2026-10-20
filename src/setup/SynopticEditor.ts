@@ -46,6 +46,11 @@ export class SynopticEditor {
   private strengthInput: HTMLInputElement;
   private deleteBtn: HTMLButtonElement;
   private marineInput: HTMLInputElement;
+  private synopticToggle: HTMLInputElement;
+  private jetstreamToggle: HTMLInputElement;
+  private jetstreamRow: HTMLElement;
+  private jetstreamSlider: HTMLInputElement;
+  private jetstreamVal: HTMLElement;
   private setup: SynopticSetup = defaultSynoptic();
   private tool: Tool = "cold";
   private selectedId: string | null = null;
@@ -74,17 +79,30 @@ export class SynopticEditor {
         <button type="button" data-tool="low">Low</button>
         <button type="button" data-tool="high">High</button>
       </div>
-      <canvas id="sf-front-canvas"></canvas>
-      <label class="front-marine">
-        <input id="sf-front-marine" type="checkbox" checked />
-        Southeast marine layer
-      </label>
-      <div class="front-list" id="sf-front-list"></div>
-      <label class="front-strength" id="sf-front-strength">
-        Strength
-        <input id="sf-front-hpa" type="range" min="2" max="12" step="1" value="6" />
-        <span id="sf-front-hpa-val">6 hPa</span>
-      </label>
+        <canvas id="sf-front-canvas"></canvas>
+        <label class="front-marine">
+          <input id="sf-front-marine" type="checkbox" checked />
+          Southeast marine layer
+        </label>
+        <label class="front-marine">
+          <input id="sf-synoptic-toggle" type="checkbox" />
+          Enable synoptic systems (highs/lows/fronts)
+        </label>
+        <label class="front-marine">
+          <input id="sf-jetstream-toggle" type="checkbox" />
+          Enable jetstream
+        </label>
+        <div class="front-strength" id="sf-jetstream-row" style="display:none;">
+          Jetstream south extent
+          <input id="sf-jetstream-south" type="range" min="0" max="1" step="0.01" value="0.5" />
+          <span id="sf-jetstream-val">50%</span>
+        </div>
+        <div class="front-list" id="sf-front-list"></div>
+        <label class="front-strength" id="sf-front-strength">
+          Strength
+          <input id="sf-front-hpa" type="range" min="2" max="12" step="1" value="6" />
+          <span id="sf-front-hpa-val">6 hPa</span>
+        </label>
       <div class="panel-actions">
         <button type="button" id="sf-front-delete" disabled>Delete</button>
         <button type="button" id="sf-front-reset">Reset pattern</button>
@@ -99,6 +117,11 @@ export class SynopticEditor {
     this.strengthInput = this.root.querySelector("#sf-front-hpa") as HTMLInputElement;
     this.deleteBtn = this.root.querySelector("#sf-front-delete") as HTMLButtonElement;
     this.marineInput = this.root.querySelector("#sf-front-marine") as HTMLInputElement;
+    this.synopticToggle = this.root.querySelector("#sf-synoptic-toggle") as HTMLInputElement;
+    this.jetstreamToggle = this.root.querySelector("#sf-jetstream-toggle") as HTMLInputElement;
+    this.jetstreamRow = this.root.querySelector("#sf-jetstream-row") as HTMLElement;
+    this.jetstreamSlider = this.root.querySelector("#sf-jetstream-south") as HTMLInputElement;
+    this.jetstreamVal = this.root.querySelector("#sf-jetstream-val") as HTMLElement;
 
     this.root.querySelector("#sf-front-tools")!.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest(
@@ -117,6 +140,23 @@ export class SynopticEditor {
       this.setup.marine = this.marineInput.checked;
       this.draw();
     });
+    this.synopticToggle.addEventListener("change", () => {
+      this.setup.enabled = this.synopticToggle.checked;
+      this.draw();
+    });
+    this.jetstreamToggle.addEventListener("change", () => {
+      this.setup.jetstream = this.jetstreamToggle.checked;
+      if (this.jetstreamRow) {
+        this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
+      }
+      this.draw();
+    });
+    this.jetstreamSlider.addEventListener("input", () => {
+      const v = Number(this.jetstreamSlider.value);
+      this.setup.jetstreamSouth = v;
+      if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round(v * 100) + "%";
+      this.draw();
+    });
 
     this.strengthInput.addEventListener("input", () => {
       const center = this.selectedCenter();
@@ -133,6 +173,15 @@ export class SynopticEditor {
       this.selectedId = null;
       this.draft = null;
       this.marineInput.checked = true;
+      if (this.synopticToggle) this.synopticToggle.checked = this.setup.enabled === true;
+      if (this.jetstreamToggle) {
+        this.jetstreamToggle.checked = this.setup.jetstream === true;
+        if (this.jetstreamRow) this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
+      }
+      if (this.jetstreamSlider) {
+        this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
+        if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+      }
       this.syncSelectionUi();
       this.renderList();
       this.draw();
@@ -175,6 +224,17 @@ export class SynopticEditor {
     this.ro.observe(this.canvas);
     this.renderList();
     this.syncSelectionUi();
+    // Initialize synoptic/jetstream UI state
+    if (this.synopticToggle) this.synopticToggle.checked = this.setup.enabled === true;
+    if (this.jetstreamToggle) {
+      this.jetstreamToggle.checked = this.setup.jetstream === true;
+      if (this.jetstreamRow) this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
+    }
+    if (this.jetstreamSlider) {
+      this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
+      if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+    }
+    if (this.marineInput) this.marineInput.checked = this.setup.marine !== false;
   }
 
   getSetup(): SynopticSetup {
