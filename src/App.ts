@@ -1,7 +1,15 @@
 ﻿import { SetupScreen, SetupValues } from "./setup/SetupScreen";
 import { SynopticSetup, defaultSynoptic } from "./sim/synoptic";
-import { copyFullVolumeToDisplay, Grid3D } from "./sim/Grid3D";
-import { FluidSolver, type LightningKind } from "./sim/FluidSolver";
+import {
+  copyFullVolumeToDisplay,
+  Grid3D,
+  gridFromDomain,
+  type DomainConfig,
+} from "./sim/Grid3D";
+import { FluidSolver } from "./sim/FluidSolver";
+import type { LightningKind } from "./sim/FluidSolver";
+import type { SimBackend } from "./sim/SimBackend";
+import { WebGPUBackend } from "./sim/WebGPUBackend";
 import { LiveBridge, LiveState } from "./sim/LiveBridge";
 import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
@@ -47,7 +55,7 @@ export class App {
   private panelDesc: HTMLElement | null = null;
   private renderer: CloudRainRenderer | null = null;
   private radar2d: Radar2DView | null = null;
-  private solver: FluidSolver | null = null;
+  private solver: SimBackend | null = null;
   private skewt: SkewTEditor | null = null;
   private hodo: HodographEditor | null = null;
   private sounding: SoundingLevel[] = defaultSounding(12000, 41);
@@ -95,7 +103,7 @@ export class App {
 
   constructor(private host: HTMLElement) {
     this.host.innerHTML = "";
-    this.setup = new SetupScreen((v) => this.startRun(v));
+    this.setup = new SetupScreen((v) => void this.startRun(v));
     this.host.appendChild(this.setup.root);
 
     this.simScreen = document.createElement("div");
@@ -1062,7 +1070,7 @@ export class App {
     }
   }
 
-  private startRun(values: SetupValues): void {
+  private async startRun(values: SetupValues): Promise<void> {
     this.runName = values.name;
     this.bubbleStrength = values.bubbleStrength;
     this.pendingSetup = values;
@@ -1071,23 +1079,38 @@ export class App {
     this.batchCancel = false;
     document.title = `Stormforge — ${this.runName}`;
 
-    const grid = new Grid3D({
-      nx: values.nx,
-      ny: values.ny,
-      nz: values.nz,
-      zTop: values.zTop,
-    });
+    let grid: Grid3D;
+    const scale = values.scale ?? "sandbox";
+    if (scale === "continental" || scale === "custom") {
+      const domain: DomainConfig = {
+        extentX: (values.extentXKm ?? 10000) * 1000,
+        extentY: (values.extentYKm ?? 10000) * 1000,
+        dx: (values.dxKm ?? 20) * 1000,
+        dy: (values.dyKm ?? 20) * 1000,
+        nz: values.nz,
+        zTop: values.zTop,
+      };
+      grid = gridFromDomain(domain);
+    } else {
+      grid = new Grid3D({
+        nx: values.nx,
+        ny: values.ny,
+        nz: values.nz,
+        zTop: values.zTop,
+      });
+    }
 
     this.sounding =
       values.sounding?.length > 0
         ? values.sounding.map((l) => ({ ...l }))
         : defaultSounding(values.zTop, Math.max(20, values.nz + 1));
-    this.solver = new FluidSolver(grid);
+    this.solver = await this.createSolver(grid);
     this.synoptic = values.synoptic;
     this.solver.rebuild(grid, this.sounding, {
       bubbleStrength: values.bubbleStrength,
       synoptic: this.synoptic,
     });
+    this.solver.hydrostatic = values.hydrostatic ? "on" : "off";
     const radiation = {
       enabled: true,
       latitudeDeg: values.latitudeDeg,
@@ -1139,6 +1162,14 @@ export class App {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => this.mountSimView(grid, values.zTop));
     });
+  }
+
+  /** Select the WebGPU backend when available, otherwise the CPU FluidSolver. */
+  private async createSolver(grid: Grid3D): Promise<SimBackend> {
+    const gpu = new WebGPUBackend();
+    await gpu.whenReady();
+    if (gpu.available) return gpu;
+    return new FluidSolver(grid);
   }
 
   private mountSimView(grid: Grid3D, zTop: number): void {
@@ -1348,7 +1379,7 @@ export class App {
 
     // Start a fresh run with the saved setup. startRun() will call mountSimView()
     // which calls applyPendingLoad() at the end.
-    this.startRun(save.setup);
+    void this.startRun(save.setup);
   }
 
   /**

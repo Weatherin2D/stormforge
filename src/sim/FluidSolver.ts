@@ -1,4 +1,5 @@
 import { Grid3D } from "./Grid3D";
+import type { SimBackend, SolverKind, HydrostaticMode } from "./SimBackend";
 import {
   SimFields,
   createFields,
@@ -64,7 +65,7 @@ interface MgLevel {
  * buoyancy → face-wind advection → density-weighted projection → scalar advection
  * → surface radiation → Kessler microphysics → sponges.
  */
-export class FluidSolver {
+export class FluidSolver implements SimBackend {
   grid: Grid3D;
   fields: SimFields;
   private tmp: Float32Array;
@@ -82,17 +83,20 @@ export class FluidSolver {
   private plumeCooldown: Float32Array;
   /** Recent flash rate, flashes per minute, decaying over ~5 minutes. */
   private flash: Float32Array;
-  private vortScratch: Float32Array = new Float32Array(0);
-  private iceScratch: Float32Array = new Float32Array(0);
-  private mgLevels: MgLevel[] = [];
-  private lastBubbleOpts: InitOptions = { bubbleStrength: 3 };
+  readonly kind: SolverKind = "cpu";
+  /** Vorticity confinement strength. 0 = off, ~1-5 = noticeable rotation enhancement. */
+  vorticityStrength = 0;
+  /** Hydrostatic balance mode. "auto" uses hydrostatic balance above ~5 km dx. */
+  hydrostatic: HydrostaticMode = "auto";
   radiation: RadiationOptions = { ...DEFAULT_RADIATION };
   /** When true, solar hour stays fixed while physics still advances. */
   clockPaused = false;
   time = 0;
   stepCount = 0;
-  /** Vorticity confinement strength. 0 = off, ~1-5 = noticeable rotation enhancement. */
-  vorticityStrength = 0;
+  private vortScratch: Float32Array = new Float32Array(0);
+  private iceScratch: Float32Array = new Float32Array(0);
+  private mgLevels: MgLevel[] = [];
+  private lastBubbleOpts: InitOptions = { bubbleStrength: 3 };
 
   constructor(grid: Grid3D) {
     this.grid = grid;
@@ -228,10 +232,12 @@ export class FluidSolver {
     const minDx = Math.min(dx, dy, dz);
     const hMax = Math.max(1e-3, (0.85 * minDx) / maxSpd);
     let sub = Math.max(1, Math.ceil(dt / hMax));
-    if (sub > 2) sub = 2;
     const h = dt / sub;
     for (let s = 0; s < sub; s++) {
-      this.applyBuoyancy(h);
+      const isHydrostatic =
+        this.hydrostatic === "on" ||
+        (this.hydrostatic === "auto" && Math.min(dx, dy) > 5000);
+      if (!isHydrostatic) this.applyBuoyancy(h);
       this.advectVelocity(h);
       if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
       this.project(h);

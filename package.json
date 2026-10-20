@@ -12,6 +12,8 @@
     "electron": "electron .",
     "start": "concurrently -k \"vite --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "smoke": "tsx scripts/smoke-solver.ts",
+    "smoke-webgpu": "tsx scripts/smoke-webgpu.ts",
+    "smoke-benchmark": "tsx scripts/smoke-benchmark.ts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@types/three": "^0.170.0",
+    "@webgpu/types": "^0.1.74",
     "concurrently": "^9.1.0",
     "electron": "^33.4.11",
     "tsx": "^4.23.11",

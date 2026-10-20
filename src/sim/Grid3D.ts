@@ -183,3 +183,47 @@ export function perfWarning(grid: Grid3D): string | null {
   }
   return null;
 }
+
+/**
+ * Extent + resolution description of a domain, independent of cell count.
+ * nx/ny are derived from extent/dx; physical extent is the source of truth.
+ * Kept separate from GridConfig (cell-count driven) so a continental extent
+ * can be specified with a chosen resolution rather than deriving dx from nx.
+ */
+export interface DomainConfig {
+  extentX: number; // meters
+  extentY: number; // meters
+  dx: number; // target cell size X (m)
+  dy: number; // target cell size Y (m)
+  nz: number;
+  zTop: number;
+}
+
+/** Translate a DomainConfig into the legacy GridConfig (cell count driven). */
+export function gridConfigFromDomain(domain: DomainConfig): GridConfig {
+  return {
+    nx: Math.max(8, Math.ceil(domain.extentX / Math.max(1e-3, domain.dx))),
+    ny: Math.max(8, Math.ceil(domain.extentY / Math.max(1e-3, domain.dy))),
+    nz: Math.max(8, Math.floor(domain.nz)),
+    zTop: Math.max(2000, domain.zTop),
+  };
+}
+
+/** Build a Grid3D from an extent + resolution request. The realized cell size
+ *  follows Grid3D's cellSizeForAxis (clamped 250–2000 m), so extent = nx * dx. */
+export function gridFromDomain(domain: DomainConfig): Grid3D {
+  return new Grid3D(gridConfigFromDomain(domain));
+}
+
+/** Report the realized extent/cell size of an existing grid as a DomainConfig
+ *  (backward-compatible translation of the old nx/ny-driven grid). */
+export function domainFromGrid(grid: Grid3D): DomainConfig {
+  return {
+    extentX: grid.xExtent,
+    extentY: grid.yExtent,
+    dx: grid.dx,
+    dy: grid.dy,
+    nz: grid.nz,
+    zTop: grid.zTop,
+  };
+}

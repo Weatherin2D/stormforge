@@ -1,12 +1,13 @@
 import { Grid3D, volumeDisplaySize } from "./Grid3D";
 import { FluidSolver, type LightningStrike } from "./FluidSolver";
+import type { SimBackend } from "./SimBackend";
 import { SoundingLevel } from "./thermo";
 import { InitOptions } from "./InitFromSounding";
 import { RadiationOptions } from "./SurfaceRadiation";
 import { MapProductId } from "./mapProducts";
 import { sampleSurfaceWinds, SurfaceWindSample } from "./surfaceWinds";
 
-let solver: FluidSolver | null = null;
+let solver: SimBackend | null = null;
 
 interface StepMsg {
   type: "step";
@@ -18,7 +19,7 @@ interface StepMsg {
   winds: boolean;
 }
 
-function surfaceDth(s: FluidSolver): number {
+function surfaceDth(s: SimBackend): number {
   const g = s.grid;
   const f = s.fields;
   const n = g.nx * g.ny;

@@ -1,4 +1,4 @@
-import { FluidSolver } from "./FluidSolver";
+import type { SimBackend } from "./SimBackend";
 import { FrameStore } from "./FrameStore";
 
 /** Smaller than classic CM1 output dt — keeps sandbox microphysics stable. */
@@ -31,7 +31,7 @@ function yieldToUi(): Promise<void> {
  * every outputIntervalSec. Yields to the UI between chunks.
  */
 export async function runBatch(
-  solver: FluidSolver,
+  solver: SimBackend,
   cfg: BatchConfig,
 ): Promise<FrameStore> {
   const duration = Math.max(1, cfg.durationSec);

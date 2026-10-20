@@ -12,6 +12,7 @@ import { SynopticEditor } from "./SynopticEditor";
 import { SynopticSetup } from "../sim/synoptic";
 
 export type RunMode = "live" | "batch";
+export type SimScale = "sandbox" | "continental" | "custom";
 
 export interface SetupValues {
   name: string;
@@ -35,6 +36,18 @@ export interface SetupValues {
   sounding: SoundingLevel[];
   /** Fronts, highs, and lows drawn on the setup map. */
   synoptic: SynopticSetup;
+  /** Preset domain scale. "continental" derives nx/ny from extent + resolution. */
+  scale?: SimScale;
+  /** Physical extent X (km) — source of truth when scale is continental/custom. */
+  extentXKm?: number;
+  /** Physical extent Y (km). */
+  extentYKm?: number;
+  /** Target cell size X (km). */
+  dxKm?: number;
+  /** Target cell size Y (km). */
+  dyKm?: number;
+  /** Use hydrostatic balance (recommended for continental dx > ~5 km). */
+  hydrostatic?: boolean;
 }
 
 type SetupPanelView = "skewt" | "hodograph";
@@ -82,6 +95,42 @@ export class SetupScreen {
                 </span>
               </label>
             </fieldset>
+
+            <div class="field-row">
+              <label>
+                Scale
+                <select id="sf-scale">
+                  <option value="sandbox">Sandbox</option>
+                  <option value="continental">Continental (10,000 km)</option>
+                  <option value="custom">Custom extent + resolution</option>
+                </select>
+              </label>
+            </div>
+            <div id="sf-continental-fields" class="continental-fields hidden">
+              <div class="field-row">
+                <label>
+                  Extent X (km)
+                  <input id="sf-extentx" type="number" min="100" max="50000" step="100" value="10000" />
+                </label>
+                <label>
+                  Extent Y (km)
+                  <input id="sf-extenty" type="number" min="100" max="50000" step="100" value="10000" />
+                </label>
+                <label>
+                  Resolution X (km)
+                  <input id="sf-dxkm" type="number" min="0.1" max="200" step="0.1" value="20" />
+                </label>
+                <label>
+                  Resolution Y (km)
+                  <input id="sf-dykm" type="number" min="0.1" max="200" step="0.1" value="20" />
+                </label>
+              </div>
+              <label>
+                Hydrostatic balance (recommended for dx &gt; 5 km)
+                <input id="sf-hydrostatic" type="checkbox" />
+              </label>
+              <p class="hint" id="sf-continental-hint">Derives nx/ny from extent ÷ resolution. Continental grids need the WebGPU backend or tiled execution — a memory guard blocks runs that exceed the device cap.</p>
+            </div>
 
             <div id="sf-batch-fields" class="batch-fields hidden">
               <div class="field-row">
@@ -223,6 +272,11 @@ export class SetupScreen {
       "sf-hour",
       "sf-duration",
       "sf-outint",
+      "sf-scale",
+      "sf-extentx",
+      "sf-extenty",
+      "sf-dxkm",
+      "sf-dykm",
     ]) {
       this.root.querySelector("#" + id)?.addEventListener("input", () => {
         if (id === "sf-ztop") {
@@ -262,9 +316,16 @@ export class SetupScreen {
             this.root.querySelector("#sf-hour-val") as HTMLElement
           ).textContent = fmtHour(v);
         }
+        if (id === "sf-scale") {
+          this.syncScaleUi();
+        }
         bind();
       });
     }
+
+    this.root.querySelector("#sf-hydrostatic")?.addEventListener("change", () => {
+      bind();
+    });
 
     for (const radio of this.root.querySelectorAll(
       'input[name="sf-runmode"]',
@@ -358,6 +419,20 @@ export class SetupScreen {
 
     this.root.querySelector("#sf-start")?.addEventListener("click", () => {
       const values = this.readValues();
+      const grid = new Grid3D({
+        nx: values.nx,
+        ny: values.ny,
+        nz: values.nz,
+        zTop: values.zTop,
+      });
+      const stateBytes = grid.estimateBytes() * 4;
+      const maxStateBytes = 2 * 1024 * 1024 * 1024;
+      if (stateBytes > maxStateBytes) {
+        this.warnEl.textContent =
+          `Estimated state ~${(stateBytes / (1024 * 1024 * 1024)).toFixed(1)} GB exceeds the 2 GB soft cap. Lower resolution, shrink the extent, or enable tiled/WebGPU execution.`;
+        this.warnEl.classList.add("visible");
+        return;
+      }
       if (values.runMode === "batch") {
         const frames = estimateFrameCount(
           values.durationSec,
@@ -381,6 +456,7 @@ export class SetupScreen {
 
     this.mountEditors();
     this.syncRunModeUi();
+    this.syncScaleUi();
     this.updateWarn();
 
     requestAnimationFrame(() => {
@@ -411,12 +487,56 @@ export class SetupScreen {
     ) as HTMLInputElement | null;
     const runMode = (modeRadio?.value === "batch" ? "batch" : "live") as RunMode;
     this.syncSoundingFromEditors();
+    const scale = (this.root.querySelector(
+      "#sf-scale",
+    ) as HTMLSelectElement).value as SimScale;
+    const extentXKm = Number(
+      (this.root.querySelector("#sf-extentx") as HTMLInputElement).value,
+    );
+    const extentYKm = Number(
+      (this.root.querySelector("#sf-extenty") as HTMLInputElement).value,
+    );
+    const dxKm = Number(
+      (this.root.querySelector("#sf-dxkm") as HTMLInputElement).value,
+    );
+    const dyKm = Number(
+      (this.root.querySelector("#sf-dykm") as HTMLInputElement).value,
+    );
+    const hydrostatic = (this.root.querySelector(
+      "#sf-hydrostatic",
+    ) as HTMLInputElement).checked;
+
+    let nx = Number((this.root.querySelector("#sf-nx") as HTMLInputElement).value);
+    let ny = Number((this.root.querySelector("#sf-ny") as HTMLInputElement).value);
+    if (scale === "continental" || scale === "custom") {
+      // Derive cell count from physical extent ÷ resolution, clamped to a
+      // device-safe maximum so a continental preset cannot silently allocate
+      // tens of gigabytes.
+      const maxCellsPerAxis = 2048;
+      const nxDerived = Math.max(
+        8,
+        Math.min(
+          maxCellsPerAxis,
+          Math.ceil((extentXKm * 1000) / Math.max(0.1, dxKm * 1000)),
+        ),
+      );
+      const nyDerived = Math.max(
+        8,
+        Math.min(
+          maxCellsPerAxis,
+          Math.ceil((extentYKm * 1000) / Math.max(0.1, dyKm * 1000)),
+        ),
+      );
+      nx = nxDerived;
+      ny = nyDerived;
+    }
+
     return {
       name:
         (this.root.querySelector("#sf-name") as HTMLInputElement).value.trim() ||
         "Stormforge Run",
-      nx: Number((this.root.querySelector("#sf-nx") as HTMLInputElement).value),
-      ny: Number((this.root.querySelector("#sf-ny") as HTMLInputElement).value),
+      nx,
+      ny,
       nz: Number((this.root.querySelector("#sf-nz") as HTMLInputElement).value),
       zTop: Number(
         (this.root.querySelector("#sf-ztop") as HTMLInputElement).value,
@@ -442,6 +562,12 @@ export class SetupScreen {
       ),
       sounding: this.sounding.map((l) => ({ ...l })),
       synoptic: this.readSynoptic(),
+      scale,
+      extentXKm,
+      extentYKm,
+      dxKm,
+      dyKm,
+      hydrostatic,
     };
   }
 
@@ -577,6 +703,43 @@ export class SetupScreen {
     this.updateWarn();
   }
 
+  private syncScaleUi(): void {
+    const scale = (this.root.querySelector(
+      "#sf-scale",
+    ) as HTMLSelectElement).value;
+    const continental = scale === "continental" || scale === "custom";
+    this.root
+      .querySelector("#sf-continental-fields")
+      ?.classList.toggle("hidden", !continental);
+    const resLabel = this.root.querySelector(
+      'label[for="sf-nx"]',
+    ) as HTMLLabelElement | null;
+    const nxIn = this.root.querySelector("#sf-nx") as HTMLInputElement | null;
+    const nyIn = this.root.querySelector("#sf-ny") as HTMLInputElement | null;
+    if (scale === "continental") {
+      (this.root.querySelector("#sf-extentx") as HTMLInputElement).value =
+        "10000";
+      (this.root.querySelector("#sf-extenty") as HTMLInputElement).value =
+        "10000";
+      (this.root.querySelector("#sf-dxkm") as HTMLInputElement).value = "20";
+      (this.root.querySelector("#sf-dykm") as HTMLInputElement).value = "20";
+      (this.root.querySelector("#sf-hydrostatic") as HTMLInputElement).checked =
+        true;
+      if (nxIn) nxIn.disabled = true;
+      if (nyIn) nyIn.disabled = true;
+      if (resLabel) resLabel.classList.add("derived");
+    } else if (scale === "custom") {
+      if (nxIn) nxIn.disabled = true;
+      if (nyIn) nyIn.disabled = true;
+      if (resLabel) resLabel.classList.add("derived");
+    } else {
+      if (nxIn) nxIn.disabled = false;
+      if (nyIn) nyIn.disabled = false;
+      if (resLabel) resLabel.classList.remove("derived");
+    }
+    this.updateWarn();
+  }
+
   private updateWarn(): void {
     const v = this.readValues();
     const cfg: GridConfig = {
@@ -612,6 +775,23 @@ export class SetupScreen {
     const msgs: string[] = [];
     const perf = perfWarning(grid);
     if (perf) msgs.push(perf);
+
+    // Device-aware state memory estimate. Grid3D.estimateBytes() covers the
+    // main fields; a run also needs scratch + (GPU) double/triple buffers, so
+    // apply a conservative ~4× multiplier and warn above a soft cap.
+    const stateBytes = grid.estimateBytes() * 4;
+    const stateGB = stateBytes / (1024 * 1024 * 1024);
+    const maxStateGB = 2;
+    if (stateGB > maxStateGB) {
+      msgs.push(
+        `Estimated state ~${stateGB.toFixed(1)} GB exceeds the ${maxStateGB} GB soft cap — lower resolution, shrink the extent, or enable tiled/WebGPU execution.`,
+      );
+    } else if (stateGB > maxStateGB * 0.6) {
+      msgs.push(
+        `Estimated state ~${stateGB.toFixed(1)} GB — large run, expect slower startup and higher memory use.`,
+      );
+    }
+
     if (v.runMode === "batch") {
       const frames = estimateFrameCount(v.durationSec, v.outputIntervalSec);
       const bytes = estimateBatchBytes(v.nx, v.ny, v.nz, frames);
