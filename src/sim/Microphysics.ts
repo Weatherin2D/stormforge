@@ -1,6 +1,6 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { LV, CP, esatFast, mixingRatio } from "./thermo";
+import { LV, CP, esatFast, mixingRatio, saturatedEvapLimit } from "./thermo";
 
 /** Terminal fall speed (m/s) used by rain advection and sedimentation. */
 export function rainFallSpeed(k: number, nz: number): number {
@@ -55,9 +55,13 @@ export function stepMicrophysics(
           qc += cond;
           th += (latHeat * cond * th) / Math.max(T, 1);
         } else if (qc > 0) {
-          // Rate-limited evaporation (does not wipe cloud in one step)
+          // Rate-limited evaporation (does not wipe cloud in one step).
+          // Evaporating cools the parcel, so the amount is capped to keep
+          // the parcel from ending up supersaturated — otherwise the next
+          // step re-condenses it and the cell oscillates by tens of K.
           const deficit = -excess;
-          const evap = Math.min(qc, deficit * evapCloudFac);
+          let evap = Math.min(qc, deficit * evapCloudFac);
+          evap = saturatedEvapLimit(th, qv, evap, p0, ex);
           qv += evap;
           qc -= evap;
           th -= (latHeat * evap * th) / Math.max(T, 1);
@@ -84,7 +88,8 @@ export function stepMicrophysics(
 
         // Rain evaporation
         if (qr > 0 && qv < qs) {
-          const ev = Math.min(qr, evapRain * (qs - qv) * dt);
+          let ev = Math.min(qr, evapRain * (qs - qv) * dt);
+          ev = saturatedEvapLimit(th, qv, ev, p0, ex);
           qr -= ev;
           qv += ev;
           th -= (latHeat * ev * th) / Math.max(T, 1);

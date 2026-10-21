@@ -9,14 +9,8 @@
 
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { LV, CP, esatFast, mixingRatio } from "./thermo";
+import { LV, CP, esatFast, esatIce, mixingRatio, saturatedEvapLimit } from "./thermo";
 import { sampleSynoptic, getActiveSynoptic } from "./synoptic";
-
-// Saturation vapor pressure over ice (Pa), T in Kelvin — Magnus over ice
-function esatIce(T: number): number {
-  const Tc = T - 273.15;
-  return 611.2 * Math.exp((21.87 * Tc) / (Tc + 265.5));
-}
 
 /**
  * Ice/snow microphysics.
@@ -72,10 +66,13 @@ export function stepIceMicrophysics(
           th += (latHeat * dep * th) / Math.max(T, 1);
         }
 
-        // Sublimation: ice → vapor when subsaturated over ice
+        // Sublimation: ice → vapor when subsaturated over ice.
+        // Sublimating cools the parcel, so the amount is capped to keep it
+        // from ending up supersaturated over ice.
         if (qcIce > 0 && qv < qsIce) {
           const deficit = qsIce - qv;
-          const sub = Math.min(qcIce, deficit * (1 - Math.exp(-subRate * dt)));
+          let sub = Math.min(qcIce, deficit * (1 - Math.exp(-subRate * dt)));
+          sub = saturatedEvapLimit(th, qv, sub, p0, ex, esatIce);
           qv += sub;
           qc -= sub;
           th -= (latHeat * sub * th) / Math.max(T, 1);

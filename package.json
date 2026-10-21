@@ -12,6 +12,7 @@
     "electron": "electron .",
     "start": "concurrently -k \"vite --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "smoke": "tsx scripts/smoke-solver.ts",
+    "smoke-thermo": "tsx scripts/smoke-thermo.ts",
     "smoke-webgpu": "tsx scripts/smoke-webgpu.ts",
     "smoke-benchmark": "tsx scripts/smoke-benchmark.ts",
     "preview": "vite preview"

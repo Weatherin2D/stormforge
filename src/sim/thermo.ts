@@ -32,6 +32,41 @@ export function esatFast(T: number): number {
   return ESAT_TABLE[i] + (ESAT_TABLE[i + 1] - ESAT_TABLE[i]) * f;
 }
 
+/** Saturation vapor pressure over ice (Pa), T in Kelvin — Magnus over ice. */
+export function esatIce(T: number): number {
+  const Tc = T - 273.15;
+  return 611.2 * Math.exp((21.87 * Tc) / (Tc + 265.5));
+}
+
+/**
+ * Largest evaporation (kg/kg) a parcel can take without ending up
+ * supersaturated.
+ *
+ * Evaporating water cools the air, and cooling shrinks the saturation
+ * capacity, so the raw `qs − qv` deficit can overshoot: the parcel would
+ * end with more vapour than it can hold. The next step then condenses it
+ * straight back, and the cell flips between two states every step with a
+ * large latent-heat temperature swing each way.
+ *
+ * `esatFn` selects the saturation curve (liquid or ice).
+ */
+export function saturatedEvapLimit(
+  theta: number,
+  qv: number,
+  evap: number,
+  p: number,
+  exner: number,
+  esatFn: (t: number) => number = esatFast,
+): number {
+  if (evap <= 0) return 0;
+  const T = theta * exner;
+  const thetaNew = theta - (LV / CP) * evap * (theta / Math.max(T, 1));
+  const cap = mixingRatio(esatFn(thetaNew * exner), p);
+  if (qv + evap <= cap) return evap;
+  const lim = cap - qv;
+  return lim > 0 ? Math.min(evap, lim) : 0;
+}
+
 /** Exner factor π = (p/p0)^(R/cp). Temperature is θ · exner. */
 export function exnerFromP(p: number): number {
   return Math.pow(Math.max(p, 1) / P0, RD / CP);
