@@ -218,12 +218,12 @@ vec3 sampleSigma(vec3 p, float detail) {
 
 // Rain: physics-based extinction + scrolling sheared streaks.
     if (rain > 0.002) {
-      // Step 1: contrast curve — sharpen the core edge
+      // Step 1: contrast curve â€” sharpen the core edge
       float rainCore = smoothstep(0.05, 0.55, rain);
       float rainFringe = rain;
       rain = mix(rainFringe, rainCore, 0.65);
 
-      // Step 2: streak noise — shear coords with height so curtains lean with wind
+      // Step 2: streak noise â€” shear coords with height so curtains lean with wind
       vec3 sheared = rel + uRainWindShear * (p.y - uBoxMin.y);
       // scroll downward at fall speed
       vec3 qr = vec3(sheared.x * uShapeFreq * 1.8,
@@ -233,10 +233,15 @@ vec3 sampleSigma(vec3 p, float detail) {
       // apply streaks more at edges, less in dense core
       float edgeMask = 1.0 - rainCore;
       rain *= mix(1.0, mix(0.35, 1.4, streak), detail * (0.4 + 0.6 * edgeMask));
+      // Add smoother falloff at edges
+      float distFromCenter = length(sheared.xz * uShapeFreq * 1.8);
+      rain *= smoothstep(0.0, 1.2, 1.0 - distFromCenter * 0.3);
 
-      // Step 3: mist foot — thicken rain near ground base
+      // Step 3: mist foot â€” thicken rain near ground base
       float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
       rain += rainCore * groundFade * 0.4;
+      // Smoother transition
+      rain = smoothstep(0.0, 1.0, rain);
     }
   }
 
@@ -326,7 +331,7 @@ void main() {
 
     if (sigT > 1e-5) {
       // scattering coefficient (rain scatters less than cloud) and blended phase asymmetry
-      float sigS = sig.x + sig.y + 0.5 * sig.z;
+      float sigS = sig.x + sig.y + 0.3 * sig.z;
       vec2 g = (sig.x * uPhaseLiquid + sig.y * uPhaseIce + sig.z * uPhaseRain) / sigT;
 
       // direct sun, with multiple scattering approximated by octaves that
@@ -348,12 +353,11 @@ void main() {
       ambientDepth(p, odUp, odDown);
       vec3 ambient = (uSkyColor * exp(-odUp * uAmbientAtten) +
                       uGroundColor * exp(-odDown * uAmbientAtten)) * uAmbientStrength;
-      // Enhanced ambient for better shape definition in shadows
       ambient *= mix(0.8, 1.2, 1.0 - odUp * 0.01);
 
       // Rain takes a full share of the flash so a shaft lights up with the cloud.
       vec3 flash = flashLight(p);
-      float flashSig = sig.x + sig.y + 1.4 * sig.z;
+      float flashSig = sig.x + sig.y + 1.6 * sig.z;
       vec3 S = (uSunColor * sunTerm + ambient) * sigS + flash * flashSig;
 
       // energy-conserving integration over the step
