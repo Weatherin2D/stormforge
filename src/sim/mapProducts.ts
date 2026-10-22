@@ -538,13 +538,31 @@ export function packLightning(
 }
 
 /** Bottom and top of the reflectivity color bar. Shaft opacity uses the same span. */
-export const DBZ_FLOOR = 5;
+export const DBZ_FLOOR = 0;
 export const DBZ_SCALE_MAX = 70;
 
-/** 0 at 5 dBZ, 1 at 70 dBZ. */
+/** 0 at 0 dBZ, 1 at 70 dBZ with specified gradient. */
 export function dbzOpacity(dbz: number): number {
-  if (dbz <= DBZ_FLOOR) return 0;
-  return Math.min(1, (dbz - DBZ_FLOOR) / (DBZ_SCALE_MAX - DBZ_FLOOR));
+  if (dbz <= 0) return 0;
+  if (dbz <= 10) {
+    const t = (dbz - 0) / 10;
+    return 0.25 * t;
+  }
+  if (dbz <= 25) {
+    const t = (dbz - 10) / 15;
+    return 0.25 + (0.5 - 0.25) * t;
+  }
+  if (dbz <= 42) {
+    const t = (dbz - 25) / 17;
+    return 0.5 + (0.75 - 0.5) * t;
+  }
+  if (dbz <= 65) {
+    const t = (dbz - 42) / 23;
+    return 0.75 + (0.95 - 0.75) * t;
+  }
+  if (dbz >= 70) return 1.0;
+  const t = (dbz - 65) / 5;
+  return 0.95 + (1.0 - 0.95) * t;
 }
 
 /**

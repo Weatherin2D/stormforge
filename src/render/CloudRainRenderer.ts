@@ -268,7 +268,7 @@ export class CloudRainRenderer {
 
     this.hemi = new THREE.HemisphereLight(0xc5ddff, 0x2a4a28, 0.95);
     this.scene.add(this.hemi);
-    this.sunLight = new THREE.DirectionalLight(0xfff2d6, 1.15);
+    this.sunLight = new THREE.DirectionalLight(0xfff2d6, 1.25);
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {

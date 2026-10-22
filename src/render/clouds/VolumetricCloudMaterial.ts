@@ -46,7 +46,7 @@ export const DEFAULT_LOOK: CloudLook = {
   ambientStrength: 0.75,
   ambientAtten: 0.035,
   hazeDensity: 1.5e-5,
-  exposure: 0.65,
+  exposure: 0.7,
   shapeTileMeters: 7500,
   detailTileMeters: 1400,
   stepSize: 50,
