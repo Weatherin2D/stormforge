@@ -9,6 +9,7 @@ import {
   SurfaceWindSample,
   windSpeedScale,
 } from "../sim/surfaceWinds";
+import { DrawnFront, FRONT_COLORS } from "../sim/synoptic";
 import type { LightningKind } from "../sim/FluidSolver";
 
 /**
@@ -33,6 +34,8 @@ export class Radar2DView {
   private recordedOnly = false;
   private windsVisible = false;
   private windSamples: SurfaceWindSample[] = [];
+  /** Fronts drawn on the map (normalized 0..1 map coordinates). */
+  private fronts: DrawnFront[] = [];
   private lightning: { i: number; j: number; alpha: number; kind: LightningKind }[] = [];
   private blitCanvas: HTMLCanvasElement | null = null;
   private blitCtx: CanvasRenderingContext2D | null = null;
@@ -190,6 +193,12 @@ export class Radar2DView {
     this.draw();
   }
 
+  /** Show the drawn fronts on the map so the pattern is visible while running. */
+  setFronts(fronts: DrawnFront[]): void {
+    this.fronts = fronts.filter((f) => f.enabled && f.points.length >= 2);
+    if (!this.root.classList.contains("hidden")) this.draw();
+  }
+
   setGrid(nx: number, ny: number): void {
     this.nx = Math.max(1, nx);
     this.ny = Math.max(1, ny);
@@ -278,7 +287,42 @@ export class Radar2DView {
     if (this.windsVisible && this.windSamples.length > 0) {
       this.drawWindArrows();
     }
+    if (this.fronts.length > 0) this.drawFronts();
     if (this.lightning.length > 0) this.drawLightning();
+    this.drawOverlay();
+  }
+
+  /** Front lines from the front editor, drawn on top of the map. */
+  private drawFronts(): void {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const ctx = this.ctx;
+    const scale = Math.min(w, h);
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (const front of this.fronts) {
+      const color = FRONT_COLORS[front.kind] ?? "#ffffff";
+      ctx.strokeStyle = "rgba(6, 12, 22, 0.85)";
+      ctx.lineWidth = Math.max(3, scale * 0.006);
+      this.strokeFront(front, w, h);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(1.5, scale * 0.0035);
+      this.strokeFront(front, w, h);
+    }
+    ctx.restore();
+  }
+
+  private strokeFront(front: DrawnFront, w: number, h: number): void {
+    const ctx = this.ctx;
+    ctx.beginPath();
+    front.points.forEach((p, i) => {
+      const x = p.x * w;
+      const y = (1 - p.y) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
   }
 
   /** Small bolt icons for live flashes. North is up, same as the map. */
@@ -375,6 +419,43 @@ export class Radar2DView {
       this.ctx.fill();
     }
     this.ctx.restore();
+  }
+
+  /** Basemap-style overlay: grid + scale bar (MeteoLAB-inspired). */
+  private drawOverlay(): void {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.lineWidth = 1;
+    const step = Math.max(24, Math.floor(Math.min(w, h) / 8));
+    for (let x = step; x < w; x += step) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (let y = step; y < h; y += step) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    // scale bar
+    const barLen = Math.max(40, Math.floor(w * 0.18));
+    const bx = 14;
+    const by = h - 18;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + barLen, by);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.font = "10px sans-serif";
+    ctx.fillText(`${Math.round(barLen)} px`, bx, by - 4);
+    ctx.restore();
   }
 
   dispose(): void {
