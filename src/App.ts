@@ -283,6 +283,7 @@ export class App {
           <canvas id="skewt-canvas"></canvas>
           <div id="skewt-metrics" class="skewt-metrics"></div>
           <canvas id="hodo-canvas" class="hidden"></canvas>
+          <div id="hodo-metrics" class="skewt-metrics hidden"></div>
           <div class="panel-actions">
             <button id="btn-apply" class="primary">Apply sounding</button>
             <button id="btn-export">Export</button>
@@ -349,6 +350,9 @@ export class App {
     const metrics = this.simScreen.querySelector(
       "#skewt-metrics",
     ) as HTMLElement | null;
+    const hodoMetrics = this.simScreen.querySelector(
+      "#hodo-metrics",
+    ) as HTMLElement | null;
 
     if (view === "skewt") {
       // Pull wind edits from hodograph before showing thermo
@@ -358,6 +362,7 @@ export class App {
       }
       this.skewtCanvas?.classList.remove("hidden");
       metrics?.classList.remove("hidden");
+      hodoMetrics?.classList.add("hidden");
       this.hodoCanvas?.classList.add("hidden");
       this.modeTabs?.classList.remove("hidden");
       if (this.panelTitle) this.panelTitle.textContent = "Skew-T";
@@ -373,6 +378,7 @@ export class App {
       }
       this.skewtCanvas?.classList.add("hidden");
       metrics?.classList.add("hidden");
+      hodoMetrics?.classList.remove("hidden");
       this.hodoCanvas?.classList.remove("hidden");
       this.modeTabs?.classList.add("hidden");
       if (this.panelTitle) this.panelTitle.textContent = "Hodograph";
@@ -1241,6 +1247,10 @@ export class App {
       "#skewt-metrics",
     ) as HTMLElement;
     this.skewt.setMetricsElement(metricsEl);
+    const hodoMetricsEl = this.simScreen.querySelector(
+      "#hodo-metrics",
+    ) as HTMLElement;
+    this.hodo.setMetricsElement(hodoMetricsEl);
     this.skewt.setLevels(this.sounding);
     this.hodo.setLevels(this.sounding);
 

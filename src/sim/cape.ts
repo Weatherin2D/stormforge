@@ -5,13 +5,46 @@ import {
   mixingRatio,
 } from "./thermo";
 
+export interface ParcelPoint {
+  /** Geometric height (m). */
+  z: number;
+  /** Pressure (Pa). */
+  p: number;
+  /** Parcel temperature (K). */
+  T: number;
+  /** Environment temperature (K). */
+  Tenv: number;
+  /** Buoyancy (m/s²). */
+  B: number;
+}
+
 export interface ThermoIndices {
   tSfcC: number;
   tdSfcC: number;
   cape: number; // J/kg
   cin: number; // J/kg (positive magnitude of inhibition)
   lclM: number;
+  /** Level of free convection (m), 0 when the parcel is never free. */
+  lfcM: number;
+  /** Equilibrium level (m), 0 when the parcel never becomes buoyant. */
+  elM: number;
+  /** CAPE contributed below 3 km (J/kg). */
+  cape0to3: number;
+  /** Surface-parcel trace, for the Skew-T overlay. */
+  parcel: ParcelPoint[];
 }
+
+const EMPTY_INDICES: ThermoIndices = {
+  tSfcC: 0,
+  tdSfcC: 0,
+  cape: 0,
+  cin: 0,
+  lclM: 0,
+  lfcM: 0,
+  elM: 0,
+  cape0to3: 0,
+  parcel: [],
+};
 
 const RD = 287.05;
 const CP = 1004;
@@ -67,7 +100,7 @@ export function integrateCapeCin(
   zTop: number,
 ): ThermoIndices {
   if (n < 3) {
-    return { tSfcC: 0, tdSfcC: 0, cape: 0, cin: 0, lclM: 0 };
+    return { ...EMPTY_INDICES };
   }
 
   const sfcT = T[0];
@@ -82,7 +115,11 @@ export function integrateCapeCin(
 
   let cape = 0;
   let cin = 0;
+  let cape0to3 = 0;
   let aboveLfc = false;
+  let lfcM = 0;
+  let elM = 0;
+  const parcel: ParcelPoint[] = [];
   let Tp = thetaP * Math.pow(Math.max(pLcl, 1) / P0, KAPPA);
   let zPar = lclM;
 
@@ -113,9 +150,15 @@ export function integrateCapeCin(
     }
 
     const B = 9.81 * ((Tpar - Tenv) / Math.max(Tenv, 1));
+    parcel.push({ z: zMid, p: pMid, T: Tpar, Tenv, B });
     if (B > 0) {
-      aboveLfc = true;
+      if (!aboveLfc) {
+        aboveLfc = true;
+        lfcM = zMid;
+      }
+      elM = zMid;
       cape += B * dz;
+      if (zMid < 3000) cape0to3 += B * dz;
     } else if (!aboveLfc && zMid < lclM + 6000) {
       cin += -B * dz;
     }
@@ -127,6 +170,10 @@ export function integrateCapeCin(
     cape: Math.max(0, cape),
     cin: Math.max(0, cin),
     lclM,
+    lfcM,
+    elM,
+    cape0to3: Math.max(0, cape0to3),
+    parcel,
   };
 }
 
@@ -139,7 +186,7 @@ export function computeThermoIndices(
   zTop: number,
 ): ThermoIndices {
   if (levels.length < 3) {
-    return { tSfcC: 0, tdSfcC: 0, cape: 0, cin: 0, lclM: 0 };
+    return { ...EMPTY_INDICES };
   }
   const sorted = [...levels].sort((a, b) => a.z - b.z);
   const n = sorted.length;

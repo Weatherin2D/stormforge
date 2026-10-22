@@ -60,7 +60,8 @@ export function stepIceMicrophysics(
         // Deposition: vapor → ice when supersaturated over ice
         if (qv > qsIce && tC < -5) {
           const excess = qv - qsIce;
-          const dep = Math.min(excess, excess * (1 - Math.exp(-deposRate * dt)));
+          const maxDep = (3 * T) / Math.max(latHeat * th, 1);
+          const dep = Math.min(excess, excess * (1 - Math.exp(-deposRate * dt)), maxDep);
           qv -= dep;
           qc += dep;
           th += (latHeat * dep * th) / Math.max(T, 1);

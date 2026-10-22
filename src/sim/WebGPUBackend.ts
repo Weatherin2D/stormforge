@@ -536,12 +536,17 @@ fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
     qvOut[id] = qv0[k];
     qcOut[id] = 0.0;
     qrOut[id] = 0.0;
-  } else {
-    thetaOut[id] = trilinear(theta, nx, ny, nz, x, y, z);
-    qvOut[id] = trilinear(qv, nx, ny, nz, x, y, z);
-    qcOut[id] = trilinear(qc, nx, ny, nz, x, y, z);
-    qrOut[id] = trilinear(qr, nx, ny, nz, x, y, z);
-  }
+   } else {
+     thetaOut[id] = trilinear(theta, nx, ny, nz, x, y, z);
+     qvOut[id] = trilinear(qv, nx, ny, nz, x, y, z);
+     qcOut[id] = trilinear(qc, nx, ny, nz, x, y, z);
+     qrOut[id] = trilinear(qr, nx, ny, nz, x, y, z);
+   }
+   // Cap per-step theta change to avoid localized transients.
+   let _prev = theta[id];
+   let _d = thetaOut[id] - _prev;
+   if (_d > 3.0) { thetaOut[id] = _prev + 3.0; }
+   else if (_d < -3.0) { thetaOut[id] = _prev - 3.0; }
 }
 `;
 

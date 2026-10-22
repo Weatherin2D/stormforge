@@ -48,9 +48,13 @@ export function stepMicrophysics(
         const qs = Math.max(1e-6, mixingRatio(esatFast(T), p0));
         const excess = qv - qs;
 
-        // Condensation grows cloud whenever supersaturated
+        // Condensation grows cloud whenever supersaturated.
+        // Cap the amount so a single step can't release more than ~3 K of
+        // latent heat (e.g. when moist air is lifted into a much colder
+        // layer) — otherwise a cell spikes +20 K in one step.
         if (excess > 0) {
-          const cond = Math.min(excess, excess * condFac);
+          const maxCond = (3 * T) / Math.max(latHeat * th, 1);
+          const cond = Math.min(excess, excess * condFac, maxCond);
           qv -= cond;
           qc += cond;
           th += (latHeat * cond * th) / Math.max(T, 1);

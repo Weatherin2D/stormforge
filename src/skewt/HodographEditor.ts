@@ -5,6 +5,8 @@ import {
   spdDirFromUv,
   uvFromSpdDir,
 } from "../sim/thermo";
+import { analyzeSounding, SoundingSummary } from "../sim/sounding";
+import { renderWindMetrics } from "./metrics";
 
 interface Handle {
   z: number;
@@ -14,8 +16,11 @@ interface Handle {
 }
 
 /**
- * Easy hodograph: a few large height handles + live speed/direction readout.
- * Edits write back onto the full sounding by vertical interpolation.
+ * Hodograph with a matching wind profile column.
+ *
+ * Layout: [height list][hodograph plot][speed vs height]
+ * The list and the profile share one height axis, so a tip's height in the
+ * list lines up with its speed in the profile — the two views read as one.
  */
 export class HodographEditor {
   private levels: SoundingLevel[];
@@ -25,6 +30,8 @@ export class HodographEditor {
   private hoverIndex = -1;
   private selectedIndex = 0;
   private maxSpd = 40;
+  private metricsEl: HTMLElement | null = null;
+  private summaryCache: SoundingSummary | null = null;
   onChange: ((levels: SoundingLevel[]) => void) | null = null;
 
   constructor(
@@ -43,9 +50,15 @@ export class HodographEditor {
     canvas.addEventListener("wheel", this.onWheel, { passive: false });
   }
 
+  setMetricsElement(el: HTMLElement | null): void {
+    this.metricsEl = el;
+    this.refreshMetrics();
+  }
+
   setZTop(zTop: number): void {
     this.zTop = zTop;
     this.rebuildHandlesFromLevels();
+    this.invalidate();
     this.draw();
   }
 
@@ -56,6 +69,7 @@ export class HodographEditor {
   setLevels(levels: SoundingLevel[]): void {
     this.levels = levels.map((l) => ({ ...l })).sort((a, b) => a.z - b.z);
     this.rebuildHandlesFromLevels();
+    this.invalidate();
     this.draw();
     this.onChange?.(this.getLevels());
   }
@@ -63,6 +77,7 @@ export class HodographEditor {
   resetDefault(): void {
     this.levels = defaultSounding(this.zTop, 41);
     this.rebuildHandlesFromLevels();
+    this.invalidate();
     this.draw();
     this.onChange?.(this.getLevels());
   }
@@ -80,6 +95,17 @@ export class HodographEditor {
       this.canvas.height = h;
     }
     this.draw();
+  }
+
+  private invalidate(): void {
+    this.summaryCache = null;
+  }
+
+  private summary(): SoundingSummary {
+    if (!this.summaryCache) {
+      this.summaryCache = analyzeSounding(this.levels, this.zTop);
+    }
+    return this.summaryCache;
   }
 
   private handleHeights(): { z: number; label: string }[] {
@@ -150,17 +176,35 @@ export class HodographEditor {
     for (const h of this.handles) {
       m = Math.max(m, Math.hypot(h.u, h.v) * 1.35);
     }
-    this.maxSpd = Math.min(60, Math.max(25, Math.ceil(m / 5) * 5));
+    for (const l of this.levels) {
+      m = Math.max(m, Math.hypot(l.u, l.v) * 1.15);
+    }
+    this.maxSpd = Math.min(80, Math.max(25, Math.ceil(m / 5) * 5));
   }
 
   private layout() {
     const dpr = window.devicePixelRatio || 1;
-    const listW = 72 * dpr;
-    const footerH = 52 * dpr;
-    const cx = listW + (this.canvas.width - listW) * 0.5;
-    const cy = (this.canvas.height - footerH) * 0.52;
-    const r = Math.min(this.canvas.width - listW, this.canvas.height - footerH) * 0.36;
-    return { listW, footerH, cx, cy, r, dpr };
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const listW = 58 * dpr;
+    const profileW = Math.max(96 * dpr, w * 0.24);
+    const footerH = 50 * dpr;
+    const plotRight = w - profileW;
+    const plotTop = 14 * dpr;
+    const plotBot = h - footerH;
+    const availW = Math.max(20, plotRight - listW);
+    const availH = Math.max(20, plotBot - plotTop);
+    const cx = listW + availW * 0.5;
+    const cy = plotTop + availH * 0.5;
+    const r = Math.min(availW, availH) * 0.42;
+    return { dpr, w, h, listW, profileW, footerH, plotRight, plotTop, plotBot, cx, cy, r };
+  }
+
+  /** Shared height axis: 0 m at the bottom, zTop at the top. */
+  private yForZ(z: number): number {
+    const { plotTop, plotBot } = this.layout();
+    const f = Math.max(0, Math.min(1, z / Math.max(this.zTop, 1)));
+    return plotBot - f * (plotBot - plotTop);
   }
 
   private uvToXY(u: number, v: number): { x: number; y: number } {
@@ -196,43 +240,49 @@ export class HodographEditor {
     const w = this.canvas.width;
     const h = this.canvas.height;
     if (w < 2 || h < 2) return;
-    const { listW, footerH, cx, cy, r, dpr } = this.layout();
+    const { dpr, listW, profileW, footerH, plotRight, plotTop, plotBot, cx, cy, r } =
+      this.layout();
     if (!(r > 1)) return;
 
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = "#0a101c";
     ctx.fillRect(0, 0, w, h);
 
-    // Height list (left)
+    // --- Plot background ---
+    ctx.fillStyle = "#0d1524";
+    ctx.fillRect(listW, 0, plotRight - listW, h - footerH);
+
+    // --- Left height list ---
     ctx.fillStyle = "#121a2b";
     ctx.fillRect(0, 0, listW, h - footerH);
     ctx.fillStyle = "#7a8aa3";
     ctx.font = `${10 * dpr}px sans-serif`;
     ctx.textAlign = "left";
-    ctx.fillText("Height", 8 * dpr, 16 * dpr);
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("Height", 8 * dpr, plotTop - 3 * dpr);
 
-    const rowH = ((h - footerH - 28 * dpr) / Math.max(1, this.handles.length));
     this.handles.forEach((handle, i) => {
-      const y0 = 24 * dpr + i * rowH;
+      const y = this.yForZ(handle.z);
       const active = i === this.selectedIndex || i === this.hoverIndex;
       if (active) {
-        ctx.fillStyle = i === this.selectedIndex ? "rgba(77,184,255,0.22)" : "rgba(77,184,255,0.10)";
-        ctx.fillRect(0, y0, listW, rowH);
+        ctx.fillStyle =
+          i === this.selectedIndex
+            ? "rgba(77,184,255,0.22)"
+            : "rgba(77,184,255,0.10)";
+        ctx.fillRect(0, y - 9 * dpr, listW, 18 * dpr);
       }
       ctx.fillStyle = this.heightColor(handle.z);
       ctx.beginPath();
-      ctx.arc(12 * dpr, y0 + rowH * 0.5, 4 * dpr, 0, Math.PI * 2);
+      ctx.arc(11 * dpr, y, 4 * dpr, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#e8eef8";
       ctx.font = `${11 * dpr}px sans-serif`;
-      ctx.fillText(handle.label, 22 * dpr, y0 + rowH * 0.5 + 4 * dpr);
+      ctx.textBaseline = "middle";
+      ctx.fillText(handle.label, 20 * dpr, y);
     });
+    ctx.textBaseline = "alphabetic";
 
-    // Plot background
-    ctx.fillStyle = "#0d1524";
-    ctx.fillRect(listW, 0, w - listW, h - footerH);
-
-    // Speed rings
+    // --- Speed rings ---
     ctx.textAlign = "center";
     for (let spd = 10; spd <= this.maxSpd; spd += 10) {
       const rr = (spd / this.maxSpd) * r;
@@ -246,7 +296,7 @@ export class HodographEditor {
       ctx.fillText(`${spd}`, cx, cy - rr + 11 * dpr);
     }
 
-    // Cross + cardinals
+    // --- Cross + cardinals ---
     ctx.strokeStyle = "#3a4a65";
     ctx.lineWidth = 1.25 * dpr;
     ctx.beginPath();
@@ -263,7 +313,7 @@ export class HodographEditor {
     ctx.fillText("W", cx - r - 12 * dpr, cy + 4 * dpr);
     ctx.fillText("E", cx + r + 12 * dpr, cy + 4 * dpr);
 
-    // Trace
+    // --- Hodograph trace ---
     if (this.handles.length) {
       ctx.lineWidth = 2.5 * dpr;
       ctx.strokeStyle = "#4db8ff";
@@ -294,7 +344,9 @@ export class HodographEditor {
       });
     }
 
-    // Footer readout
+    this.drawProfileColumn(ctx);
+
+    // --- Footer readout ---
     ctx.fillStyle = "#121a2b";
     ctx.fillRect(0, h - footerH, w, footerH);
     ctx.strokeStyle = "#2a3a55";
@@ -323,7 +375,113 @@ export class HodographEditor {
         h - footerH * 0.22,
       );
     }
+
+    this.refreshMetrics();
   };
+
+  /**
+   * Right-hand column: wind speed against height on the same vertical axis as
+   * the height list, so the two line up.
+   */
+  private drawProfileColumn(ctx: CanvasRenderingContext2D): void {
+    const { dpr, w, h, listW, profileW, footerH, plotTop, plotBot } =
+      this.layout();
+    const x0 = w - profileW;
+
+    ctx.fillStyle = "#101a2b";
+    ctx.fillRect(x0, 0, profileW, h - footerH);
+    ctx.strokeStyle = "#2a3a55";
+    ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x0, 0);
+    ctx.lineTo(x0, h - footerH);
+    ctx.stroke();
+
+    ctx.fillStyle = "#7a8aa3";
+    ctx.font = `${10 * dpr}px sans-serif`;
+    ctx.textAlign = "left";
+    ctx.fillText("Wind (m/s)", x0 + 8 * dpr, plotTop - 3 * dpr);
+
+    // Speed gridlines
+    const axisX = x0 + 10 * dpr;
+    const axisW = profileW - 26 * dpr;
+    ctx.font = `${9 * dpr}px sans-serif`;
+    for (let spd = 0; spd <= this.maxSpd; spd += 10) {
+      const x = axisX + (spd / this.maxSpd) * axisW;
+      ctx.strokeStyle = spd % 20 === 0 ? "#243349" : "#1a2739";
+      ctx.beginPath();
+      ctx.moveTo(x, plotTop);
+      ctx.lineTo(x, plotBot);
+      ctx.stroke();
+      ctx.fillStyle = "#5f6f88";
+      ctx.textAlign = "center";
+      ctx.fillText(`${spd}`, x, plotBot + 12 * dpr);
+    }
+
+    // Speed profile from the sounding levels
+    if (this.levels.length > 1) {
+      const pts = this.levels.map((l) => {
+        const { spd } = spdDirFromUv(l.u, l.v);
+        const y = this.yForZ(l.z);
+        const x = axisX + (Math.min(spd, this.maxSpd) / this.maxSpd) * axisW;
+        return { x, y };
+      });
+      ctx.beginPath();
+      ctx.moveTo(axisX, pts[0].y);
+      for (const p of pts) ctx.lineTo(p.x, p.y);
+      ctx.lineTo(axisX, pts[pts.length - 1].y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(77,184,255,0.18)";
+      ctx.fill();
+      ctx.strokeStyle = "#4db8ff";
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+    }
+
+    // Handle markers + readouts
+    this.handles.forEach((handle, i) => {
+      const { spd, dir } = spdDirFromUv(handle.u, handle.v);
+      const y = this.yForZ(handle.z);
+      const x = axisX + (Math.min(spd, this.maxSpd) / this.maxSpd) * axisW;
+      const selected = i === this.selectedIndex;
+
+      ctx.fillStyle = this.heightColor(handle.z);
+      ctx.beginPath();
+      ctx.arc(x, y, (selected ? 4.5 : 3.2) * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      if (selected) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.25 * dpr;
+        ctx.stroke();
+      }
+
+      // Direction barb in the wind direction
+      const rad = (dir * Math.PI) / 180;
+      const bx = x - Math.sin(rad) * 12 * dpr;
+      const by = y + Math.cos(rad) * 12 * dpr;
+      ctx.strokeStyle = "rgba(197,212,234,0.75)";
+      ctx.lineWidth = 1.25 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+
+      ctx.fillStyle = selected ? "#e8eef8" : "#8fa0ba";
+      ctx.font = `${9 * dpr}px sans-serif`;
+      ctx.textAlign = "right";
+      ctx.fillText(`${spd.toFixed(0)}`, x0 + profileW - 5 * dpr, y + 3 * dpr);
+    });
+
+    // Column border + header baseline
+    ctx.strokeStyle = "#2a3a55";
+    ctx.lineWidth = 1 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x0, h - footerH);
+    ctx.lineTo(x0 + profileW, h - footerH);
+    ctx.stroke();
+  }
 
   /** Nearest tip within hit radius, or -1 if none. */
   private nearestHandle(x: number, y: number, maxDistPx = 22): number {
@@ -342,15 +500,20 @@ export class HodographEditor {
     return best;
   }
 
+  /** List row under the cursor — rows are stacked along the height axis. */
   private hitListIndex(y: number): number {
-    const { listW, footerH, dpr } = this.layout();
+    const { dpr, listW } = this.layout();
     void listW;
-    const rowH =
-      (this.canvas.height - footerH - 28 * dpr) /
-      Math.max(1, this.handles.length);
-    const i = Math.floor((y - 24 * dpr) / rowH);
-    if (i < 0 || i >= this.handles.length) return -1;
-    return i;
+    let best = -1;
+    let bestD = 14 * dpr;
+    for (let i = 0; i < this.handles.length; i++) {
+      const d = Math.abs(this.yForZ(this.handles[i].z) - y);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
   }
 
   private pointerXY(e: PointerEvent): { x: number; y: number } {
@@ -381,9 +544,7 @@ export class HodographEditor {
     const nearest = this.nearestHandle(x, y, 20);
     const selHit = this.nearestHandle(x, y, 28);
     const hit =
-      selHit === this.selectedIndex
-        ? this.selectedIndex
-        : nearest;
+      selHit === this.selectedIndex ? this.selectedIndex : nearest;
     if (hit < 0) return;
 
     this.dragIndex = hit;
@@ -440,6 +601,7 @@ export class HodographEditor {
     h.v = uv.v;
     this.autoscale();
     this.applyHandlesToLevels();
+    this.invalidate();
     this.draw();
     this.onChange?.(this.getLevels());
   };
@@ -452,8 +614,13 @@ export class HodographEditor {
     this.selectedIndex = i;
     this.autoscale();
     this.applyHandlesToLevels();
+    this.invalidate();
     this.draw();
     this.onChange?.(this.getLevels());
+  }
+
+  private refreshMetrics(): void {
+    renderWindMetrics(this.metricsEl, this.summary());
   }
 
   dispose(): void {

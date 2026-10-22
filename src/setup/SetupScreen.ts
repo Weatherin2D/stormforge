@@ -217,6 +217,7 @@ export class SetupScreen {
           <canvas id="sf-skewt-canvas"></canvas>
           <div id="sf-skewt-metrics" class="skewt-metrics"></div>
           <canvas id="sf-hodo-canvas" class="hidden"></canvas>
+          <div id="sf-hodo-metrics" class="skewt-metrics hidden"></div>
           <div class="panel-actions setup-sounding-actions">
             <button type="button" id="sf-btn-default">Default</button>
             <button type="button" id="sf-btn-import">Import</button>
@@ -596,6 +597,10 @@ export class SetupScreen {
       "#sf-skewt-metrics",
     ) as HTMLElement;
     this.skewt.setMetricsElement(metrics);
+    const hodoMetrics = this.root.querySelector(
+      "#sf-hodo-metrics",
+    ) as HTMLElement;
+    this.hodo.setMetricsElement(hodoMetrics);
     this.skewt.setLevels(this.sounding);
     this.hodo.setLevels(this.sounding);
     this.skewt.onChange = (levels) => {
@@ -640,6 +645,9 @@ export class SetupScreen {
     const metrics = this.root.querySelector(
       "#sf-skewt-metrics",
     ) as HTMLElement;
+    const hodoMetrics = this.root.querySelector(
+      "#sf-hodo-metrics",
+    ) as HTMLElement;
     const modeTabs = this.root.querySelector("#sf-mode-tabs") as HTMLElement;
     const desc = this.root.querySelector(
       "#sf-sounding-desc",
@@ -655,6 +663,7 @@ export class SetupScreen {
     if (view === "skewt") {
       skewtCanvas.classList.remove("hidden");
       metrics.classList.remove("hidden");
+      hodoMetrics.classList.add("hidden");
       hodoCanvas.classList.add("hidden");
       modeTabs.classList.remove("hidden");
       if (desc) {
@@ -665,6 +674,7 @@ export class SetupScreen {
     } else {
       skewtCanvas.classList.add("hidden");
       metrics.classList.add("hidden");
+      hodoMetrics.classList.remove("hidden");
       hodoCanvas.classList.remove("hidden");
       modeTabs.classList.add("hidden");
       if (desc) {

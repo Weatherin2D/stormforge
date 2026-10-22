@@ -737,13 +737,19 @@ export class FluidSolver implements SimBackend {
             qvD[id] = Math.min(Math.max(0, qv), cap);
             qcD[id] = 0;
             qrD[id] = 0;
-          } else {
-            this.sampleQuad(f.theta, f.qv, f.qc, f.qr, x, y, z);
-            thD[id] = samp[0];
-            qvD[id] = samp[1];
-            qcD[id] = samp[2];
-            qrD[id] = samp[3];
-          }
+           } else {
+             this.sampleQuad(f.theta, f.qv, f.qc, f.qr, x, y, z);
+             thD[id] = samp[0];
+             qvD[id] = samp[1];
+             qcD[id] = samp[2];
+             qrD[id] = samp[3];
+           }
+           // Cap per-step theta change to prevent localized transients
+           // (e.g. semi-Lagrangian advection across a moving front) from
+           // spiking a cell by tens of K in one step.
+           const _dth = thD[id] - f.theta[id];
+           if (_dth > 3) thD[id] = f.theta[id] + 3;
+           else if (_dth < -3) thD[id] = f.theta[id] - 3;
         }
       }
     }
