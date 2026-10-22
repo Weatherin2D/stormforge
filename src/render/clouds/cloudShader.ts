@@ -195,19 +195,25 @@ vec3 sampleSigma(vec3 p, float detail) {
       vec4 dt = textureLod(uDetailNoise, rel * uDetailFreq, 0.0);
       float billowHigh = dt.r * 0.625 + dt.g * 0.25 + dt.b * 0.125;
       float bill = mix(billowLow, billowHigh, 0.5 * detail);
+      float largeScale = sh.r;
+      bill = mix(bill, largeScale, 0.3 * detail);
       float thr = (1.0 - bill) * uErosionLiquid * detail;
       liq = clamp((liq - thr) / max(1.0 - thr, 1e-3), 0.0, 1.0);
+      liq *= mix(0.7, 1.0, smoothstep(0.1, 0.5, bill));
     }
 
     // Ice: stretched along the wind, so it reads as smooth fibres and streaks instead of lumps.
     if (ice > 0.002) {
       vec3 perp = vec3(-uWindDir.z, 0.0, uWindDir.x);
       vec3 q = vec3(dot(rel, uWindDir), rel.y, dot(rel, perp)) * uShapeFreq * uIceStretch;
-      q += (sh.rgb - 0.5) * 0.3; // slight domain warp so the streaks wander
+      q += (sh.rgb - 0.5) * 0.4; // domain warp so the streaks wander
       vec4 fi = textureLod(uShapeNoise, q, 0.0);
       float fibre = fi.g * 0.5 + fi.b * 0.3 + fi.a * 0.2;
+      vec4 dt2 = textureLod(uDetailNoise, rel * uDetailFreq * 1.5, 0.0);
+      fibre = mix(fibre, dt2.r * 0.6 + dt2.g * 0.4, 0.3 * detail);
       float thrI = (1.0 - fibre) * uErosionIce * detail;
       ice = clamp((ice - thrI) / max(1.0 - thrI, 1e-3), 0.0, 1.0);
+      ice *= mix(0.8, 1.0, smoothstep(0.2, 0.6, fibre));
     }
 
 // Rain: physics-based extinction + scrolling sheared streaks.
@@ -342,6 +348,8 @@ void main() {
       ambientDepth(p, odUp, odDown);
       vec3 ambient = (uSkyColor * exp(-odUp * uAmbientAtten) +
                       uGroundColor * exp(-odDown * uAmbientAtten)) * uAmbientStrength;
+      // Enhanced ambient for better shape definition in shadows
+      ambient *= mix(0.8, 1.2, 1.0 - odUp * 0.01);
 
       // Rain takes a full share of the flash so a shaft lights up with the cloud.
       vec3 flash = flashLight(p);
@@ -367,6 +375,12 @@ void main() {
   float avgDist = distAcc / alpha;
   float haze = 1.0 - exp(-avgDist * uHazeDensity);
   straight = mix(straight, uHazeColor, haze) * uExposure;
+  // Subtle tone mapping improvement
+  straight = straight / (straight + vec3(1.0));
+  straight = pow(straight, vec3(1.0/2.2));
+  // Slight contrast boost
+  straight = (straight - 0.5) * 1.05 + 0.5;
+  straight = pow(straight, vec3(1.0));
 
   gl_FragColor = vec4(straight, alpha);
   #include <tonemapping_fragment>

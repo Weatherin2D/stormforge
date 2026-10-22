@@ -38,18 +38,35 @@ out vec4 fragColor;
 
 void main() {
   vec3 dir = normalize(vDir);
-  float up = pow(clamp(dir.y, 0.0, 1.0), 0.42);
-  vec3 col = mix(uHazeColor, uSkyColor, up);
-  col = mix(col * vec3(0.45, 0.5, 0.55), col, smoothstep(-0.2, 0.02, dir.y));
+  float up = clamp(dir.y, 0.0, 1.0);
+  float upFactor = pow(up, 0.4);
+  vec3 col = mix(uHazeColor, uSkyColor, upFactor);
+  // Darken lower sky near horizon for more depth
+  col = mix(col, col * vec3(0.6, 0.65, 0.75), smoothstep(-0.1, 0.05, dir.y));
   vec3 sun = normalize(uSunDir);
   float sunDot = dot(dir, sun);
-  float disc = smoothstep(0.9985, 0.9995, sunDot);
-  float glare = pow(max(sunDot, 0.0), 8.0);
-  float wide = pow(max(sunDot, 0.0), 2.0);
-  float vis = smoothstep(-0.04, 0.12, sun.y);
-  col += uSunColor * (disc * 3.2 + glare * 0.65 + wide * 0.16) * vis;
-  // The scene target is linear. The present pass encodes to sRGB.
-  fragColor = vec4(max(col, vec3(0.0)), 1.0);
+  float sunElev = sun.y;
+  float vis = smoothstep(-0.12, 0.25, sunElev);
+  // Sun disc and glow
+  float disc = smoothstep(0.9992, 0.9997, sunDot);
+  float corona = pow(max(sunDot, 0.0), 16.0);
+  float glare = pow(max(sunDot, 0.0), 4.0);
+  float wide = pow(max(sunDot, 0.0), 1.6);
+  // Golden hour color shift for glow
+  vec3 glowColor = uSunColor;
+  if (sunElev < 0.15 && sunElev > -0.1) {
+    glowColor = mix(uSunColor, vec3(1.4, 0.7, 0.3), smoothstep(-0.05, 0.1, sunElev) * 0.7);
+  }
+  col += glowColor * (disc * 4.0 + corona * 1.2 + glare * 0.8 + wide * 0.22) * vis;
+  // Add subtle atmospheric scattering near horizon opposite to sun
+  float opp = max(-sunDot * (1.0 - up), 0.0);
+  col += uHazeColor * opp * 0.15 * vis;
+  // Night sky - very dark
+  if (sunElev < -0.08) {
+    col = mix(col, vec3(0.005, 0.008, 0.018), smoothstep(-0.2, -0.08, sunElev));
+  }
+  col = max(col, vec3(0.0));
+  fragColor = vec4(col, 1.0);
 }
 `;
 
@@ -543,12 +560,34 @@ export class CloudRainRenderer {
   setSunFrac(frac: number): void {
     const f = Math.min(1, Math.max(0, frac));
     this.sunFrac = f;
-    const mix = (a: number, b: number) => Math.round(a + (b - a) * f);
-    const sky = (mix(10, 143) << 16) | (mix(16, 180) << 8) | mix(28, 214);
+    // Better sky clear color blending for day/night
+    const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+    let r = mix(8, 135, f);
+    let g = mix(12, 175, f);
+    let b = mix(24, 210, f);
+    // Golden hour tint
+    if (f < 0.3 && f > 0.05) {
+      const g = mix(0, 1, (0.3 - f) / 0.25);
+      r = mix(r, mix(160, 135, f), g * 0.4);
+      b = mix(b, mix(80, 210, f), g * 0.3);
+    }
+    // Twilight/blue hour
+    if (f < 0.05) {
+      const t = mix(0, 1, f / 0.05);
+      r = mix(15, mix(15, 12, 1-t), t);
+      g = mix(22, mix(25, 12, 1-t), t);
+      b = mix(45, mix(65, 24, 1-t), t);
+    }
+    const sky = ((Math.round(r) & 0xff) << 16) | ((Math.round(g) & 0xff) << 8) | (Math.round(b) & 0xff);
     this.renderer.setClearColor(sky, 1);
-    if (this.scene.fog) this.scene.fog.color.set(sky);
-    this.hemi.intensity = 0.22 + 0.8 * f;
-    this.sunLight.intensity = 0.15 + 1.05 * f;
+    if (this.scene.fog) {
+      const fogColor = ((Math.round(r + 10) & 0xff) << 16) | ((Math.round(g + 15) & 0xff) << 8) | (Math.round(b + 25) & 0xff);
+      this.scene.fog.color.set(fogColor);
+    }
+    this.hemi.intensity = mix(0.08, 0.95, f);
+    this.hemi.color.setRGB(mix(0.4, 0.7, f), mix(0.5, 0.8, f), mix(0.8, 1.0, f));
+    this.hemi.groundColor.setRGB(mix(0.08, 0.25, f), mix(0.12, 0.32, f), mix(0.15, 0.18, f));
+    this.sunLight.intensity = mix(0.02, 1.25, f);
   }
 
   /** Daylight fraction plus the world sun direction (+X east, +Y up, −Z north). */
@@ -559,12 +598,13 @@ export class CloudRainRenderer {
     else this.sunDir.normalize();
     this.sunLight.position.copy(this.sunDir).multiplyScalar(400);
     const elev = this.sunDir.y;
-    const up = Math.min(1, Math.max(0, (elev + 0.02) / 0.28));
-    const warm = Math.min(1, Math.max(0, 1 - Math.abs(elev) / 0.16)) * (1 - up);
+    const day = Math.min(1, Math.max(0, frac));
+    const up = Math.min(1, Math.max(0, (elev + 0.05) / 0.35));
+    const warm = Math.min(1, Math.max(0, 1 - Math.abs(elev) / 0.12)) * (1 - up);
     this.sunLight.color.setRGB(
-      0.55 + up * 0.45 + warm * 0.15,
-      0.62 + up * 0.34,
-      Math.max(0.25, 0.78 + up * 0.14 - warm * 0.4),
+      (0.4 + up * 0.5 + warm * 0.28) * (0.25 + day * 0.75),
+      (0.5 + up * 0.4 + warm * 0.06) * (0.35 + day * 0.65),
+      Math.max(0.1, (0.7 + up * 0.25 - warm * 0.52)) * (0.4 + day * 0.6),
     );
     this.applyCloudSun();
   }
@@ -1214,12 +1254,12 @@ export class CloudRainRenderer {
         const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
       // Day/night scale: night=1, day=0.1, smooth transition
-        const dayScale = 1 - 0.9 * this.sunFrac;
-        light.intensity = 3.2e7 * pulse * dayScale / 20;
+        const dayScale = Math.max(0.15, 1 - 0.85 * this.sunFrac);
+        light.intensity = 4.5e7 * pulse * dayScale / 20;
       }
       const count = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const half = bolt.kind === "sprite" ? 90 : 70;
+      const half = bolt.kind === "sprite" ? 90 : 85;
       const eye = this.camera.position;
       for (let s = 0; s < count; s++) {
         const p = this.boltScratch[s];
@@ -1271,16 +1311,17 @@ export class CloudRainRenderer {
     const seed = bolt.seed;
     const cap = Math.min(out.length, this.boltPointCount);
     if (bolt.kind === "sprite") return 0; // sprites are flash-only, no geometry
-    const steps = Math.min(16, cap - 1);
-    const drop = Math.max(80, bolt.y - this.groundY);
+    const steps = Math.min(20, cap - 1);
+    const drop = Math.max(100, bolt.y - this.groundY);
     // Main channel with stepped leader jags
     let px = bolt.x;
     let py = bolt.y;
     let pz = bolt.z;
     for (let s = 0; s <= steps; s++) {
       out[s].set(px, s === steps ? this.groundY + 2 : py, pz);
-      // Larger horizontal jag every ~3 steps (stepped leader)
-      const jag = (s % 3 === 1) ? 280 : 120;
+      // Larger horizontal jag every ~3 steps (stepped leader) - more variation
+      const jagFreq = s % 3 === 1 ? 320 : 160;
+      const jag = jagFreq * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
       px += Math.sin(seed + s * 2.17) * jag;
       pz += Math.cos(seed * 1.3 + s) * jag;
       py -= drop / steps;
@@ -1289,7 +1330,7 @@ export class CloudRainRenderer {
     // One branch: splits off at ~40% down, runs 5 steps then fades
     const branchStart = Math.floor(steps * 0.4);
     const branchPt = out[branchStart];
-    const branchSteps = Math.min(5, cap - mainCount - 1);
+    const branchSteps = Math.min(6, cap - mainCount - 1);
     if (branchSteps >= 2 && mainCount + branchSteps < cap) {
       let bx = branchPt.x;
       let by = branchPt.y;
@@ -1298,8 +1339,8 @@ export class CloudRainRenderer {
       const bDrop = (drop / steps) * 1.1;
       for (let s = 0; s <= branchSteps; s++) {
         out[mainCount + s].set(bx, by, bz);
-        bx += Math.sin(bSeed + s * 1.9) * 180;
-        bz += Math.cos(bSeed * 1.5 + s) * 180;
+        bx += Math.sin(bSeed + s * 2.1) * 200;
+        bz += Math.cos(bSeed * 1.8 + s) * 200;
         by -= bDrop;
       }
       return mainCount + branchSteps + 1;

@@ -19,6 +19,8 @@ const smoothstep = (a: number, b: number, x: number): number => {
   return t * t * (3 - 2 * t);
 };
 
+const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
+
 export interface SkyLighting {
   sun: THREE.Vector3;
   sky: THREE.Vector3;
@@ -157,26 +159,93 @@ function scatterAt(sunDeg: number, viewDeg: number): ScatterSample {
 
 export function computeSkyLighting(
   elevationDeg: number,
-  groundAlbedo: [number, number, number] = [0.2, 0.26, 0.1],
+  groundAlbedo: [number, number, number] = [0.16, 0.22, 0.14],
 ): SkyLighting {
-  const towardSun = scatterAt(elevationDeg, Math.max(elevationDeg, 0.4));
+  if (!scatterTable) scatterTable = bakeScatter();
+  const el = elevationDeg;
+
+  // Twilight/night transition
+  const dayFactor = smoothstep(-8, 12, el); // 0 = deep night, 1 = fully day
+  const goldenFactor = smoothstep(-6, 6, el) * (1 - smoothstep(15, 30, el)); // strong at low sun
+  const blueHourFactor = smoothstep(-12, -4, el) * (1 - smoothstep(0, 6, el)); // after sunset/before sunrise
+
+  const towardSun = scatterAt(el, Math.max(el, 0.4));
   const overhead = scatterAt(90, 90);
-  const sun = new THREE.Vector3(
-    towardSun.t[0] / Math.max(overhead.t[0], 1e-4),
-    towardSun.t[1] / Math.max(overhead.t[1], 1e-4),
-    towardSun.t[2] / Math.max(overhead.t[2], 1e-4),
+
+  // Sun color - warm at low angles, whiter at high angles
+  let sunR = towardSun.t[0] / Math.max(overhead.t[0], 1e-4);
+  let sunG = towardSun.t[1] / Math.max(overhead.t[1], 1e-4);
+  let sunB = towardSun.t[2] / Math.max(overhead.t[2], 1e-4);
+
+  // Warm shift at sunrise/sunset (Chappuis-like reddening)
+  if (el < 10) {
+    const warm = smoothstep(-2, 8, el); // stronger at lower elevations
+    sunR *= mix(1.4, 1.0, warm);
+    sunG *= mix(0.9, 1.0, warm);
+    sunB *= mix(0.5, 1.0, warm);
+  }
+  // Very low sun near horizon - deep orange/red
+  if (el < 3) {
+    const veryLow = smoothstep(-4, 3, el);
+    sunR *= mix(1.6, 1.0, veryLow);
+    sunG *= mix(0.7, 1.0, veryLow);
+    sunB *= mix(0.35, 1.0, veryLow);
+  }
+
+  let sun = new THREE.Vector3(sunR, sunG, sunB);
+  sun.multiplyScalar(smoothstep(-4, 6, el));
+  // Attenuate sun intensity but keep color warm in twilight
+  sun.multiplyScalar(mix(0.15, 1.0, dayFactor));
+
+  // Sky colors
+  const up = scatterAt(el, 55);
+  const horiz = scatterAt(el, 2);
+  const highUp = scatterAt(90, 85);
+
+  // Day sky colors
+  const daySky = new THREE.Vector3(up.L[0], up.L[1], up.L[2]);
+  const dayHaze = new THREE.Vector3(horiz.L[0], horiz.L[1], horiz.L[2]);
+
+  // Golden hour tint - warm oranges on horizon
+  const goldSky = new THREE.Vector3(
+    mix(daySky.x, 1.2, goldenFactor * 0.4),
+    mix(daySky.y, 0.6, goldenFactor * 0.5),
+    mix(daySky.z, 0.25, goldenFactor * 0.6),
   );
-  sun.multiplyScalar(smoothstep(-4, 6, elevationDeg));
+  const goldHaze = new THREE.Vector3(
+    mix(dayHaze.x, 1.3, goldenFactor * 0.5),
+    mix(dayHaze.y, 0.7, goldenFactor * 0.5),
+    mix(dayHaze.z, 0.3, goldenFactor * 0.5),
+  );
 
-  const up = scatterAt(elevationDeg, 55);
-  const horiz = scatterAt(elevationDeg, 2);
-  const day = smoothstep(-6, 12, elevationDeg);
-  const skyFloor = new THREE.Vector3(0.02, 0.025, 0.06);
-  const hazeFloor = new THREE.Vector3(0.03, 0.032, 0.05);
-  const sky = new THREE.Vector3(up.L[0], up.L[1], up.L[2]).lerp(skyFloor, 1 - day);
-  const haze = new THREE.Vector3(horiz.L[0], horiz.L[1], horiz.L[2]).lerp(hazeFloor, 1 - day);
+  // Blue hour / twilight - deep blues and cyans
+  const blueSky = new THREE.Vector3(
+    mix(goldSky.x, 0.08, blueHourFactor * 0.8),
+    mix(goldSky.y, 0.12, blueHourFactor * 0.7),
+    mix(goldSky.z, 0.25, blueHourFactor * 0.6),
+  );
+  const blueHaze = new THREE.Vector3(
+    mix(goldHaze.x, 0.12, blueHourFactor * 0.7),
+    mix(goldHaze.y, 0.16, blueHourFactor * 0.6),
+    mix(goldHaze.z, 0.28, blueHourFactor * 0.5),
+  );
 
-  const sinEl = Math.max(0, Math.sin((elevationDeg * Math.PI) / 180));
+  // Night sky - very dark blue
+  const nightSky = new THREE.Vector3(0.008, 0.012, 0.025);
+  const nightHaze = new THREE.Vector3(0.012, 0.018, 0.035);
+
+  let sky = blueSky.lerp(nightSky, 1 - Math.max(dayFactor, blueHourFactor * 0.3));
+  let haze = blueHaze.lerp(nightHaze, 1 - Math.max(dayFactor, blueHourFactor * 0.3));
+
+  // Ensure sky never becomes too bright at night
+  sky.multiplyScalar(mix(0.02, 1.0, dayFactor));
+  haze.multiplyScalar(mix(0.03, 1.0, dayFactor));
+  if (el < -6) {
+    sky.copy(nightSky);
+    haze.copy(nightHaze);
+  }
+
+  const sinEl = Math.max(0, Math.sin((el * Math.PI) / 180));
   const irradiance = sun.clone().multiplyScalar(sinEl).add(sky);
   const ground = new THREE.Vector3(
     groundAlbedo[0] * irradiance.x,
