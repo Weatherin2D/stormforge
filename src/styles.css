@@ -1014,6 +1014,11 @@ label {
   display: none;
 }
 
+/* When the panel is hidden, the viewport fills the whole body. */
+.sim-body:has(.side-panel.hidden) {
+  grid-template-columns: 1fr;
+}
+
 .side-panel-head {
   display: flex;
   align-items: center;

@@ -146,7 +146,7 @@ export function defaultSynoptic(): SynopticSetup {
   return {
     marine: true,
     latitudeDeg: 35,
-    enabled: false,
+    enabled: true,
     jetstream: false,
     jetstreamSouth: 0.5,
     move: true,
@@ -350,15 +350,6 @@ function sampleAt(
   let du = 0;
   let dv = 0;
 
-  if (setup.enabled === false) {
-    // Jetstream can still be applied if explicitly enabled even if other systems disabled
-    const synEnabled = setup.enabled !== false;
-    if (setup.jetstream && synEnabled) {
-      // Apply jetstream
-    }
-    // If disabled completely, just apply jetstream if requested
-  }
-
   for (const front of setup.fronts) {
     if (!front.enabled || front.points.length < 2) continue;
     if (setup.enabled === false) continue; // skip if synoptic systems disabled
@@ -440,8 +431,8 @@ function sampleAt(
     }
   }
 
-  // Jetstream
-  if (setup.jetstream && setup.enabled !== false) {
+  // Jetstream (applies whenever explicitly enabled, independent of master switch)
+  if (setup.jetstream) {
     const jetSouth = setup.jetstreamSouth !== undefined ? Math.max(0, Math.min(1, setup.jetstreamSouth)) : 0.5;
     // Jet core at mid-upper levels, stronger at ~9-12km
     const zJet = Math.exp(-Math.pow((z - 9000) / 2500, 2));
