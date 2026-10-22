@@ -386,7 +386,7 @@ export class SkewTEditor {
     ctx.setLineDash([4 * dpr, 4 * dpr]);
     ctx.strokeStyle = "rgba(40, 140, 70, 0.45)";
     ctx.lineWidth = 1 * dpr;
-    for (const wGkg of [0.4, 1, 2, 3, 5, 8, 12, 16, 20]) {
+    for (const wGkg of [4, 8, 12, 20]) {
       this.traceBackground(ctx, (p) => {
         const tC = this.tempFromMixingRatioGkg(wGkg, p / 100);
         return tC + 273.15;
@@ -397,14 +397,14 @@ export class SkewTEditor {
     // Dry adiabats (θ K) — warm red
     ctx.strokeStyle = "rgba(200, 70, 55, 0.35)";
     ctx.lineWidth = 1 * dpr;
-    for (let theta = 240; theta <= 380; theta += 10) {
+    for (let theta = 260; theta <= 360; theta += 20) {
       this.traceBackground(ctx, (p) => TFromTheta(theta, p));
     }
 
-    // Moist adiabats (approximate pseudoadiabats from surface θe-ish starts)
+    // Moist adiabats
     ctx.setLineDash([5 * dpr, 4 * dpr]);
     ctx.strokeStyle = "rgba(50, 180, 90, 0.4)";
-    for (const tSfcC of [32, 24, 16, 8, 0, -8]) {
+    for (const tSfcC of [28, 16, 4]) {
       this.traceMoistAdiabat(ctx, tSfcC);
     }
     ctx.setLineDash([]);
@@ -543,9 +543,9 @@ export class SkewTEditor {
     const items: { label: string; color: string; dash?: number[]; fill?: boolean }[] = [
       { label: "T", color: "#ff8b5c" },
       { label: "Td", color: "#3ecf8e" },
-      { label: "dry adiabat", color: "rgba(200, 70, 55, 0.7)" },
-      { label: "moist adiabat", color: "rgba(50, 180, 90, 0.8)" },
-      { label: "mixing ratio", color: "rgba(40, 140, 70, 0.8)" },
+      { label: "dry", color: "rgba(200, 70, 55, 0.7)" },
+      { label: "moist", color: "rgba(50, 180, 90, 0.8)" },
+      { label: "mix", color: "rgba(40, 140, 70, 0.8)" },
       { label: "parcel", color: "rgba(240, 245, 255, 0.9)", dash: [4, 3] },
       { label: "CAPE", color: "rgba(255, 138, 60, 0.55)", fill: true },
       { label: "CIN", color: "rgba(90, 140, 255, 0.5)", fill: true },

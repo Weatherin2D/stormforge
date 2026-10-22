@@ -1010,10 +1010,54 @@ label {
   overflow-y: auto;
 }
 
-.side-panel h2 {
-  margin: 0;
-  padding: 0.85rem 1rem 0.35rem;
-  font-size: 1rem;
+.side-panel.hidden {
+  display: none;
+}
+
+.side-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 0.5rem;
+}
+
+.side-panel-head h2 {
+  padding-right: 0;
+}
+
+.panel-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.panel-close:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.panel-reopen {
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  z-index: 5;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.panel-reopen.hidden {
+  display: none;
 }
 
 .side-panel .panel-desc {

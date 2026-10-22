@@ -270,7 +270,10 @@ export class App {
           </div>
         </div>
         <aside class="side-panel">
-          <h2 id="panel-title">Skew-T</h2>
+          <div class="side-panel-head">
+            <h2 id="panel-title">Skew-T</h2>
+            <button id="btn-hide-panel" class="panel-close" title="Hide panel">✕</button>
+          </div>
           <p class="panel-desc" id="panel-desc">Orange = T, green = Td. Wind barbs are readout — use Hodograph to edit wind.</p>
           <div class="panel-toggle">
             <button id="view-skewt" class="active">Skew-T</button>
@@ -302,6 +305,7 @@ export class App {
             <span class="hint" id="import-msg">Formats: SHARPpy · Extra · SPC · CM1 · Stormforge (any filename)</span>
           </div>
         </aside>
+        <button id="btn-show-panel" class="panel-reopen hidden">Show sounding ▸</button>
       </div>
     `;
     this.host.appendChild(this.simScreen);
@@ -509,6 +513,21 @@ export class App {
   private bindSimUi(): void {
     const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
 
+    q("#btn-hide-panel").addEventListener("click", () => {
+      const aside = this.simScreen.querySelector(".side-panel") as HTMLElement;
+      aside.classList.add("hidden");
+      q("#btn-show-panel").classList.remove("hidden");
+      // resize the renderer to fill
+      this.renderer?.resize();
+    });
+    q("#btn-show-panel").addEventListener("click", () => {
+      const aside = this.simScreen.querySelector(".side-panel") as HTMLElement;
+      aside.classList.remove("hidden");
+      q("#btn-show-panel").classList.add("hidden");
+      this.skewt?.resize();
+      this.hodo?.resize();
+      this.renderer?.resize();
+     });
     q("#btn-pause").addEventListener("click", () => {
       if (this.sessionMode === "batching") return;
       if (this.sessionMode === "playback") {
