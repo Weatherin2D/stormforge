@@ -59,7 +59,7 @@ export class Radar2DView {
   private detail = 2;
   private onDetailChange: ((scale: number) => void) | null = null;
   private detailVal: HTMLElement | null = null;
-  private pinned: Set<MapProductId> = new Set(Radar2DView.DEFAULT_PINNED);
+  private pinned: Set<MapProductId> = new Set();
   /** Live catalog entry for each implemented product, used for provenance. */
   private readonly liveViews = liveViewsByProduct();
   private searchHits: CatalogView[] = [];
@@ -654,7 +654,13 @@ export class Radar2DView {
         localStorage.removeItem(key);
       }
       const raw = localStorage.getItem(Radar2DView.PIN_KEY);
-      if (!raw) return;
+      if (!raw) {
+        // Seed defaults on a fresh start; everything else stays hidden.
+        for (const id of Radar2DView.DEFAULT_PINNED) {
+          if (MAP_PRODUCTS[id]) this.pinned.add(id);
+        }
+        return;
+      }
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
       this.pinned.clear();
