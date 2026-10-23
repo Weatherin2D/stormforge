@@ -106,6 +106,15 @@ uniform float uTime;          // seconds, for scrolling rain streaks
 uniform float uRainFallSpeed; // m/s, scroll rate of streak noise
 uniform vec3  uRainWindShear; // horizontal drift per metre of height (lean)
 
+// Mammatus pouches under the cloud base.
+uniform float uMammatusDepth;   // max pouch depth below base, metres
+uniform float uMammatusCell;    // pouch cell size, metres
+// Precipitation shafts falling below cloud.
+uniform float uShaftMax;        // max shaft extinction, 1/km
+uniform float uFreezing;        // melting level height, metres
+// Sub-grid shadow probes toward the sun (0 = off, 1 = one, 2 = two).
+uniform float uShadowProbes;
+
 const float PI = 3.14159265359;
 
 // Distance along the view ray to the opaque scene. Sky (cleared depth) does not clip.
@@ -174,6 +183,52 @@ float dualLobe(float c, vec2 g, float s) {
   return mix(hg(c, g.x * s), hg(c, -g.y * s), uBackWeight);
 }
 
+// Three octaves of tileable value noise baked in uNoise (shape noise): at x the octaves of
+// lattice spacing 1, 1/2 and 1/4 in R, G, B, in one fetch.
+vec3 octaves(vec3 x){ return textureLod(uShapeNoise, x * 0.125, 0.0).rgb; }
+float fbm(vec3 x){ return dot(octaves(x), vec3(0.55, 0.3, 0.15)); }
+
+// Billow noise: rounded lobes meeting in creases, the cauliflower of a growing tower.
+float billow(vec3 x){
+  vec3 o = octaves(x);
+  return abs(o.r * 2.0 - 1.0) * 0.6 + abs(o.g * 2.0 - 1.0) * 0.28 + o.b * 0.12;
+}
+
+// The billows rise with the updraught (w): two copies half a period apart cross-fade,
+// so the towers never stretch (a flow map).
+const float BILLOW_PERIOD = 240.0;
+float risingBillow(vec3 p, float w){
+  float a = fract(uTime / BILLOW_PERIOD), b = fract(uTime / BILLOW_PERIOD + 0.5), rise = 0.5 * w * BILLOW_PERIOD;
+  vec3 q = p * 0.9;
+  return mix(billow(q - vec3(0.0, rise * a * 0.9, 0.0)), billow(q - vec3(0.0, rise * b * 0.9, 0.0) + vec3(5.2, 1.3, 7.9)), abs(2.0 * a - 1.0));
+}
+
+// Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
+float mammaDensity(vec3 p, float anvilBase, float anvilPresence){
+  if(anvilPresence < 0.02) return 0.0;
+  float h = anvilBase - p.y;
+  if(h < 0.0 || h > uMammatusDepth) return 0.0;
+  vec2 q = p.xz / uMammatusCell;
+  vec2 cell = floor(q);
+  float reach = 0.0;
+  for(int j = -1; j <= 1; j++) for(int i = -1; i <= 1; i++){
+    vec2 k = cell + vec2(float(i), float(j));
+    vec3 r = fract(sin(vec3(dot(k, vec2(127.1, 311.7)), dot(k, vec2(269.5, 183.3)), dot(k, vec2(419.2, 371.9)))) * 43758.5);
+    float here = smoothstep(r.z * 0.8 + 0.1, r.z * 0.8 + 0.2, anvilPresence);
+    reach = max(reach, (1.0 - smoothstep(0.1, 0.7, length(q - k - 0.5 - 0.35 * (r.xy - 0.5)))) * here);
+  }
+  reach *= uMammatusDepth;
+  return smoothstep(0.0, 0.4, reach - h + 0.15) * 0.6;
+}
+
+// Precipitation shaft density: streaks stretched down the fall, drifting down with the rain.
+float shaftDensity(vec3 p, float rain){
+  if(rain <= 0.0) return 0.0;
+  vec3 n = octaves(vec3(p.x * 2.4, p.y * 0.08 + uTime * 0.0009, p.z * 2.4) + vec3(5.3, 0.0, 2.9));
+  float streak = smoothstep(0.3, 0.75, n.g * 0.7 + n.b * 0.3);
+  return rain * uShaftMax * mix(0.15, 2.0, streak) * smoothstep(0.0, 0.5, rain * 12.0 + n.r - 0.5);
+}
+
 // ---------------------------------------------------------------- medium
 
 // Extinction per species at world position p, in 1/m: (liquid, ice, rain).
@@ -184,6 +239,26 @@ vec3 sampleSigma(vec3 p, float detail) {
   float liq = f.x;
   float ice = f.y;
   float rain = f.z;
+
+  // Estimate anvil base: the lowest height where ice is significant in this column.
+  // Approximate by checking a few samples above the current point.
+  float anvilBase = 0.0, anvilPresence = 0.0;
+  if (ice > 0.002) {
+    float iceAbove = 0.0;
+    int steps = 0;
+    for (int s = 1; s <= 6; s++) {
+      vec3 up = p + vec3(0.0, float(s) * 500.0, 0.0);
+      if (up.y < uBoxMax.y) {
+        vec3 uvw2 = (up - uBoxMin) / (uBoxMax - uBoxMin);
+        vec3 f2 = textureLod(uFields, uvw2, 0.0).rgb * uFieldGain;
+        if (f2.y > 0.002) { iceAbove += f2.y; steps++; }
+      }
+    }
+    if (steps > 0) {
+      anvilPresence = min(1.0, iceAbove / float(steps));
+      anvilBase = p.y + float(steps) * 500.0 * 0.5; // rough mid of ice layer
+    }
+  }
 
   if (detail > 0.01 && (liq + ice + rain) > 0.002) {
     vec3 rel = p + uNoiseOffset;
@@ -197,6 +272,12 @@ vec3 sampleSigma(vec3 p, float detail) {
       float bill = mix(billowLow, billowHigh, 0.5 * detail);
       float largeScale = sh.r;
       bill = mix(bill, largeScale, 0.3 * detail);
+
+      // Rising billows: the cauliflower churns upward where the cloud is dense (strong updraft proxy).
+      float vigor = min(1.0, liq * 2.0);
+      float rb = risingBillow(p, vigor * 10.0);
+      bill = mix(bill, rb, vigor * 0.5);
+
       float thr = (1.0 - bill) * uErosionLiquid * detail;
       liq = clamp((liq - thr) / max(1.0 - thr, 1e-3), 0.0, 1.0);
       liq *= mix(0.7, 1.0, smoothstep(0.1, 0.5, bill));
@@ -214,9 +295,15 @@ vec3 sampleSigma(vec3 p, float detail) {
       float thrI = (1.0 - fibre) * uErosionIce * detail;
       ice = clamp((ice - thrI) / max(1.0 - thrI, 1e-3), 0.0, 1.0);
       ice *= mix(0.8, 1.0, smoothstep(0.2, 0.6, fibre));
+
+      // Mammatus: rounded pouches hanging under the anvil base.
+      if (anvilPresence > 0.02) {
+        float mamma = mammaDensity(p, anvilBase, anvilPresence);
+        liq += mamma * 0.5; // mammatus reads as liquid-like pouches below the anvil
+      }
     }
 
-// Rain: physics-based extinction + scrolling sheared streaks.
+    // Rain: physics-based extinction + scrolling sheared streaks.
     if (rain > 0.002) {
       // Step 1: contrast curve â€” sharpen the core edge
       float rainCore = smoothstep(0.05, 0.55, rain);
@@ -237,7 +324,11 @@ vec3 sampleSigma(vec3 p, float detail) {
       float distFromCenter = length(sheared.xz * uShapeFreq * 1.8);
       rain *= smoothstep(0.0, 1.2, 1.0 - distFromCenter * 0.3);
 
-      // Step 3: mist foot â€” thicken rain near ground base
+      // Step 3: precipitation shafts below cloud base
+      float shaft = shaftDensity(p, rain);
+      rain += shaft;
+
+      // Step 4: mist foot â€” thicken rain near ground base
       float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
       rain += rainCore * groundFade * 0.4;
       // Smoother transition
@@ -337,6 +428,19 @@ void main() {
       // direct sun, with multiple scattering approximated by octaves that
       // flatten the phase function and thin the extinction (Wrenninge)
       float odSun = sunOpticalDepth(p);
+      // Sub-grid shadow probes toward the sun: billow self-shadowing so the
+      // sunlit side of a tower is bright and its creases dark.
+      if (uShadowProbes > 0.5 && uSunDir.y > -0.1) {
+        const float SHADOW_PROBE = 0.15;
+        if (uShadowProbes > 1.5) {
+          vec3 s1 = p + uSunDir * SHADOW_PROBE;
+          vec3 s2 = p + uSunDir * (SHADOW_PROBE * 3.0);
+          odSun += (sampleSigma(s1, 0.0).x + sampleSigma(s2, 0.0).x * 2.0) * SHADOW_PROBE * uSigma.x;
+        } else {
+          vec3 s1 = p + uSunDir * (SHADOW_PROBE * 2.0);
+          odSun += sampleSigma(s1, 0.0).x * 3.0 * SHADOW_PROBE * uSigma.x;
+        }
+      }
       float a = 1.0, b = 1.0, c = 1.0;
       float sunTerm = 0.0;
       for (int n = 0; n < MS_OCTAVES; n++) {

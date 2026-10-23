@@ -50,6 +50,8 @@ export class Radar2DView {
     this.root.className = "radar2d-panel hidden";
     this.root.innerHTML = `
       <div class="radar2d-frame">
+        <input id="map2d-search" type="search" placeholder="Search views…" style="width:100%;margin:4px 0;padding:4px 6px;background:#0a101c;color:#e8eef7;border:1px solid #2a3a55;border-radius:4px;" />
+        <div class="map2d-pinned" id="map2d-pinned" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
         <div class="map2d-tabs" id="map2d-tabs">
           <button type="button" data-product="refl" class="active">Reflectivity</button>
           <button type="button" data-product="doppler">Doppler</button>
@@ -100,6 +102,17 @@ export class Radar2DView {
       ".radar-legend-ticks",
     ) as HTMLElement;
     this.tabsEl = this.root.querySelector("#map2d-tabs") as HTMLElement;
+
+    const searchInput = this.root.querySelector("#map2d-search") as HTMLInputElement;
+    searchInput.addEventListener("input", () => {
+      const q = searchInput.value.trim().toLowerCase();
+      for (const btn of this.tabsEl.querySelectorAll("button[data-product]")) {
+        const label = (btn.textContent || "").toLowerCase();
+        const id = (btn.getAttribute("data-product") || "").toLowerCase();
+        (btn as HTMLElement).style.display =
+          q === "" || label.includes(q) || id.includes(q) ? "" : "none";
+      }
+    });
 
     this.tabsEl.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest(

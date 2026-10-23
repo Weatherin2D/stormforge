@@ -16,59 +16,10 @@ import {
   VolumetricCloudMaterial,
 } from "./clouds/VolumetricCloudMaterial";
 import { computeSkyLighting } from "./clouds/sunLighting";
-
-const skyVert = /* glsl */ `
-out vec3 vDir;
-void main() {
-  vDir = position;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_Position = projectionMatrix * mv;
-  gl_Position.z = gl_Position.w;
-}
-`;
-
-const skyFrag = /* glsl */ `
-precision highp float;
-in vec3 vDir;
-uniform vec3 uSunDir;
-uniform vec3 uSunColor;
-uniform vec3 uSkyColor;
-uniform vec3 uHazeColor;
-out vec4 fragColor;
-
-void main() {
-  vec3 dir = normalize(vDir);
-  float up = clamp(dir.y, 0.0, 1.0);
-  float upFactor = pow(up, 0.4);
-  vec3 col = mix(uHazeColor, uSkyColor, upFactor);
-  // Darken lower sky near horizon for more depth
-  col = mix(col, col * vec3(0.6, 0.65, 0.75), smoothstep(-0.1, 0.05, dir.y));
-  vec3 sun = normalize(uSunDir);
-  float sunDot = dot(dir, sun);
-  float sunElev = sun.y;
-  float vis = smoothstep(-0.12, 0.25, sunElev);
-  // Sun disc and glow
-  float disc = smoothstep(0.9992, 0.9997, sunDot);
-  float corona = pow(max(sunDot, 0.0), 16.0);
-  float glare = pow(max(sunDot, 0.0), 4.0);
-  float wide = pow(max(sunDot, 0.0), 1.6);
-  // Golden hour color shift for glow
-  vec3 glowColor = uSunColor;
-  if (sunElev < 0.15 && sunElev > -0.1) {
-    glowColor = mix(uSunColor, vec3(1.4, 0.7, 0.3), smoothstep(-0.05, 0.1, sunElev) * 0.7);
-  }
-  col += glowColor * (disc * 4.0 + corona * 1.2 + glare * 0.8 + wide * 0.22) * vis;
-  // Add subtle atmospheric scattering near horizon opposite to sun
-  float opp = max(-sunDot * (1.0 - up), 0.0);
-  col += uHazeColor * opp * 0.15 * vis;
-  // Night sky - very dark
-  if (sunElev < -0.08) {
-    col = mix(col, vec3(0.005, 0.008, 0.018), smoothstep(-0.2, -0.08, sunElev));
-  }
-  col = max(col, vec3(0.0));
-  fragColor = vec4(col, 1.0);
-}
-`;
+import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SKY_ROWS } from "./sky";
+import { skyFragment, skyVertex } from "./clouds/skyShader";
+import { course, brightness, type LightningCourse } from "./lightning";
+import { SpriteView } from "./sprites";
 
 const blitVert = /* glsl */ `
 out vec2 vUv;
@@ -209,8 +160,18 @@ export class CloudRainRenderer {
     sigmaRain: DEFAULT_LOOK.sigmaRain,
     erosionLiquid: DEFAULT_LOOK.erosionLiquid,
     erosionIce: DEFAULT_LOOK.erosionIce,
+    mammatusDepth: DEFAULT_LOOK.mammatusDepth,
+    mammatusCell: DEFAULT_LOOK.mammatusCell,
+    shaftMax: DEFAULT_LOOK.shaftMax,
+    freezing: DEFAULT_LOOK.freezing,
+    shadowProbes: DEFAULT_LOOK.shadowProbes,
   };
   private sky: THREE.Mesh;
+  /** CPU-computed atmospheric sky table (sky.ts), uploaded as a 2D texture. */
+  private skyTexture: THREE.DataTexture | null = null;
+  private skyState: SkyState | null = null;
+  private sunElevationDeg = 45;
+  private haze = 0.1;
   private blitMesh: THREE.Mesh;
   private sunFrac = 0;
   private sunDir = new THREE.Vector3(0.25, 0.75, 0.2);
@@ -218,6 +179,8 @@ export class CloudRainRenderer {
   private volumeClear = false;
   private lastVolumeMs = 0;
   private clearScratch = new THREE.Color();
+  private spriteView: SpriteView | null = null;
+  private timeSeconds = 0;
   private liveBolts: {
     i: number;
     j: number;
@@ -229,6 +192,8 @@ export class CloudRainRenderer {
     life: number;
     seed: number;
     brightness: number;
+    course: import("./lightning").LightningCourse;
+    isCg: boolean;
   }[] = [];
   private groundFlashMesh: THREE.Mesh | null = null;
   private flashTint = new THREE.Color(0.75, 0.86, 1);
@@ -321,25 +286,40 @@ export class CloudRainRenderer {
     );
     this.scene.add(this.domainBox);
 
+    // Atmospheric sky table (CPU-computed via sky.ts), uploaded as a texture.
+    const skyData = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
+    this.skyTexture = new THREE.DataTexture(skyData, SKY_COLS, SKY_ROWS, THREE.RGBAFormat, THREE.HalfFloatType);
+    this.skyTexture.minFilter = this.skyTexture.magFilter = THREE.LinearFilter;
+    this.skyTexture.needsUpdate = true;
+
     const skyMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
-      vertexShader: skyVert,
-      fragmentShader: skyFrag,
+      vertexShader: skyVertex,
+      fragmentShader: skyFragment,
       uniforms: {
+        uSky: { value: this.skyTexture },
+        uSkyGain: { value: 1 },
+        uSkyFloor: { value: new THREE.Color() },
+        uCityGlow: { value: new THREE.Color() },
+        uHaze: { value: 0.1 },
         uSunDir: { value: this.sunDir },
-        uSunColor: { value: new THREE.Vector3(1, 1, 1) },
-        uSkyColor: { value: new THREE.Vector3(0.16, 0.28, 0.55) },
-        uHazeColor: { value: new THREE.Vector3(0.45, 0.55, 0.7) },
+        uSunDisc: { value: new THREE.Color(1, 1, 1) },
+        uGroundLight: { value: new THREE.Color() },
+        uStars: { value: 0 },
+        uWater: { value: 0 },
       },
       side: THREE.BackSide,
       depthTest: false,
       depthWrite: false,
       fog: false,
     });
-    this.sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 18), skyMat);
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), skyMat);
     this.sky.frustumCulled = false;
     this.sky.renderOrder = -10;
     this.scene.add(this.sky);
+
+    // Initial sky for the default sun direction.
+    this.updateSkyFromSun();
 
     const blitMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
@@ -388,6 +368,8 @@ export class CloudRainRenderer {
     this.resolveMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), resolveMat);
     this.resolveMesh.frustumCulled = false;
     this.resolveScene.add(this.resolveMesh);
+
+    this.spriteView = new SpriteView(this.scene);
 
     this.syncSky();
 
@@ -606,7 +588,52 @@ export class CloudRainRenderer {
       (0.5 + up * 0.4 + warm * 0.06) * (0.35 + day * 0.65),
       Math.max(0.1, (0.7 + up * 0.25 - warm * 0.52)) * (0.4 + day * 0.6),
     );
+    this.updateSkyFromSun();
     this.applyCloudSun();
+  }
+
+  /** Recompute the atmospheric sky table from the current sun direction and upload it. */
+  private updateSkyFromSun(): void {
+    if (!this.skyTexture || !this.sky) return;
+    const elev = this.sunDir.y;
+    const elDeg = (Math.asin(Math.min(1, Math.max(-1, elev))) * 180) / Math.PI;
+    this.sunElevationDeg = elDeg;
+    // Haze from humidity-ish: midday clearer, evening hazier.
+    const rh = 0.6 + 0.3 * Math.max(0, -elDeg / 15);
+    const haze = hazeExtinction(rh);
+    this.haze = haze;
+    const state = computeSky(elDeg * Math.PI / 180, haze, 0.2);
+    this.skyState = state;
+    // Upload the sky table as an RGBA HalfFloat texture.
+    const data = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
+    const sky = state.sky;
+    for (let row = 0; row < SKY_ROWS; row++) {
+      for (let col = 0; col < SKY_COLS; col++) {
+        const o = (row * SKY_COLS + col) * 4;
+        const s = sky[(row * SKY_COLS + col) * 3];
+        data[o] = Math.min(65535, Math.round(s * 65535));
+        data[o + 1] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 1] * 65535));
+        data[o + 2] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 2] * 65535));
+        data[o + 3] = 65535;
+      }
+    }
+    (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
+    this.skyTexture.needsUpdate = true;
+
+    // Sky material uniforms.
+    const mat = this.sky.material as THREE.ShaderMaterial;
+    const sunEl = Math.sin(elDeg * Math.PI / 180);
+    const gain = 14 * (Math.max(0, sunEl) + 0.05);
+    (mat.uniforms.uSkyGain as { value: number }).value = gain;
+    (mat.uniforms.uHaze as { value: number }).value = haze;
+    (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
+    (mat.uniforms.uStars as { value: number }).value = elDeg < -8 ? 1 : 0;
+    // Ground light from sky irradiance.
+    const irr = state.skyIrradiance;
+    (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(irr[0], irr[1], irr[2]);
+    // Sun disc color bright at day, dim at night.
+    const day = Math.min(1, Math.max(0, (elDeg + 8) / 20));
+    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setScalar(40 * day);
   }
 
   /** Environmental wind in m/s. East is +X, north is +Y in the sim and −Z in the view. */
@@ -680,31 +707,19 @@ export class CloudRainRenderer {
       sigmaRain: this.tune.sigmaRain,
       erosionLiquid: this.tune.erosionLiquid,
       erosionIce: this.tune.erosionIce,
+      mammatusDepth: this.tune.mammatusDepth,
+      mammatusCell: this.tune.mammatusCell,
+      shaftMax: this.tune.shaftMax,
+      freezing: this.tune.freezing,
+      shadowProbes: this.tune.shadowProbes,
     });
   }
 
   private syncSky(): void {
-    const sky = this.sky.material as THREE.ShaderMaterial;
-    let sun: THREE.Vector3;
-    let zenith: THREE.Vector3;
-    let haze: THREE.Vector3;
-    let dir = this.sunDir;
-    if (this.cloudMat) {
-      sun = this.cloudMat.uniforms.uSunColor.value as THREE.Vector3;
-      zenith = this.cloudMat.uniforms.uSkyColor.value as THREE.Vector3;
-      haze = this.cloudMat.uniforms.uHazeColor.value as THREE.Vector3;
-      dir = this.cloudMat.uniforms.uSunDir.value as THREE.Vector3;
-    } else {
-      const el = (Math.asin(Math.min(1, Math.max(-1, this.sunDir.y))) * 180) / Math.PI;
-      const c = computeSkyLighting(el);
-      sun = c.sun;
-      zenith = c.sky;
-      haze = c.haze;
-    }
-    (sky.uniforms.uSunColor.value as THREE.Vector3).copy(sun);
-    (sky.uniforms.uSkyColor.value as THREE.Vector3).copy(zenith);
-    (sky.uniforms.uHazeColor.value as THREE.Vector3).copy(haze);
-    (sky.uniforms.uSunDir.value as THREE.Vector3).copy(dir);
+    // The atmospheric sky is fully managed by updateSkyFromSun() (called from setSun).
+    // Keep the sun dir uniform in sync in case the camera-relative lookdev override moves it.
+    const mat = this.sky.material as THREE.ShaderMaterial;
+    (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
   }
 
   private uploadFlashes(): void {
@@ -747,7 +762,21 @@ export class CloudRainRenderer {
     const d = this.sunDir;
     const az = (Math.atan2(d.x, -d.z) * 180) / Math.PI;
     const el = (Math.asin(Math.min(1, Math.max(-1, d.y))) * 180) / Math.PI;
-    this.cloudMat.setSun(az, el);
+    // Use the atmospheric sky state for cloud lighting colors when available.
+    if (this.skyState) {
+      const sunEl = Math.sin(el * Math.PI / 180);
+      const day = Math.min(1, Math.max(0, (el + 8) / 20));
+      const irr = this.skyState.sunIrradiance;
+      const sunCol = this.skyState.sunByHeight;
+      // Approximate sun color from the top-of-atmosphere irradiance scaled by sun elevation.
+      const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(sunEl * (SUN_LEVELS - 1))));
+      this.cloudMat.setSun(az, el);
+      const cm = this.cloudMat.uniforms;
+      (cm.uSunColor as { value: THREE.Vector3 }).value.set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2]).multiplyScalar(1 + day);
+      (cm.uSkyColor as { value: THREE.Vector3 }).value.set(irr[0], irr[1], irr[2]);
+    } else {
+      this.cloudMat.setSun(az, el);
+    }
   }
 
   private applyCloudWind(): void {
@@ -1143,8 +1172,8 @@ export class CloudRainRenderer {
   private lightningMix(): number {
     for (const bolt of this.liveBolts) {
       if (bolt.kind === "sprite") continue;
-      const alpha = 1 - bolt.age / bolt.life;
-      if (alpha > 0.45) return 0.3;
+      const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
+      if (b.main * bolt.brightness > 0.45) return 0.3;
     }
     return 0.88;
   }
@@ -1190,22 +1219,33 @@ export class CloudRainRenderer {
     z: number;
   }): void {
     const kind = hit.kind;
-    const life =
-      kind === "sprite"
-        ? 0.3 + Math.random() * 0.3
-        : 0.28 + Math.random() * 0.38;
-    const brightness =
-      kind === "sprite"
-        ? 0.7 + Math.random() * 0.3
-        : 0.55 + Math.random() * 0.45;
+    let seed = Math.random() * 20;
+    const rng = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed >>> 0) / 0xffffffff;
+    };
+    // Positive CG ~10% of the time; extent in km (domain scale, rough).
+    const charge = Math.random() < 0.1 ? 1 : -1;
+    const extentKm = 6;
+    const c = course(kind, charge, extentKm, rng);
+    const life = c.end / 1000;
+    const isCg = kind === "cg";
     this.liveBolts.unshift({
       ...hit,
       age: 0,
       life,
-      seed: Math.random() * 20,
-      brightness,
+      seed,
+      course: c,
+      isCg,
+      brightness: isCg ? 0.55 + Math.random() * 0.45 : 0.7 + Math.random() * 0.3,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
+    // Generate sprites/halos for CGs
+    if (isCg && this.spriteView) {
+      if (Math.random() < 0.6) {
+        this.spriteView.add(Math.random() < 0.3 ? "halo" : "sprite", hit.x, hit.y, hit.z, this.timeSeconds + c.strokes[0].at / 1000);
+      }
+    }
   }
 
   clearLightning(): void {
@@ -1217,6 +1257,11 @@ export class CloudRainRenderer {
     if (dt > 0) {
       for (const bolt of this.liveBolts) bolt.age += dt;
       this.liveBolts = this.liveBolts.filter((bolt) => bolt.age < bolt.life);
+    }
+    this.timeSeconds += dt;
+    if (this.spriteView) {
+      const dark = Math.max(0, 1 - this.sunFrac);
+      this.spriteView.update(this.timeSeconds, dark, true);
     }
     this.syncBoltVisuals();
   }
@@ -1241,8 +1286,10 @@ export class CloudRainRenderer {
         if (ribbon) ribbon.visible = false;
         continue;
       }
-      const alpha = Math.max(0, 1 - bolt.age / bolt.life);
-      const pulse = alpha * alpha * bolt.brightness;
+      const t = bolt.age * 1000;
+      const b = brightness(bolt.course, bolt.isCg, t);
+      const alpha = b.reveal;
+      const pulse = b.main * bolt.brightness;
       const sprite = bolt.kind === "sprite";
       if (sprite) {
         light.intensity = 0;
@@ -1287,8 +1334,8 @@ export class CloudRainRenderer {
     let groundPulse = 0;
     for (const bolt of this.liveBolts) {
       if (bolt.kind !== "cg") continue;
-      const a = Math.max(0, 1 - bolt.age / bolt.life);
-      groundPulse = Math.max(groundPulse, a * a * bolt.brightness);
+      const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
+      groundPulse = Math.max(groundPulse, b.main * bolt.brightness);
     }
     if (this.groundFlashMesh) {
       const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;

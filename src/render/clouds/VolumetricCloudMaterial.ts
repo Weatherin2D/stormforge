@@ -27,6 +27,14 @@ export interface CloudLook {
   stepSize: number;
   lodDistance: number;
   detailFade: [number, number];
+  // Mammatus pouches under anvil base (metres).
+  mammatusDepth: number;
+  mammatusCell: number;
+  // Precipitation shafts below cloud base.
+  shaftMax: number; // max shaft extinction, 1/km
+  freezing: number; // melting level height, metres
+  // Sub-grid shadow probes toward the sun (0 = off).
+  shadowProbes: number; // 0..2
 }
 
 export const DEFAULT_LOOK: CloudLook = {
@@ -52,6 +60,11 @@ export const DEFAULT_LOOK: CloudLook = {
   stepSize: 50,
   lodDistance: 12000,
   detailFade: [6000, 28000],
+  mammatusDepth: 1200,
+  mammatusCell: 900,
+  shaftMax: 0.04,
+  freezing: 4000,
+  shadowProbes: 1,
 };
 
 export interface VolumetricCloudOptions {
@@ -141,6 +154,11 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
         uTime: { value: 0 },
         uRainFallSpeed: { value: 7.0 },
         uRainWindShear: { value: new THREE.Vector3(0, 0, 0) },
+        uMammatusDepth: { value: 0 },
+        uMammatusCell: { value: 0 },
+        uShaftMax: { value: 0 },
+        uFreezing: { value: 0 },
+        uShadowProbes: { value: 0 },
       },
       side: THREE.BackSide, // so the camera can sit inside the box
       transparent: true,
@@ -182,7 +200,11 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     this.u<number>('uDetailFreq').value = 1 / l.detailTileMeters;
     this.u<number>('uStepSize').value = l.stepSize;
     this.u<number>('uLodDistance').value = l.lodDistance;
-    this.u<THREE.Vector2>('uDetailFade').value.set(l.detailFade[0], l.detailFade[1]);
+    this.u<number>('uMammatusDepth').value = l.mammatusDepth;
+    this.u<number>('uMammatusCell').value = l.mammatusCell;
+    this.u<number>('uShaftMax').value = l.shaftMax;
+    this.u<number>('uFreezing').value = l.freezing;
+    this.u<number>('uShadowProbes').value = l.shadowProbes;
   }
 
   /**
