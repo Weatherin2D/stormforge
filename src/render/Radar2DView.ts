@@ -66,9 +66,12 @@ export class Radar2DView {
   private searchActive = -1;
   private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
 
-  private static readonly PIN_KEY = "stormforge.map2d.pins.v2";
+  private static readonly PIN_KEY = "stormforge.map2d.pins.v3";
   /** Older pin stores are discarded so the view starts with no stars. */
-  private static readonly LEGACY_PIN_KEYS = ["stormforge.map2d.pins.v1"];
+  private static readonly LEGACY_PIN_KEYS = [
+    "stormforge.map2d.pins.v1",
+    "stormforge.map2d.pins.v2",
+  ];
 
   private static readonly PRODUCT_ORDER: MapProductId[] = [
     "refl",
