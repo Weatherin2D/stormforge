@@ -1,13 +1,10 @@
 /**
  * Atmospheric sky shader for Stormforge.
- * Ported from MeteoLAB (src/render/shaders.ts skyFragment + atmosphere):
- * Bruneton & Neyret sky table, sun disc, stars, ground beyond horizon,
- * aerial perspective. Reads a small radiance table (uSky) computed on the CPU
- * by src/render/sky.ts computeSky().
+ * Aligned to MeteoLAB sky look (table sampling + sun disc + stars).
  */
 
 export const skyVertex = /* glsl */ `
-varying vec3 vDir;
+out vec3 vDir;
 void main(){
   vDir = position;
   vec4 p = projectionMatrix * vec4(mat3(viewMatrix) * position, 1.0);
@@ -27,7 +24,9 @@ uniform vec3 uGroundLight;
 uniform float uStars;
 uniform float uWater;
 uniform vec3 uSunDir;
-varying vec3 vDir;
+uniform float uLab;
+in vec3 vDir;
+out vec4 fragColor;
 
 const float SKY_PI = 3.14159265;
 const float SKY_COLS = 32.0;
@@ -70,11 +69,24 @@ void main(){
     }
   } else {
     float len = max(ro.y, 0.01) / -d.y;
-    // Simple transmittance for below-horizon: use haze decay.
     vec3 T = exp(-vec3(0.005, 0.008, 0.012) * len * 0.1);
     vec3 surface = uGroundLight;
-    c = surface * T + skyAt(vec3(-d.x, -d.y, -d.z)) * (1.0 - T);
+    if(uWater > 0.5){
+      float F = 0.02 + 0.98 * pow(max(1.0 + d.y, 0.0), 5.0);
+      surface = surface * (1.0 - F) + skyAt(vec3(d.x, -d.y, d.z)) * F;
+    } else {
+      c = surface * T + skyAt(vec3(d.x, -d.y, d.z)) * (1.0 - T);
+      c = mix(c, vec3(0.009, 0.026, 0.044), uLab);
+      fragColor = vec4(c, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
+    c = surface * T + skyAt(vec3(d.x, -d.y, d.z)) * (1.0 - T);
   }
-  gl_FragColor = vec4(c, 1.0);
+  c = mix(c, vec3(0.009, 0.026, 0.044), uLab);
+  fragColor = vec4(c, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }
 `;

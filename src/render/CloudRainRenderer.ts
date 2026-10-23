@@ -310,6 +310,7 @@ export class CloudRainRenderer {
         uGroundLight: { value: new THREE.Color() },
         uStars: { value: 0 },
         uWater: { value: 0 },
+        uLab: { value: 0 },
       },
       side: THREE.BackSide,
       depthTest: false,

@@ -1,134 +1,18 @@
-/**
+﻿/**
  * Additional dynamics for diverse cloud types:
- *   - Ice/snow microphysics (deposition, aggregation, sublimation)
  *   - Cloud-top radiative cooling (drives stratocumulus)
  *   - Boundary-layer turbulent mixing (fog, stratus)
  *   - Synoptic-scale vertical motion (nimbostratus near lows)
  *   - Marine stratus trigger
+ *
+ * Cold microphysics (ice/snow/graupel/hail) now lives in `coldMicrophysics.ts`.
  */
 
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { LV, CP, esatFast, esatIce, mixingRatio, saturatedEvapLimit } from "./thermo";
+import { esatFast, mixingRatio } from "./thermo";
 import { sampleSynoptic, getActiveSynoptic } from "./synoptic";
 
-/**
- * Ice/snow microphysics.
- * - Deposition: vapor → ice when T < -5°C and supersaturated over ice
- * - Aggregation: ice → snow (treated as fast-falling ice) when qc_ice > threshold
- * - Sublimation: ice evaporates when subsaturated over ice
- * Uses the existing qc field split by temperature (iceFrac in packVolumeRGBA).
- * Snow falls at ~1 m/s (much slower than rain) and is handled by a simple
- * sedimentation pass that moves ice downward one level per ~dz/1 s.
- */
-export function stepIceMicrophysics(
-  grid: Grid3D,
-  f: SimFields,
-  dt: number,
-  exner: Float32Array,
-  iceScratch: Float32Array,
-): void {
-  const { nx, ny, nz } = grid;
-  const nxny = nx * ny;
-  const latHeat = LV / CP;
-  const deposRate = 0.8;   // 1/s, deposition growth rate
-  const subRate   = 0.35;  // 1/s, sublimation rate
-  const aggrThresh = 0.0004; // kg/kg, ice above this aggregates to snow
-  const aggrRate  = 0.0006;  // kg/kg/s
-
-  for (let k = 0; k < nz; k++) {
-    const p0 = f.p0[k];
-    const ex = exner[k];
-    const kBase = k * nxny;
-    for (let j = 0; j < ny; j++) {
-      const jBase = kBase + j * nx;
-      for (let i = 0; i < nx; i++) {
-        const id = jBase + i;
-        const T = f.theta[id] * ex;
-        const tC = T - 273.15;
-        if (tC >= -2) continue; // only below -2°C
-
-        let qv = f.qv[id];
-        let qc = f.qc[id];
-        let th = f.theta[id];
-
-        const qsIce = Math.max(1e-8, mixingRatio(esatIce(T), p0));
-        const qsLiq = Math.max(1e-8, mixingRatio(esatFast(T), p0));
-        const iceFrac = tC <= -20 ? 1 : -tC / 20;
-        const qcIce = qc * iceFrac;
-
-        // Deposition: vapor → ice when supersaturated over ice
-        if (qv > qsIce && tC < -5) {
-          const excess = qv - qsIce;
-          const maxDep = (3 * T) / Math.max(latHeat * th, 1);
-          const dep = Math.min(excess, excess * (1 - Math.exp(-deposRate * dt)), maxDep);
-          qv -= dep;
-          qc += dep;
-          th += (latHeat * dep * th) / Math.max(T, 1);
-        }
-
-        // Sublimation: ice → vapor when subsaturated over ice.
-        // Sublimating cools the parcel, so the amount is capped to keep it
-        // from ending up supersaturated over ice.
-        if (qcIce > 0 && qv < qsIce) {
-          const deficit = qsIce - qv;
-          let sub = Math.min(qcIce, deficit * (1 - Math.exp(-subRate * dt)));
-          sub = saturatedEvapLimit(th, qv, sub, p0, ex, esatIce);
-          qv += sub;
-          qc -= sub;
-          th -= (latHeat * sub * th) / Math.max(T, 1);
-        }
-
-        // Aggregation: thick ice layer converts to "snow" (stored in qr for now,
-        // but with a slower fall speed handled below)
-        if (qcIce > aggrThresh) {
-          const aggr = Math.min(qcIce - aggrThresh * 0.5, aggrRate * dt);
-          if (aggr > 0) {
-            qc -= aggr;
-            // Snow goes into qr — it will fall slowly via iceScratch sedimentation
-            f.qr[id] += aggr * 0.4; // snow is less dense than rain
-          }
-        }
-
-        f.qv[id] = Math.max(0, qv);
-        f.qc[id] = Math.max(0, qc);
-        f.theta[id] = th;
-      }
-    }
-  }
-
-  // Slow sedimentation for ice/snow at ~0.8 m/s (vs 7-14 m/s for rain)
-  // Only applied to cells where T < -5°C to avoid interfering with rain
-  iceScratch.fill(0);
-  const snowFallSpeed = 0.8; // m/s
-  for (let k = 1; k < nz; k++) {
-    const ex = exner[k];
-    const cells = Math.min(0.5, (snowFallSpeed * dt) / Math.max(grid.dz, 1));
-    const kBase = k * nxny;
-    for (let j = 0; j < ny; j++) {
-      const jBase = kBase + j * nx;
-      for (let i = 0; i < nx; i++) {
-        const id = jBase + i;
-        const T = f.theta[id] * ex;
-        if (T - 273.15 > -5) continue; // only snow in cold layers
-        const qcHere = f.qc[id];
-        if (qcHere <= 0) continue;
-        const kDest = k - cells;
-        if (kDest <= 0) continue;
-        const k0 = Math.floor(kDest);
-        const k1 = Math.min(nz - 1, k0 + 1);
-        const fz = kDest - k0;
-        const ij = i + j * nx;
-        iceScratch[ij + k0 * nxny] += qcHere * (1 - fz) * 0.15;
-        if (k1 !== k0) iceScratch[ij + k1 * nxny] += qcHere * fz * 0.15;
-      }
-    }
-  }
-  // Add settled ice to destination levels
-  for (let id = 0; id < nxny * nz; id++) {
-    if (iceScratch[id] > 0) f.qc[id] += iceScratch[id];
-  }
-}
 
 /**
  * Cloud-top longwave cooling.
@@ -175,7 +59,7 @@ export function stepCloudTopCooling(
 
 /**
  * Boundary-layer turbulent mixing.
- * Mixes θ and qv vertically in the lowest levels toward a well-mixed profile.
+ * Mixes Î¸ and qv vertically in the lowest levels toward a well-mixed profile.
  * This builds a realistic mixed layer and allows fog/stratus to form when
  * the BL is near-saturated, without requiring surface CAPE.
  */
@@ -210,7 +94,7 @@ export function stepBLMixing(
 
         // Only mix if lower layer is warmer (unstable) or nearly neutral
         const dTh = th0 - th1;
-        if (dTh < -0.5) continue; // stable — suppress mixing
+        if (dTh < -0.5) continue; // stable â€” suppress mixing
 
         const dThMix = dTh * mix;
         f.theta[id0] -= dThMix;
@@ -232,7 +116,7 @@ export function stepBLMixing(
  * Synoptic-scale vertical motion (omega forcing).
  * Lows produce gentle ascent (~2-5 cm/s), highs produce subsidence.
  * This drives nimbostratus and altostratus near lows, and suppresses
- * convection near highs — without needing surface CAPE.
+ * convection near highs â€” without needing surface CAPE.
  */
 export function stepSynopticOmega(
   grid: Grid3D,
@@ -257,12 +141,12 @@ export function stepSynopticOmega(
         if (!c.enabled) continue;
         const r = Math.hypot(xn - c.x, yn - c.y);
         const g = Math.exp(-(r * r) / (2 * 0.18 * 0.18));
-        // Low → ascent (negative omega), High → subsidence
+        // Low â†’ ascent (negative omega), High â†’ subsidence
         omega += (c.kind === "low" ? -1 : 1) * (c.hPa / 10) * g * 0.015;
       }
       if (Math.abs(omega) < 1e-4) continue;
 
-      // Convert omega (Pa/s) to w (m/s): w ≈ -omega / (rho * g)
+      // Convert omega (Pa/s) to w (m/s): w â‰ˆ -omega / (rho * g)
       for (let k = 1; k < nz - 1; k++) {
         const rho = f.rho0[k];
         const wForce = -omega / Math.max(rho * 9.81, 1e-3);
@@ -304,7 +188,7 @@ export function stepMarineStratus(
       const land = landMask[ij];
       if (land > 0.2) continue; // only over water (low land mask values)
 
-      // Find the marine inversion top: first level where θ increases sharply
+      // Find the marine inversion top: first level where Î¸ increases sharply
       let inversionK = -1;
       for (let k = 1; k < Math.min(nz - 1, 12); k++) {
         const id0 = i + nx * (j + ny * (k - 1));
