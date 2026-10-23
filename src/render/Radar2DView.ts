@@ -66,7 +66,9 @@ export class Radar2DView {
   private searchActive = -1;
   private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
 
-  private static readonly PIN_KEY = "stormforge.map2d.pins.v1";
+  private static readonly PIN_KEY = "stormforge.map2d.pins.v2";
+  /** Older pin stores are discarded so the view starts with no stars. */
+  private static readonly LEGACY_PIN_KEYS = ["stormforge.map2d.pins.v1"];
 
   private static readonly PRODUCT_ORDER: MapProductId[] = [
     "refl",
@@ -624,7 +626,7 @@ export class Radar2DView {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.dataset.product = id;
-      btn.innerHTML = `<span>${meta.title}</span><span class="map2d-pin" title="Pin to top bar" aria-label="Pin ${meta.title} to top bar">★</span>`;
+      btn.innerHTML = `<span>${meta.title}</span><span class="map2d-pin" title="Pin to top bar" aria-label="Pin ${meta.title} to top bar">☆</span>`;
       this.tabsEl.appendChild(btn);
     }
     this.refreshPins();
@@ -633,6 +635,9 @@ export class Radar2DView {
   private loadPins(): void {
     try {
       if (typeof localStorage === "undefined") return;
+      for (const key of Radar2DView.LEGACY_PIN_KEYS) {
+        localStorage.removeItem(key);
+      }
       const raw = localStorage.getItem(Radar2DView.PIN_KEY);
       if (!raw) return;
       const parsed: unknown = JSON.parse(raw);
@@ -675,7 +680,10 @@ export class Radar2DView {
       const isPinned = this.pinned.has(id);
       btn.classList.toggle("pinned", isPinned);
       const star = btn.querySelector(".map2d-pin");
-      if (star) star.setAttribute("aria-pressed", String(isPinned));
+      if (star) {
+        star.textContent = isPinned ? "★" : "☆";
+        star.setAttribute("aria-pressed", String(isPinned));
+      }
     }
   }
 
@@ -832,19 +840,21 @@ export class Radar2DView {
     if (h < 40) return;
     if (this.nx < 1 || this.ny < 1) return;
 
-    const aspect = this.nx / this.ny;
-    let cw = w;
-    let ch = w / aspect;
-    if (ch > h) {
-      ch = h;
-      cw = h * aspect;
-    }
+    // The map is always presented as a square, matching the radar-style view.
+    const size = Math.max(1, Math.min(w, h));
+    const cw = size;
+    const ch = size;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.style.width = `${cw}px`;
     this.canvas.style.height = `${ch}px`;
     this.canvas.width = Math.max(1, Math.floor(cw * dpr));
     this.canvas.height = Math.max(1, Math.floor(ch * dpr));
     this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
+    const compass = this.root.querySelector(".map2d-compass") as HTMLElement | null;
+    if (compass) {
+      compass.style.width = `${cw}px`;
+      compass.style.height = `${ch}px`;
+    }
     this.draw();
   }
 
