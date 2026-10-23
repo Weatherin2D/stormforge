@@ -635,7 +635,7 @@ export class CloudRainRenderer {
     // Sky material uniforms.
     const mat = this.sky.material as THREE.ShaderMaterial;
     const sunEl = Math.sin(elDeg * Math.PI / 180);
-    const gain = 9 * (Math.max(0, sunEl) + 0.05);
+    const gain = 14 * (Math.max(0, sunEl) + 0.05);
     (mat.uniforms.uSkyGain as { value: number }).value = gain;
     (mat.uniforms.uHaze as { value: number }).value = haze;
     (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
