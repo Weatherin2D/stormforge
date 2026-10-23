@@ -1980,7 +1980,7 @@ export class App {
       const simDt = Math.min(2, this.liveDebt * this.simSpeed);
       const now = performance.now();
       const wantVolume =
-        this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 120;
+        this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 50;
       const map =
         this.showRadar2d &&
         this.radar2d &&

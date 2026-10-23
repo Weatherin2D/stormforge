@@ -483,10 +483,11 @@ void main() {
   float avgDist = distAcc / alpha;
   float haze = 1.0 - exp(-avgDist * uHazeDensity);
   straight = mix(straight, uHazeColor, haze) * uExposure;
-  // Gentle filmic-ish contrast before tone mapping keeps brights from blowing out.
-  straight = straight * (straight + 0.05) / (straight + 0.2);
+  // Subtle tone mapping improvement
   straight = straight / (straight + vec3(1.0));
-  straight = pow(straight, vec3(1.0 / 2.2));
+  // Slight contrast boost
+  straight = (straight - 0.5) * 1.05 + 0.5;
+  straight = pow(straight, vec3(1.0));
 
   gl_FragColor = vec4(straight, alpha);
   #include <tonemapping_fragment>
