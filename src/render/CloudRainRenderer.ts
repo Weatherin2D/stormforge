@@ -263,7 +263,7 @@ export class CloudRainRenderer {
     this.groundFlashMesh.position.y = -0.5;
     this.groundFlashMesh.frustumCulled = false;
     this.scene.add(this.groundFlashMesh);
-    this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.00001);
+    this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.1);
     this.renderer.setClearColor(0x9fb4c4, 1);
 
     const groundGeo = new THREE.PlaneGeometry(4, 4);
