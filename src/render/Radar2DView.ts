@@ -59,6 +59,14 @@ export class Radar2DView {
   private detail = 2;
   private onDetailChange: ((scale: number) => void) | null = null;
   private detailVal: HTMLElement | null = null;
+  /** Zoom factor applied to the map image. */
+  private zoom = 1;
+  /** Pan offset in canvas display pixels. */
+  private panX = 0;
+  private panY = 0;
+  private isPanning = false;
+  private lastPointerX = 0;
+  private lastPointerY = 0;
   private pinned: Set<MapProductId> = new Set();
   /** Live catalog entry for each implemented product, used for provenance. */
   private readonly liveViews = liveViewsByProduct();
@@ -243,6 +251,14 @@ export class Radar2DView {
     this.canvas = this.root.querySelector("canvas") as HTMLCanvasElement;
     this.ctx = this.canvas.getContext("2d", { alpha: false })!;
     this.ctx.imageSmoothingEnabled = false;
+    this.canvas.addEventListener("wheel", (e) => this.onCanvasWheel(e), {
+      passive: false,
+    });
+    this.canvas.addEventListener("pointerdown", (e) => this.onCanvasPointerDown(e));
+    this.canvas.addEventListener("pointermove", (e) => this.onCanvasPointerMove(e));
+    this.canvas.addEventListener("pointerup", (e) => this.onCanvasPointerUp(e));
+    this.canvas.addEventListener("pointerleave", (e) => this.onCanvasPointerUp(e));
+    this.canvas.addEventListener("pointercancel", (e) => this.onCanvasPointerUp(e));
     this.titleEl = this.root.querySelector(".radar2d-title") as HTMLElement;
     this.unitsEl = this.root.querySelector(".radar2d-units") as HTMLElement;
     this.provenanceEl = this.root.querySelector(
@@ -883,6 +899,51 @@ export class Radar2DView {
     this.draw();
   }
 
+  private onCanvasWheel(e: WheelEvent): void {
+    e.preventDefault();
+    const wrap = this.root.querySelector(".radar2d-canvas-wrap") as HTMLElement;
+    const rect = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const delta = -e.deltaY;
+    const factor = delta > 0 ? 1.1 : delta < 0 ? 1 / 1.1 : 1;
+    let next = Math.min(4, Math.max(0.5, this.zoom * factor));
+    if (next === this.zoom) return;
+    // Keep the point under the cursor stable: adjust pan so cursor maps to same image point.
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const beforeX = (mx - cx - this.panX) / this.zoom;
+    const beforeY = (my - cy - this.panY) / this.zoom;
+    this.zoom = next;
+    this.panX = mx - cx - beforeX * this.zoom;
+    this.panY = my - cy - beforeY * this.zoom;
+    this.layout();
+  }
+
+  private onCanvasPointerDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    this.isPanning = true;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+    (this.canvas as any).setPointerCapture(e.pointerId);
+  }
+
+  private onCanvasPointerMove(e: PointerEvent): void {
+    if (!this.isPanning) return;
+    const dx = e.clientX - this.lastPointerX;
+    const dy = e.clientY - this.lastPointerY;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+    this.panX += dx;
+    this.panY += dy;
+    this.layout();
+  }
+
+  private onCanvasPointerUp(e?: PointerEvent): void {
+    this.isPanning = false;
+    (this.canvas as any).releasePointerCapture();
+  }
+
   private blitTarget(w: number, h: number): CanvasRenderingContext2D {
     if (
       !this.blitCanvas ||
@@ -917,17 +978,26 @@ export class Radar2DView {
     this.ctx.fillStyle = "#0a101c";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     this.ctx.imageSmoothingEnabled = f > 1;
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    const cx = cw / 2;
+    const cy = ch / 2;
+    // Clamp pan so the image never drifts completely out of view.
+    const maxPanX = Math.max(0, (tw * this.zoom - cw) / 2);
+    const maxPanY = Math.max(0, (th * this.zoom - ch) / 2);
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
+    this.ctx.save();
+    this.ctx.translate(cx + this.panX, cy + this.panY);
+    this.ctx.scale(this.zoom, this.zoom);
     this.ctx.drawImage(
       this.blitCanvas!,
-      0,
-      0,
+      -tw / 2,
+      -th / 2,
       tw,
       th,
-      0,
-      0,
-      this.canvas.width,
-      this.canvas.height,
     );
+    this.ctx.restore();
 
     if (this.windsVisible && this.windSamples.length > 0) {
       this.drawWindArrows();
