@@ -637,14 +637,14 @@ export class Radar2DView {
     this.tabsEl.innerHTML = "";
     for (const id of Radar2DView.PRODUCT_ORDER) {
       const meta = (MAP_PRODUCTS as Record<string, MapProductMeta>)[id];
-      if (!meta) continue;
+      if (!meta || !this.pinned.has(id)) continue;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.dataset.product = id;
-      btn.innerHTML = `<span>${meta.title}</span><span class="map2d-pin" title="Pin to top bar" aria-label="Pin ${meta.title} to top bar">☆</span>`;
+      btn.className = "pinned";
+      btn.innerHTML = `<span>${meta.title}</span><span class="map2d-pin" title="Unpin from top bar" aria-label="Unpin ${meta.title} from top bar">★</span>`;
       this.tabsEl.appendChild(btn);
     }
-    this.refreshPins();
   }
 
   private loadPins(): void {
@@ -692,6 +692,7 @@ export class Radar2DView {
     if (this.pinned.has(id)) this.pinned.delete(id);
     else this.pinned.add(id);
     this.savePins();
+    this.buildTabs();
     this.refreshPins();
     this.refreshSearchPin(id);
   }
