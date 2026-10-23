@@ -612,21 +612,14 @@ export class CloudRainRenderer {
     this.skyState = state;
     // Upload the sky table as an RGBA HalfFloat texture.
     const data = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
-    const toHalf = (v: number) => {
-      const f = Math.max(0, Math.min(1, v));
-      const e = Math.floor(Math.log2(f));
-      const m = f / Math.pow(2, e) - 1;
-      const exp = (e + 15) & 0x1f;
-      const mant = Math.floor(m * 1024) & 0x3ff;
-      return (exp << 10) | mant;
-    };
+    const toHalf = (THREE.DataUtils as any).toHalfFloat;
     const sky = state.sky;
     for (let i = 0; i < SKY_ROWS * SKY_COLS; i++) {
       const o = i * 4;
       data[o] = toHalf(sky[i * 3]);
       data[o + 1] = toHalf(sky[i * 3 + 1]);
       data[o + 2] = toHalf(sky[i * 3 + 2]);
-      data[o + 3] = 0xffff;
+      data[o + 3] = toHalf(1);
     }
     (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
     this.skyTexture.needsUpdate = true;
