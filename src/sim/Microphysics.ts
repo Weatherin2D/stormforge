@@ -30,6 +30,7 @@ export function stepMicrophysics(
   const evapCloudFac = 1 - Math.exp(-evapCloud * dt);
   const nxny = nx * ny;
   const latHeat = LV / CP;
+  f.precipRate.fill(0);
 
   for (let k = 0; k < nz; k++) {
     const p0 = f.p0[k];
@@ -136,7 +137,14 @@ function sedimentRain(
         const remain = f.qr[jBase + i];
         if (remain <= 0) continue;
         const kDest = k - cells;
-        if (kDest <= 0) continue; // rains out at surface
+        if (kDest <= 0) {
+          // Rains out at the surface: store accumulation and instantaneous rate.
+          const ij = i + j * nx;
+          const mm = remain * f.rho0[k] * dz;
+          f.rainAccum[ij] += mm;
+          if (dt > 0) f.precipRate[ij] += (mm / dt) * 3600;
+          continue;
+        }
         const k0 = Math.floor(kDest);
         const k1 = Math.min(nz - 1, k0 + 1);
         const fz = kDest - k0;

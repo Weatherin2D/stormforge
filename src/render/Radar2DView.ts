@@ -73,6 +73,12 @@ export class Radar2DView {
     "refl1k",
     "echotop",
     "vil",
+    "precip",
+    "paccum",
+    "preciptype",
+    "graupel",
+    "snowice",
+    "hailsize",
     "doppler",
     "ltg",
     "cape",
@@ -82,21 +88,31 @@ export class Radar2DView {
     "lfc",
     "el",
     "frz",
+    "pwat",
     "tsfc",
     "td",
     "rh",
-    "psfc",
     "thetae",
-    "pwat",
+    "t500",
+    "t700",
     "t850",
+    "t925",
+    "td500",
+    "td700",
     "td850",
-    "w850",
+    "td925",
+    "psfc",
+    "mslp",
     "wspd",
     "wdir",
+    "w850",
     "w3k",
     "wmax",
+    "shear01",
+    "shear03",
     "shear06",
     "conv",
+    "div",
     "vort",
     "mconv",
     "uh25",
@@ -107,6 +123,61 @@ export class Radar2DView {
     "cbase",
     "vis",
     "ir",
+    "mlcape",
+    "mucape",
+    "li",
+    "showalter",
+    "kindex",
+    "totaltotals",
+    "lapse700500",
+    "lapse03",
+    "wbz",
+    "convtemp",
+    "dcape",
+    "capeshear",
+    "dptdep",
+    "qsfc",
+    "mixratio",
+    "mflux",
+    "dryint",
+    "blrh",
+    "wetbulb",
+    "evappot",
+    "cice",
+    "iwp",
+    "cttemp",
+    "cdepth",
+    "overshoot",
+    "ctdiv",
+    "downdraft",
+    "w925",
+    "w700",
+    "w500",
+    "w300",
+    "w200",
+    "omega",
+    "shear08",
+    "srh01",
+    "srh03",
+    "srw",
+    "brn",
+    "llj",
+    "ulj",
+    "ucomp",
+    "vcomp",
+    "virga",
+    "vildensity",
+    "hydrometeor",
+    "rainrate",
+    "snowrate",
+    "z500",
+    "thickness",
+    "tropopause",
+    "vortadv",
+    "coldpool",
+    "pgrad",
+    "tgrad",
+    "tdgrad",
   ];
 
   constructor(host: HTMLElement) {
@@ -453,6 +524,9 @@ export class Radar2DView {
           ? "Not implemented — no formula is evaluated for this view."
           : "Not applicable."),
     );
+    if (view.parcelType) {
+      this.appendDetailLine(host, "Parcel", view.parcelType);
+    }
     this.appendDetailLine(
       host,
       "Assumptions",
@@ -889,6 +963,23 @@ export class Radar2DView {
         ctx.lineTo(3.5, -7);
         ctx.strokeStyle = `rgba(255, 72, 96, ${a})`;
         ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else if (m.kind === "ic") {
+        // In-cloud flash: a small pale-blue spark, no ground contact.
+        ctx.beginPath();
+        for (let n = 0; n < 8; n++) {
+          const r = n % 2 === 0 ? 8 : 3.2;
+          const a2 = (n / 8) * Math.PI * 2 - Math.PI / 2;
+          const x = Math.cos(a2) * r;
+          const y = Math.sin(a2) * r;
+          if (n === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = `rgba(212, 236, 255, ${a * 0.9})`;
+        ctx.strokeStyle = `rgba(60, 96, 140, ${a * 0.8})`;
+        ctx.lineWidth = 1.1;
+        ctx.fill();
         ctx.stroke();
       } else {
         ctx.beginPath();

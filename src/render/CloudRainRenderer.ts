@@ -20,6 +20,7 @@ import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SK
 import { skyFragment, skyVertex } from "./clouds/skyShader";
 import { course, brightness, type LightningCourse } from "./lightning";
 import { SpriteView } from "./sprites";
+import { PrecipitationParticles } from "./precipitation";
 
 const blitVert = /* glsl */ `
 out vec2 vUv;
@@ -180,6 +181,8 @@ export class CloudRainRenderer {
   private lastVolumeMs = 0;
   private clearScratch = new THREE.Color();
   private spriteView: SpriteView | null = null;
+  /** Renderer-side rain/snow particles spawned from the packed volume. */
+  private precipitation: PrecipitationParticles;
   private timeSeconds = 0;
   private liveBolts: {
     i: number;
@@ -370,6 +373,8 @@ export class CloudRainRenderer {
     this.resolveScene.add(this.resolveMesh);
 
     this.spriteView = new SpriteView(this.scene);
+    this.precipitation = new PrecipitationParticles();
+    this.scene.add(this.precipitation.points);
 
     this.syncSky();
 
@@ -430,6 +435,12 @@ export class CloudRainRenderer {
   setVolumeVisible(on: boolean): void {
     this.cloudsOn = on;
     if (this.volumeMesh) this.volumeMesh.visible = on;
+    this.precipitation.setVisible(on);
+  }
+
+  /** Height of the 0 °C level above the ground, in metres. */
+  setFreezingLevel(zAboveGround: number | null): void {
+    this.precipitation.setFreezingLevel(zAboveGround);
   }
 
   setRadarVisible(on: boolean): void {
@@ -641,6 +652,7 @@ export class CloudRainRenderer {
     this.envEast = east;
     this.envNorth = north;
     this.applyCloudWind();
+    this.precipitation.setWind(east, north);
   }
 
   /**
@@ -837,6 +849,8 @@ export class CloudRainRenderer {
     this.volumeData = new Uint8Array(new ArrayBuffer(bytes));
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
+    this.precipitation.setBounds(sx, sz, this.groundY, height);
+    this.precipitation.setVolume(this.volumeData, disp.nx, disp.ny, disp.nz);
 
     const boxMin = new THREE.Vector3(-sx / 2, this.groundY, -sz / 2);
     const boxMax = new THREE.Vector3(sx / 2, this.groundY + height, sz / 2);
@@ -1092,6 +1106,7 @@ export class CloudRainRenderer {
       this.camera.matrixWorldInverse,
     );
     this.invViewProj.copy(this.currViewProj).invert();
+    this.precipitation.update(performance.now());
 
     if (this.cloudMat) {
       this.cloudMat.update(performance.now() * 0.001);
@@ -1237,14 +1252,18 @@ export class CloudRainRenderer {
       seed,
       course: c,
       isCg,
-      brightness: isCg ? 0.55 + Math.random() * 0.45 : 0.7 + Math.random() * 0.3,
+      brightness: isCg ? 0.7 + Math.random() * 0.5 : 0.8 + Math.random() * 0.4,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
-    // Generate sprites/halos for CGs
-    if (isCg && this.spriteView) {
-      if (Math.random() < 0.6) {
-        this.spriteView.add(Math.random() < 0.3 ? "halo" : "sprite", hit.x, hit.y, hit.z, this.timeSeconds + c.strokes[0].at / 1000);
-      }
+    // TLE sprites/halos are emitted by the solver alongside strong CGs.
+    if (kind === "sprite" && this.spriteView) {
+      this.spriteView.add(
+        Math.random() < 0.25 ? "halo" : "sprite",
+        hit.x,
+        hit.y,
+        hit.z,
+        this.timeSeconds + c.strokes[0].at / 1000,
+      );
     }
   }
 
@@ -1359,22 +1378,32 @@ export class CloudRainRenderer {
     const cap = Math.min(out.length, this.boltPointCount);
     if (bolt.kind === "sprite") return 0; // sprites are flash-only, no geometry
     const steps = Math.min(20, cap - 1);
-    const drop = Math.max(100, bolt.y - this.groundY);
-    // Main channel with stepped leader jags
+    const isCg = bolt.kind === "cg";
+    const drop = isCg ? Math.max(100, bolt.y - this.groundY) : 0;
+    // Main channel. CGs step down to the ground; ICs crawl horizontally
+    // through the cloud deck near the strike altitude.
     let px = bolt.x;
     let py = bolt.y;
     let pz = bolt.z;
     for (let s = 0; s <= steps; s++) {
-      out[s].set(px, s === steps ? this.groundY + 2 : py, pz);
-      // Larger horizontal jag every ~3 steps (stepped leader) - more variation
-      const jagFreq = s % 3 === 1 ? 320 : 160;
-      const jag = jagFreq * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
-      px += Math.sin(seed + s * 2.17) * jag;
-      pz += Math.cos(seed * 1.3 + s) * jag;
-      py -= drop / steps;
+      out[s].set(px, isCg && s === steps ? this.groundY + 2 : py, pz);
+      if (isCg) {
+        // Larger horizontal jag every ~3 steps (stepped leader) - more variation
+        const jagFreq = s % 3 === 1 ? 320 : 160;
+        const jag = jagFreq * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
+        px += Math.sin(seed + s * 2.17) * jag;
+        pz += Math.cos(seed * 1.3 + s) * jag;
+        py -= drop / steps;
+      } else {
+        // Roughly 4 km wide in-cloud channel with a gentle vertical wander.
+        const jag = (s % 3 === 1 ? 340 : 180) * (0.7 + 0.5 * Math.sin(seed + s * 1.9));
+        px += Math.sin(seed + s * 2.17) * jag;
+        pz += Math.cos(seed * 1.3 + s) * jag;
+        py += Math.sin(seed * 0.7 + s * 0.9) * 26;
+      }
     }
     const mainCount = steps + 1;
-    // One branch: splits off at ~40% down, runs 5 steps then fades
+    // One branch: splits off at ~40% along, runs 5 steps then fades.
     const branchStart = Math.floor(steps * 0.4);
     const branchPt = out[branchStart];
     const branchSteps = Math.min(6, cap - mainCount - 1);
@@ -1386,9 +1415,9 @@ export class CloudRainRenderer {
       const bDrop = (drop / steps) * 1.1;
       for (let s = 0; s <= branchSteps; s++) {
         out[mainCount + s].set(bx, by, bz);
-        bx += Math.sin(bSeed + s * 2.1) * 200;
-        bz += Math.cos(bSeed * 1.8 + s) * 200;
-        by -= bDrop;
+        bx += Math.sin(bSeed + s * 2.1) * (isCg ? 200 : 340);
+        bz += Math.cos(bSeed * 1.8 + s) * (isCg ? 200 : 340);
+        by += isCg ? -bDrop : Math.sin(bSeed + s * 1.5) * 110;
       }
       return mainCount + branchSteps + 1;
     }
@@ -1457,6 +1486,8 @@ export class CloudRainRenderer {
     this.ro = null;
     this.disposeRadar();
     this.disposeWinds();
+    this.precipitation.dispose();
+    this.scene.remove(this.precipitation.points);
     if (this.volumeMesh) {
       this.cloudScene.remove(this.volumeMesh);
       this.volumeMesh.geometry.dispose();

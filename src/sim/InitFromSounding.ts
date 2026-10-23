@@ -21,6 +21,18 @@ export interface SimFields {
   qv: Float32Array;
   qc: Float32Array;
   qr: Float32Array;
+  qi: Float32Array; // cloud ice
+  qs: Float32Array; // snow
+  qg: Float32Array; // graupel
+  qh: Float32Array; // hail
+  /** Ice crystals per kg of air, transported with qi (Lin-style single moment). */
+  ni: Float32Array;
+  /** Surface rain accumulation, mm liquid equivalent (nx·ny). */
+  rainAccum: Float32Array;
+  /** Surface snow/graupel/hail accumulation, mm liquid equivalent (nx·ny). */
+  snowAccum: Float32Array;
+  /** Instantaneous surface precipitation rate, mm/h liquid equivalent (nx·ny). */
+  precipRate: Float32Array;
   /** Anelastic pressure / π' at cell centers. */
   p: Float32Array;
   /** Base-state potential temperature (1D, nz). */
@@ -49,6 +61,14 @@ export function createFields(grid: Grid3D): SimFields {
     qv: new Float32Array(n),
     qc: new Float32Array(n),
     qr: new Float32Array(n),
+    qi: new Float32Array(n),
+    qs: new Float32Array(n),
+    qg: new Float32Array(n),
+    qh: new Float32Array(n),
+    ni: new Float32Array(n),
+    rainAccum: new Float32Array(grid.nx * grid.ny),
+    snowAccum: new Float32Array(grid.nx * grid.ny),
+    precipRate: new Float32Array(grid.nx * grid.ny),
     p: new Float32Array(n),
     theta0: new Float32Array(nz),
     qv0: new Float32Array(nz),
@@ -178,6 +198,11 @@ export function initFromSounding(
         fields.qv[id] = fields.qv0[k];
         fields.qc[id] = 0;
         fields.qr[id] = 0;
+        fields.qi[id] = 0;
+        fields.qs[id] = 0;
+        fields.qg[id] = 0;
+        fields.qh[id] = 0;
+        fields.ni[id] = 0;
         fields.p[id] = 0;
       }
     }
@@ -199,6 +224,9 @@ export function initFromSounding(
   fields.w.fill(0);
 
   applySynopticFeatures(grid, fields, opts.synoptic);
+  fields.rainAccum.fill(0);
+  fields.snowAccum.fill(0);
+  fields.precipRate.fill(0);
 
   if (opts.bubbleStrength > 0) {
     spawnInitBubble(grid, fields, opts);

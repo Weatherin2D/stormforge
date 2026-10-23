@@ -1,6 +1,7 @@
 /** Thermodynamic helpers (SI-ish sandbox units). */
 
 export const RD = 287.05;
+export const RV = 461.5;
 export const CP = 1004.0;
 export const LV = 2.5e6;
 export const G = 9.81;

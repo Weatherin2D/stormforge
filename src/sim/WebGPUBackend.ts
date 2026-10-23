@@ -35,12 +35,12 @@ import {
 import { exnerFromP, qsat, TFromTheta } from "./thermo";
 import { stepMicrophysics } from "./Microphysics";
 import {
-  stepIceMicrophysics,
   stepCloudTopCooling,
   stepBLMixing,
   stepSynopticOmega,
   stepMarineStratus,
 } from "./stepDynamics";
+import { stepColdMicrophysics } from "./coldMicrophysics";
 import { stepShallowCu } from "./shallowCu";
 import { getActiveSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
@@ -967,7 +967,7 @@ export class WebGPUBackend implements SimBackend {
     applySurfaceRadiation(g, f, dt, this.radiation, landMask);
     stepShallowCu(g, f, dt, landMask, new Float32Array(g.nx * g.ny), exner, this.radiation);
     stepMicrophysics(g, f, dt, qrScratch, exner);
-    stepIceMicrophysics(g, f, dt, exner, iceScratch);
+    stepColdMicrophysics(g, f, dt, exner, iceScratch);
     stepCloudTopCooling(g, f, dt, exner);
     stepBLMixing(g, f, dt, exner);
     stepSynopticOmega(g, f, dt);
@@ -985,21 +985,19 @@ export class WebGPUBackend implements SimBackend {
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
-    const exner = new Float32Array(nz);
-    for (let k = 0; k < nz; k++) exner[k] = exnerFromP(f.p0[k]);
     const cloudUnit = 0.002;
+    const coldUnit = 0.002;
     const rainUnit = 0.0015;
     const byte = (q: number, unit: number): number => {
       if (q <= 0) return 0;
       const v = (q / unit) * 255;
       return v >= 255 ? 255 : v | 0;
     };
-    const write = (id: number, k: number, o: number): void => {
-      const tC = f.theta[id] * exner[k] - 273.15;
-      const iceFrac = tC >= 0 ? 0 : tC <= -20 ? 1 : -tC / 20;
-      const qc = f.qc[id];
-      const liq = byte(qc * (1 - iceFrac), cloudUnit);
-      const ice = byte(qc * iceFrac, cloudUnit);
+    const write = (id: number, _k: number, o: number): void => {
+      const cold =
+        f.qi[id] + 1.6 * f.qs[id] + 2.4 * f.qg[id] + 3.0 * f.qh[id];
+      const liq = byte(f.qc[id], cloudUnit);
+      const ice = byte(cold, coldUnit);
       const rain = byte(f.qr[id], rainUnit);
       out[o] = liq;
       out[o + 1] = ice;
@@ -1065,9 +1063,11 @@ export class WebGPUBackend implements SimBackend {
     const f = this.fields;
     let cloudMax = 0; let rainMax = 0; let cloudMass = 0;
     for (let i = 0; i < f.qc.length; i++) {
-      if (f.qc[i] > cloudMax) cloudMax = f.qc[i];
+      const cold = f.qi[i] + f.qs[i] + f.qg[i] + f.qh[i];
+      const cloud = f.qc[i] + cold;
+      if (cloud > cloudMax) cloudMax = cloud;
       if (f.qr[i] > rainMax) rainMax = f.qr[i];
-      cloudMass += f.qc[i] + f.qr[i];
+      cloudMass += cloud + f.qr[i];
     }
     return { cloudMax, rainMax, cloudMass };
   }

@@ -1329,6 +1329,29 @@ export class App {
     return new FluidSolver(grid);
   }
 
+  /** Height of the 0 °C level above ground from the current sounding, in metres. */
+  private freezingHeightAgl(): number | null {
+    const levels = this.sounding;
+    if (!levels || levels.length < 2) return null;
+    // Sounding editors keep levels ordered, but never assume it.
+    const sorted = [...levels].sort((a, b) => a.z - b.z);
+    const target = 273.15;
+    for (let n = 1; n < sorted.length; n++) {
+      const a = sorted[n - 1];
+      const b = sorted[n];
+      if (b.T === a.T) continue;
+      if ((a.T - target) * (b.T - target) <= 0) {
+        const t = (target - a.T) / (b.T - a.T);
+        return a.z + Math.min(1, Math.max(0, t)) * (b.z - a.z);
+      }
+    }
+    return null;
+  }
+
+  private syncFreezingLevel(): void {
+    this.renderer?.setFreezingLevel(this.freezingHeightAgl());
+  }
+
   private mountSimView(grid: Grid3D, zTop: number): void {
     this.viewport.querySelectorAll("canvas").forEach((c) => {
       if (c.parentElement === this.viewport) c.remove();
@@ -1347,6 +1370,7 @@ export class App {
     ).textContent = "2 m";
     this.renderer.setGrid(grid);
     this.renderer.resize();
+    this.syncFreezingLevel();
     this.radar2d = new Radar2DView(this.viewport);
     this.radar2d.setGrid(grid.nx, grid.ny);
     this.radar2d.setProduct(this.mapProduct);
@@ -1395,9 +1419,11 @@ export class App {
 
     this.skewt.onChange = (levels) => {
       this.sounding = levels;
+      this.syncFreezingLevel();
     };
     this.hodo.onChange = (levels) => {
       this.sounding = levels;
+      this.syncFreezingLevel();
     };
 
     // Front editor for the running simulation. It starts from the pattern the
@@ -1840,13 +1866,10 @@ export class App {
   }): void {
     if (!this.solver || !this.renderer) return;
     const g = this.solver.grid;
-    // 25% CG bolts, 75% in-cloud flashes
-    const kind: LightningKind =
-      hit.kind === "cg" && Math.random() > 0.25 ? "sprite" : hit.kind;
     this.renderer.addLightning({
       i: hit.i,
       j: hit.j,
-      kind,
+      kind: hit.kind,
       x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
       z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
       y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,

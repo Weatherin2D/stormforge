@@ -43,6 +43,8 @@ export interface CatalogView {
   definition?: string;
   /** Formula / algorithm for derived diagnostics. */
   formula?: string;
+  /** Parcel definition used by a parcel-based diagnostic. */
+  parcelType?: string;
   /** Known assumptions, limitations, or missing inputs. */
   assumptions?: string;
   /** Extra search terms. */
@@ -128,13 +130,19 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S1, "thermodynamics", "mlcape", "MLCAPE — mixed-layer CAPE", "derived", "column", "column", "J/kg", {
     definition: "CAPE for a parcel averaged over the lowest 100 hPa.",
-    assumptions: "Not implemented. Needs a mixed-layer parcel routine; the current integrator only lifts a surface parcel.",
     aliases: "mixed layer cape",
+    productId: "mlcape",
+    parcelType: "Mixed layer: mean θ and qv over the lowest 100 hPa.",
+    formula: "Mean θ and qv over the lowest 100 hPa define the parcel; lift dry to the LCL, then moist-adiabatic; ∫ g(Tp−Te)/Te dz.",
+    assumptions: "Entrainment-free mixed-layer parcel; no ice phase in the parcel lift; CAPE is integrated above the parcel origin.",
   }),
   V(S1, "thermodynamics", "mucape", "MUCAPE — most-unstable CAPE", "derived", "column", "column", "J/kg", {
     definition: "CAPE of the parcel with the highest equivalent potential temperature.",
-    assumptions: "Not implemented. Needs a most-unstable parcel search through the column.",
     aliases: "most unstable cape",
+    productId: "mucape",
+    parcelType: "Most unstable: maximum θe in the lowest 3 km.",
+    formula: "Choose the level in the lowest 3 km with maximum θe; lift that parcel dry to its LCL, then moist-adiabatic; integrate positive buoyancy.",
+    assumptions: "No entrainment or parcel dilution; the parcel starts at its source level, not at the surface.",
   }),
   V(S1, "thermodynamics", "sbcape", "SBCAPE — surface-based CAPE", "derived", "column", "column", "J/kg", {
     productId: "cape",
@@ -155,43 +163,56 @@ export const VIEW_CATALOG: CatalogView[] = [
   V(S1, "thermodynamics", "li", "Lifted Index (LI)", "derived", "500 hPa", "pressure", "K", {
     core: true,
     definition: "500 hPa environment temperature minus the lifted-parcel temperature.",
-    formula: "LI = T500(env) − T500(parcel)",
-    assumptions: "Not implemented. Requires a parcel lifted to 500 hPa from the surface.",
     aliases: "lifted index",
+    productId: "li",
+    parcelType: "Surface parcel.",
+    formula: "LI = T500(environment) − T500(surface parcel).",
+    assumptions: "Surface parcel lifted dry to the LCL then moist-adiabatic; 500 hPa is the model level nearest 500 hPa.",
   }),
   V(S1, "thermodynamics", "showalter", "Showalter Index", "derived", "850–500 hPa", "pressure", "K", {
     definition: "Stability index using an 850 hPa parcel lifted to 500 hPa.",
-    assumptions: "Not implemented. Needs 850 hPa parcel thermodynamics.",
+    productId: "showalter",
+    parcelType: "850 hPa parcel.",
+    formula: "SI = T500(environment) − T500(850 hPa parcel).",
+    assumptions: "Parcel starts at the model level nearest 850 hPa; no entrainment.",
   }),
   V(S1, "thermodynamics", "k-index", "K Index", "derived", "850–500 hPa", "pressure", "K", {
     definition: "Thunderstorm potential from the 850–500 hPa temperature lapse and low-level moisture.",
-    formula: "KI = (T850 − T500) + Td850 − (T700 − Td700)",
-    assumptions: "Not implemented. Needs 700/850 hPa temperature and dewpoint extraction.",
     aliases: "k index",
+    productId: "kindex",
+    formula: "KI = (T850 − T500) + Td850 − (T700 − Td700), all in °C.",
+    assumptions: "Computed at the model levels nearest 850/700/500 hPa.",
   }),
   V(S1, "thermodynamics", "total-totals", "Total Totals Index (TT)", "derived", "850–500 hPa", "pressure", "K", {
     definition: "Combined lapse-rate and moisture index.",
-    formula: "TT = T850 + Td850 − 2·T500",
-    assumptions: "Not implemented.",
     aliases: "total totals",
+    productId: "totaltotals",
+    formula: "TT = (T850 − T500) + (Td850 − T500), all in °C.",
+    assumptions: "Computed at the model levels nearest 850/500 hPa.",
   }),
   V(S1, "thermodynamics", "lapse-700-500", "700–500 hPa lapse rate", "derived", "700–500 hPa", "pressure", "K/km", {
     definition: "Environmental temperature lapse rate between 700 and 500 hPa.",
-    assumptions: "Not implemented. Requires pressure-level interpolation.",
     aliases: "mid-level lapse rate",
+    productId: "lapse700500",
+    formula: "(T700 − T500) / (z700 − z500) × 1000 K/km.",
+    assumptions: "Environmental temperature difference between the nearest model levels; no pressure-level interpolation.",
   }),
   V(S1, "thermodynamics", "lapse-0-3", "0–3 km lapse rate", "derived", "0–3 km", "profile", "K/km", {
     definition: "Low-level environmental temperature lapse rate.",
-    assumptions: "Not implemented.",
     aliases: "low level lapse rate",
+    productId: "lapse03",
+    formula: "(Tsfc − T3km) / 3000 m × 1000 K/km.",
+    assumptions: "Uses the lowest model level and the level nearest 3 km; surface height is 0.",
   }),
   V(S1, "thermodynamics", "t700", "Temperature at 700 hPa", "simulated", "700 hPa", "pressure", "°C", {
+    productId: "t700",
     definition: "Model temperature interpolated to 700 hPa.",
-    assumptions: "Not implemented as a separate map product.",
+    assumptions: "Nearest model level; no vertical interpolation.",
   }),
   V(S1, "thermodynamics", "t500", "Temperature at 500 hPa", "simulated", "500 hPa", "pressure", "°C", {
+    productId: "t500",
     definition: "Model temperature interpolated to 500 hPa.",
-    assumptions: "Not implemented as a separate map product.",
+    assumptions: "Nearest model level; no vertical interpolation.",
   }),
   V(S1, "thermodynamics", "frz", "Freezing-level height", "derived", "column", "column", "m", {
     productId: "frz",
@@ -203,8 +224,10 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S1, "thermodynamics", "wbz", "Wet-bulb-zero height", "derived", "column", "column", "m", {
     definition: "Height where the wet-bulb temperature reaches 0 °C.",
-    assumptions: "Not implemented. The model stores no wet-bulb temperature; needs a psychrometric solve.",
     aliases: "wbz wet bulb zero",
+    productId: "wbz",
+    formula: "Wet-bulb temperature from Stull's psychrometric approximation at each level; height where Tw first crosses 0 °C.",
+    assumptions: "Stull approximation assumes liquid water; no ice-bulb correction; returns 0 when no crossing is found.",
   }),
   V(S1, "thermodynamics", "el", "Equilibrium Level (EL)", "derived", "column", "column", "m", {
     productId: "el",
@@ -228,7 +251,10 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S1, "thermodynamics", "conv-temp", "Convective temperature", "derived", "surface", "surface", "°C", {
     definition: "Surface temperature needed to remove the remaining CIN.",
-    assumptions: "Not implemented.",
+    productId: "convtemp",
+    parcelType: "Surface parcel.",
+    formula: "Tconv = T_env(LFC) × (p_sfc / p_LFC)^(Rd/cp).",
+    assumptions: "Uses the surface parcel's LFC from the same CAPE integration; returns the surface temperature when no LFC exists.",
   }),
   V(S1, "thermodynamics", "parcel-buoyancy", "Parcel buoyancy", "derived", "profile", "profile", "m/s²", {
     definition: "Local buoyancy of a lifted parcel relative to the environment.",
@@ -242,13 +268,18 @@ export const VIEW_CATALOG: CatalogView[] = [
   V(S1, "thermodynamics", "dcape", "DCAPE — downdraft convective available potential energy", "derived", "column", "column", "J/kg", {
     core: true,
     definition: "Potential negative buoyancy available to a descending downdraft parcel.",
-    assumptions: "Not implemented. Needs a downdraft parcel (e.g. minimum θe in the lowest 3 km) and moist descent.",
     aliases: "downdraft cape",
+    productId: "dcape",
+    parcelType: "Lowest θe parcel in the lowest 3 km.",
+    formula: "Parcel starts at the lowest θe in the lowest 3 km and descends moist-adiabatically; DCAPE = ∫ max(0, −B) dz.",
+    assumptions: "No evaporative cooling or precipitation loading; the descending parcel remains saturated.",
   }),
   V(S1, "thermodynamics", "cape-shear", "CAPE × shear diagnostic", "derived", "column", "column", "J·m/(kg·s)", {
     definition: "Composite of CAPE and deep-layer shear.",
-    formula: "CAPE × 0–6 km bulk shear",
-    assumptions: "Not implemented.",
+    productId: "capeshear",
+    parcelType: "Surface parcel.",
+    formula: "CAPE(surface parcel) × bulk shear (0–6 km).",
+    assumptions: "Shear comes from the base-state sounding and is horizontally uniform; CAPE is surface-based.",
   }),
   V(S1, "thermodynamics", "cape-tendency", "CAPE tendency", "derived", "time", "time", "J/kg/min", {
     definition: "Rate of change of column CAPE.",
@@ -270,11 +301,12 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S2, "thermodynamics", "td-select", "Dew point at selectable pressure levels", "simulated", "selectable", "pressure", "°C", {
     definition: "Pressure-level dew point with a user-chosen level.",
-    assumptions: "Selectable level UI is not implemented; fixed 850 hPa view is available.",
+    assumptions: "Fixed 925/850/700/500 hPa tabs are available; an arbitrary level picker is not implemented.",
   }),
   V(S2, "thermodynamics", "td925", "Dew point at 925 hPa", "simulated", "925 hPa", "pressure", "°C", {
+    productId: "td925",
     definition: "Dew point interpolated to 925 hPa.",
-    assumptions: "Not implemented as a separate map product.",
+    assumptions: "Nearest model level; no vertical interpolation.",
   }),
   V(S2, "thermodynamics", "td850", "Dew point at 850 hPa", "simulated", "850 hPa", "pressure", "°C", {
     productId: "td850",
@@ -283,17 +315,20 @@ export const VIEW_CATALOG: CatalogView[] = [
     assumptions: "Nearest-level sampling, no vertical interpolation.",
   }),
   V(S2, "thermodynamics", "td700", "Dew point at 700 hPa", "simulated", "700 hPa", "pressure", "°C", {
+    productId: "td700",
     definition: "Dew point interpolated to 700 hPa.",
-    assumptions: "Not implemented as a separate map product.",
+    assumptions: "Nearest model level; no vertical interpolation.",
   }),
   V(S2, "thermodynamics", "td500", "Dew point at 500 hPa", "simulated", "500 hPa", "pressure", "°C", {
+    productId: "td500",
     definition: "Dew point interpolated to 500 hPa.",
-    assumptions: "Not implemented as a separate map product.",
+    assumptions: "Nearest model level; no vertical interpolation.",
   }),
   V(S2, "thermodynamics", "dewpoint-depression", "Dew-point depression", "derived", "surface (lowest level)", "surface", "°C", {
     definition: "Temperature minus dew point.",
-    formula: "T − Td",
-    assumptions: "Not implemented as a map product.",
+    productId: "dptdep",
+    formula: "Tsfc − Td(sfc) in K.",
+    assumptions: "Lowest model level; no interpolation to 2 m.",
   }),
   V(S2, "thermodynamics", "rh-surface", "Relative humidity at the surface", "derived", "surface (lowest level)", "surface", "%", {
     productId: "rh",
@@ -309,12 +344,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S2, "thermodynamics", "specific-humidity", "Specific humidity", "simulated", "profile", "profile", "kg/kg", {
     definition: "Mass of water vapour per mass of moist air.",
-    formula: "q = qv / (1 + qv)",
-    assumptions: "Not implemented as a map product.",
+    productId: "qsfc",
+    formula: "q = qv / (1 + qv) × 1000 g/kg.",
+    assumptions: "Specific humidity of the lowest model level.",
   }),
   V(S2, "thermodynamics", "mixing-ratio", "Water-vapour mixing ratio", "simulated", "profile", "profile", "kg/kg", {
     definition: "Mass of water vapour per mass of dry air (the model's qv).",
-    assumptions: "Not implemented as a map product.",
+    productId: "mixratio",
+    formula: "r = qv × 1000 g/kg.",
+    assumptions: "Water-vapour mixing ratio of the lowest model level.",
   }),
   V(S2, "thermodynamics", "pwat", "Precipitable water (PWAT)", "derived", "column", "column", "mm", {
     productId: "pwat",
@@ -326,7 +364,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S2, "thermodynamics", "moisture-flux", "Low-level moisture flux", "derived", "0–1 km", "profile", "kg/(m·s)", {
     definition: "Horizontal transport of water vapour by the low-level wind.",
-    assumptions: "Not implemented.",
+    productId: "mflux",
+    formula: "qv × |V| × 1000 (g kg⁻¹ m s⁻¹) at the lowest model level.",
+    assumptions: "Surface-layer moisture-flux proxy; no density factor or vertical integration.",
   }),
   V(S2, "thermodynamics", "moisture-convergence", "Moisture convergence", "derived", "surface", "surface", "10⁻⁶ kg kg⁻¹ s⁻¹", {
     productId: "mconv",
@@ -342,11 +382,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S2, "thermodynamics", "dry-intrusion", "Dry-air intrusion / mid-level dryness", "derived", "700–500 hPa", "profile", "%", {
     definition: "Mid-level dew-point depression or dry-layer indicator.",
-    assumptions: "Not implemented.",
+    productId: "dryint",
+    formula: "100 − mean RH between the 700 and 500 hPa model levels.",
+    assumptions: "Layer mean over model levels in that pressure range; high values mean dry mid-levels.",
   }),
   V(S2, "thermodynamics", "evap-potential", "Evaporation potential", "derived", "surface", "surface", "mm/h", {
     definition: "Potential evaporation implied by the surface energy balance.",
-    assumptions: "Not implemented; the surface energy balance is not fully resolved.",
+    productId: "evappot",
+    formula: "max(0, qsat(Tsfc, psfc) − qv) × 1000 g/kg.",
+    assumptions: "Saturation deficit of the lowest model level; not an evaporation-rate calculation.",
   }),
   V(S2, "clouds", "cloud-base", "Cloud-base height", "derived", "column", "column", "m", {
     productId: "cbase",
@@ -356,7 +400,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S2, "thermodynamics", "bl-humidity", "Boundary-layer humidity", "derived", "0–1 km", "profile", "kg/kg", {
     definition: "Mean water-vapour mixing ratio in the boundary layer.",
-    assumptions: "Not implemented.",
+    productId: "blrh",
+    formula: "Mean RH from the surface to 1 km.",
+    assumptions: "Uses model levels below 1 km; no sub-grid variability.",
   }),
 
   // ── 3. Temperature and thermodynamics ──────────────────────────────────────
@@ -373,8 +419,9 @@ export const VIEW_CATALOG: CatalogView[] = [
     assumptions: "Not implemented as a separate product.",
   }),
   V(S3, "thermodynamics", "t925", "Temperature at 925 hPa", "simulated", "925 hPa", "pressure", "°C", {
+    productId: "t925",
     definition: "Temperature on the model level nearest 925 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    assumptions: "Nearest-level sampling, no vertical interpolation.",
   }),
   V(S3, "thermodynamics", "t850", "Temperature at 850 hPa", "simulated", "850 hPa", "pressure", "°C", {
     productId: "t850",
@@ -397,7 +444,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S3, "thermodynamics", "wetbulb", "Wet-bulb temperature", "derived", "profile", "profile", "°C", {
     definition: "Temperature reached by evaporative cooling to saturation.",
-    assumptions: "Not implemented. Needs a psychrometric or iterative solve.",
+    productId: "wetbulb",
+    formula: "Stull (2011) wet-bulb approximation from surface T and RH.",
+    assumptions: "Liquid-water psychrometrics; approximate at very low RH.",
   }),
   V(S3, "thermodynamics", "virtual-temp", "Virtual temperature", "derived", "profile", "profile", "K", {
     definition: "Temperature corrected for the lower density of moist air.",
@@ -467,7 +516,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S4, "wind", "wind925", "Wind at 925 hPa", "simulated", "925 hPa", "pressure", "m/s", {
     definition: "Wind on the model level nearest 925 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "w925",
+    formula: "sqrt(u²+v²) at the model level nearest 925 hPa.",
+    assumptions: "Instantaneous resolved wind; no interpolation between model levels.",
   }),
   V(S4, "wind", "wind850", "Wind at 850 hPa", "simulated", "850 hPa", "pressure", "m/s", {
     productId: "w850",
@@ -478,32 +529,45 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S4, "wind", "wind700", "Wind at 700 hPa", "simulated", "700 hPa", "pressure", "m/s", {
     definition: "Wind on the model level nearest 700 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "w700",
+    formula: "sqrt(u²+v²) at the model level nearest 700 hPa.",
+    assumptions: "Instantaneous resolved wind; no interpolation between model levels.",
   }),
   V(S4, "wind", "wind500", "Wind at 500 hPa", "simulated", "500 hPa", "pressure", "m/s", {
     definition: "Wind on the model level nearest 500 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "w500",
+    formula: "sqrt(u²+v²) at the model level nearest 500 hPa.",
+    assumptions: "Instantaneous resolved wind; no interpolation between model levels.",
   }),
   V(S4, "wind", "wind300", "Wind at 300 hPa", "simulated", "300 hPa", "pressure", "m/s", {
     definition: "Wind on the model level nearest 300 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "w300",
+    formula: "sqrt(u²+v²) at the model level nearest 300 hPa.",
+    assumptions: "Instantaneous resolved wind; no interpolation between model levels.",
   }),
   V(S4, "wind", "wind200", "Wind at 200 hPa", "simulated", "200 hPa", "pressure", "m/s", {
     definition: "Wind on the model level nearest 200 hPa.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "w200",
+    formula: "sqrt(u²+v²) at the model level nearest 200 hPa.",
+    assumptions: "Instantaneous resolved wind; no interpolation between model levels.",
   }),
   V(S4, "wind", "u-component", "U-component wind (east–west)", "simulated", "profile", "profile", "m/s", {
     definition: "Zonal wind component.",
-    assumptions: "Not implemented as a map product.",
+    productId: "ucomp",
+    formula: "u at the lowest model level, interpolated to the cell centre.",
+    assumptions: "Resolved C-grid u; no gust or sub-grid component.",
   }),
   V(S4, "wind", "v-component", "V-component wind (north–south)", "simulated", "profile", "profile", "m/s", {
     definition: "Meridional wind component.",
-    assumptions: "Not implemented as a map product.",
+    productId: "vcomp",
+    formula: "v at the lowest model level, interpolated to the cell centre.",
+    assumptions: "Resolved C-grid v; no gust or sub-grid component.",
   }),
   V(S4, "wind", "omega", "Pressure-coordinate vertical velocity (ω)", "derived", "profile", "profile", "Pa/s", {
     definition: "Vertical motion in pressure coordinates.",
-    formula: "ω ≈ −ρ·g·w",
-    assumptions: "Not implemented as a map product.",
+    productId: "omega",
+    formula: "ω ≈ −ρ g w at the model level nearest 700 hPa.",
+    assumptions: "Anelastic approximation; not a pressure-coordinate prognostic.",
   }),
   V(S4, "wind", "w3k", "Physical vertical air velocity (w)", "simulated", "3 km slice", "slice", "m/s", {
     productId: "w3k",
@@ -514,15 +578,17 @@ export const VIEW_CATALOG: CatalogView[] = [
     aliases: "vertical velocity updraft downdraft omega",
   }),
   V(S4, "wind", "shear01", "0–1 km bulk shear", "derived", "0–1 km", "profile", "m/s", {
+    productId: "shear01",
     definition: "Vector wind difference between the surface and 1 km.",
-    formula: "|V(1 km) − V(sfc)|",
-    assumptions: "Not implemented as a separate product.",
+    formula: "|V(1 km) − V(sfc)| from the base-state sounding",
+    assumptions: "Uses the horizontally uniform base-state wind, so the map is uniform. No simulated storm modification.",
     aliases: "low level shear",
   }),
   V(S4, "wind", "shear03", "0–3 km bulk shear", "derived", "0–3 km", "profile", "m/s", {
+    productId: "shear03",
     definition: "Vector wind difference between the surface and 3 km.",
-    formula: "|V(3 km) − V(sfc)|",
-    assumptions: "Not implemented as a separate product.",
+    formula: "|V(3 km) − V(sfc)| from the base-state sounding",
+    assumptions: "Uses the horizontally uniform base-state wind, so the map is uniform. No simulated storm modification.",
   }),
   V(S4, "wind", "shear06", "0–6 km bulk shear", "derived", "0–6 km", "profile", "m/s", {
     productId: "shear06",
@@ -534,8 +600,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S4, "wind", "shear08", "0–8 km bulk shear", "derived", "0–8 km", "profile", "m/s", {
     definition: "Vector wind difference between the surface and 8 km.",
-    formula: "|V(8 km) − V(sfc)|",
-    assumptions: "Not implemented as a separate product.",
+    productId: "shear08",
+    formula: "|V(8 km) − V(surface)| from the base-state sounding.",
+    assumptions: "Horizontally uniform base-state shear; no density weighting.",
   }),
   V(S4, "wind", "effective-shear", "Effective bulk shear", "derived", "effective inflow layer", "profile", "m/s", {
     definition: "Bulk shear over the effective storm-inflow layer.",
@@ -549,21 +616,32 @@ export const VIEW_CATALOG: CatalogView[] = [
   V(S4, "wind", "srh01", "0–1 km SRH", "derived", "0–1 km", "profile", "m²/s²", {
     core: true,
     definition: "Storm-relative helicity in the lowest kilometre.",
-    assumptions: "Not implemented. Requires a storm-motion vector (e.g. Bunkers).",
     aliases: "helicity low level rotation",
+    productId: "srh01",
+    parcelType: "Bunkers right-mover storm motion.",
+    formula: "∫₀¹km [(u−cu) dv/dz − (v−cv) du/dz] dz with Bunkers right-mover storm motion.",
+    assumptions: "Base-state wind profile; no observed storm motion; a right-mover is assumed.",
   }),
   V(S4, "wind", "srh03", "0–3 km SRH", "derived", "0–3 km", "profile", "m²/s²", {
     definition: "Storm-relative helicity in the lowest 3 km.",
-    assumptions: "Not implemented.",
+    productId: "srh03",
+    parcelType: "Bunkers right-mover storm motion.",
+    formula: "∫₀³km [(u−cu) dv/dz − (v−cv) du/dz] dz with Bunkers right-mover storm motion.",
+    assumptions: "Base-state wind profile; no observed storm motion; a right-mover is assumed.",
   }),
   V(S4, "wind", "storm-relative-wind", "Storm-relative wind field", "derived", "profile", "profile", "m/s", {
     definition: "Wind after subtracting the storm-motion vector.",
-    assumptions: "Not implemented.",
+    productId: "srw",
+    parcelType: "Bunkers right-mover storm motion.",
+    formula: "|V(surface) − C| with Bunkers right-mover C.",
+    assumptions: "Base-state surface wind and storm motion; horizontally uniform.",
   }),
   V(S4, "wind", "brn", "Bulk Richardson number (BRN)", "derived", "0–6 km", "profile", "—", {
     definition: "Ratio of CAPE to the kinetic energy of the deep-layer shear.",
-    formula: "BRN = CAPE / (0.5·U²)",
-    assumptions: "Not implemented.",
+    productId: "brn",
+    parcelType: "Surface parcel.",
+    formula: "CAPE(surface parcel) / (0.5 × shear06²).",
+    assumptions: "CAPE from the surface parcel; shear from the base-state sounding.",
   }),
   V(S4, "wind", "brn-shear", "BRN shear contribution", "derived", "0–6 km", "profile", "m²/s²", {
     definition: "Denominator of the bulk Richardson number.",
@@ -572,11 +650,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S4, "wind", "low-level-jet", "Low-level jet", "derived", "0–3 km", "profile", "m/s", {
     definition: "Local wind-speed maximum in the low levels.",
-    assumptions: "Not implemented.",
+    productId: "llj",
+    formula: "max |V| between 0 and 3 km in the base-state sounding.",
+    assumptions: "Horizontally uniform base-state wind; no jet-axis detection.",
   }),
   V(S4, "wind", "upper-level-jet", "Upper-level jet", "derived", "200–300 hPa", "pressure", "m/s", {
     definition: "Jet-stream wind maximum aloft.",
-    assumptions: "Not implemented as a map product.",
+    productId: "ulj",
+    formula: "max |V| between 8 and 12 km in the base-state sounding.",
+    assumptions: "Horizontally uniform base-state wind; no jet-axis detection.",
   }),
   V(S4, "wind", "conv", "Wind convergence", "derived", "surface", "surface", "10⁻⁴ s⁻¹", {
     productId: "conv",
@@ -587,9 +669,10 @@ export const VIEW_CATALOG: CatalogView[] = [
     aliases: "convergence divergence",
   }),
   V(S4, "wind", "divergence", "Wind divergence", "derived", "surface", "surface", "10⁻⁴ s⁻¹", {
+    productId: "div",
     definition: "Horizontal divergence of the wind field (positive = diverging).",
     formula: "∇·V × 10⁴",
-    assumptions: "Not implemented as a separate product; the convergence map shows the same field with the opposite sign.",
+    assumptions: "Lowest model level; same finite-difference stencil as convergence with the sign flipped.",
   }),
   V(S4, "wind", "vort", "Vorticity", "derived", "surface", "surface", "10⁻⁴ s⁻¹", {
     productId: "vort",
@@ -638,12 +721,16 @@ export const VIEW_CATALOG: CatalogView[] = [
     aliases: "pressure surface",
   }),
   V(S5, "storm", "mslp", "Mean sea-level pressure (MSLP)", "derived", "surface", "surface", "hPa", {
+    productId: "mslp",
     definition: "Pressure reduced to mean sea level.",
-    assumptions: "Not implemented. The domain has no terrain or sea-level reduction.",
+    formula: "p_sfc = p₀ + ρ₀·π′; MSLP = p_sfc·exp(g·z_sfc/(R·Tv)) + synoptic bias",
+    assumptions: "Hydrostatic reduction from the lowest model level with a flat terrain assumption; no terrain correction.",
   }),
   V(S5, "storm", "pressure-gradient", "Pressure gradient", "derived", "surface", "surface", "hPa/km", {
     definition: "Horizontal gradient of surface pressure.",
-    assumptions: "Not implemented.",
+    productId: "pgrad",
+    formula: "|∇(ρ0 π′/100)| at the surface in hPa/km.",
+    assumptions: "Uses the anelastic pressure perturbation, not full pressure; centered finite differences.",
   }),
   V(S5, "storm", "surface-convergence", "Surface convergence", "derived", "surface", "surface", "10⁻⁴ s⁻¹", {
     productId: "conv",
@@ -665,11 +752,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S5, "storm", "thermal-gradient", "Thermal gradient", "derived", "surface", "surface", "K/km", {
     definition: "Horizontal gradient of surface temperature.",
-    assumptions: "Not implemented.",
+    productId: "tgrad",
+    formula: "|∇T| at the surface in K/km.",
+    assumptions: "Resolved temperature gradient; no frontal analysis.",
   }),
   V(S5, "storm", "dewpoint-gradient", "Dew-point gradient", "derived", "surface", "surface", "K/km", {
     definition: "Horizontal gradient of surface dew point.",
-    assumptions: "Not implemented.",
+    productId: "tdgrad",
+    formula: "|∇Td| at the surface in K/km.",
+    assumptions: "Resolved dew-point gradient; no dryline-object detection.",
   }),
   V(S5, "storm", "dryline", "Dryline detection", "derived", "surface", "surface", "—", {
     definition: "Boundary between moist and dry air detected from the dew-point gradient.",
@@ -689,7 +780,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S5, "storm", "cold-pool-deficit", "Cold-pool temperature deficit", "derived", "surface", "surface", "K", {
     definition: "Surface temperature deficit inside a downdraft cold pool.",
-    assumptions: "Not implemented.",
+    productId: "coldpool",
+    formula: "(θ0,surface − θsurface) × (p0/P0)^(Rd/cp).",
+    assumptions: "Deficit relative to the initial base-state sounding; positive means cooler than the base state.",
   }),
   V(S5, "storm", "boundary-strength", "Boundary strength", "derived", "surface", "surface", "—", {
     definition: "Combined thermal, moisture, and wind contrast across a boundary.",
@@ -729,7 +822,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "cfr",
     core: true,
     definition: "Share of the column containing cloud or rain water.",
-    formula: "100 × (levels with qc + qr > 10⁻⁴ kg/kg) / nz",
+    formula: "100 × (levels with qc + qr + qi + qs + qg + qh > 10⁻⁴ kg/kg) / nz",
     assumptions: "A column occupancy fraction, not a radiative cloud-fraction parameterisation.",
     aliases: "cloud cover cloud fraction",
   }),
@@ -738,12 +831,14 @@ export const VIEW_CATALOG: CatalogView[] = [
     core: true,
     definition: "Maximum cloud liquid-water mixing ratio in the column.",
     formula: "max(qc) × 1000",
-    assumptions: "Liquid only; the model has no ice, snow, or graupel species.",
+    assumptions: "Liquid only; snow, graupel, and hail are reported in their own products.",
     aliases: "cloud water liquid",
   }),
   V(S6, "clouds", "cloud-ice", "Cloud ice content", "simulated", "column", "column", "g/kg", {
     definition: "Ice mixing ratio.",
-    assumptions: "Not implemented: the warm-rain microphysics carries no ice species.",
+    productId: "cice",
+    formula: "max(qi) over the column × 1000 g/kg.",
+    assumptions: "Prognostic cloud ice from the cold microphysics scheme.",
   }),
   V(S6, "clouds", "lwp", "Liquid water path (LWP)", "derived", "column", "column", "g/m²", {
     productId: "lwp",
@@ -754,7 +849,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S6, "clouds", "iwp", "Ice water path (IWP)", "derived", "column", "column", "g/m²", {
     definition: "Column-integrated cloud ice.",
-    assumptions: "Not implemented: no ice species in the model.",
+    productId: "iwp",
+    formula: "∫ ρ qi dz × 1000 g/m².",
+    assumptions: "Cloud ice only; snow, graupel, and hail are excluded.",
   }),
   V(S6, "clouds", "cloud-optical-depth", "Cloud optical depth", "derived", "column", "column", "—", {
     definition: "Vertically integrated extinction of cloud particles.",
@@ -764,17 +861,21 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "ctop",
     core: true,
     definition: "Height of the highest level containing cloud or rain water.",
-    formula: "Highest k with qc + qr > 10⁻⁴ kg/kg → (k + 0.5)·dz",
+    formula: "Highest k with qc + qr + qi + qs + qg + qh > 10⁻⁴ kg/kg → (k + 0.5)·dz",
     assumptions: "Hydrometeor threshold, not a radiative or radar cloud-top definition.",
     aliases: "cloud top height",
   }),
   V(S6, "clouds", "cloud-top-temp", "Cloud-top temperature", "derived", "column", "column", "°C", {
     definition: "Temperature at the highest hydrometeor level.",
-    assumptions: "Not implemented as a map product.",
+    productId: "cttemp",
+    formula: "T at the highest level with qc+qr+qi+qs+qg+qh > 1e-4 kg/kg.",
+    assumptions: "Hydrometeor-threshold cloud top, not a radiative cloud-top retrieval.",
   }),
   V(S6, "clouds", "cloud-depth", "Cloud depth", "derived", "column", "column", "m", {
     definition: "Cloud-top height minus cloud-base height.",
-    assumptions: "Not implemented as a map product.",
+    productId: "cdepth",
+    formula: "z(cloud top) − z(cloud base) using the same hydrometeor threshold.",
+    assumptions: "Geometric depth; no anvil or thin-cloud masking.",
   }),
   V(S6, "clouds", "wmax", "Updraft strength", "derived", "column", "column", "m/s", {
     productId: "wmax",
@@ -785,7 +886,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S6, "clouds", "downdraft", "Downdraft strength", "derived", "column", "column", "m/s", {
     definition: "Maximum downward vertical velocity in the column.",
-    assumptions: "Not implemented as a separate product.",
+    productId: "downdraft",
+    formula: "max(−w) over the column.",
+    assumptions: "Resolved model w only; sub-grid downdrafts are not represented.",
   }),
   V(S6, "clouds", "condensation-rate", "Condensation rate", "derived", "profile", "profile", "kg/kg/s", {
     definition: "Rate at which vapour condenses to cloud water.",
@@ -797,15 +900,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S6, "clouds", "freezing-rate", "Freezing rate", "derived", "profile", "profile", "kg/kg/s", {
     definition: "Rate of liquid-to-ice conversion.",
-    assumptions: "Not implemented: no ice phase.",
+    assumptions: "The cold scheme performs freezing, but no per-step rate diagnostic is stored.",
   }),
   V(S6, "clouds", "deposition-rate", "Deposition rate", "derived", "profile", "profile", "kg/kg/s", {
     definition: "Rate of vapour-to-ice conversion.",
-    assumptions: "Not implemented: no ice phase.",
+    assumptions: "The cold scheme performs deposition, but no per-step rate diagnostic is stored.",
   }),
   V(S6, "clouds", "sublimation-rate", "Sublimation rate", "derived", "profile", "profile", "kg/kg/s", {
     definition: "Rate of ice-to-vapour conversion.",
-    assumptions: "Not implemented: no ice phase.",
+    assumptions: "The cold scheme performs sublimation, but no per-step rate diagnostic is stored.",
   }),
   V(S6, "clouds", "cloud-growth", "Cloud-growth tendency", "derived", "time", "time", "g/kg/min", {
     definition: "Rate of change of cloud water.",
@@ -817,11 +920,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S6, "clouds", "overshooting-top", "Overshooting-top detection", "derived", "column", "column", "—", {
     definition: "Detection of cloud tops above the equilibrium level.",
-    assumptions: "Not implemented.",
+    productId: "overshoot",
+    formula: "max(0, z(cloud top) − EL) with EL from the surface-parcel CAPE integration.",
+    assumptions: "No storm-object tracking; EL comes from each sounding column.",
   }),
   V(S6, "clouds", "cloud-top-divergence", "Cloud-top divergence", "derived", "cloud top", "slice", "10⁻⁴ s⁻¹", {
     definition: "Wind divergence at the cloud-top level.",
-    assumptions: "Not implemented.",
+    productId: "ctdiv",
+    formula: "Horizontal divergence at the cloud-top level × 1e4.",
+    assumptions: "Cloud top from the hydrometeor threshold; no upper-level mass adjustment.",
   }),
   V(S6, "clouds", "entrainment", "Entrainment", "derived", "profile", "profile", "kg/kg/s", {
     definition: "Mixing of environmental air into a cloud.",
@@ -841,7 +948,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "vis",
     core: true,
     definition: "Grey-shade visible image derived from simulated cloud and rain water.",
-    formula: "τ = Σ(520·qc + 180·qr)·dz; albedo = 1 − exp(−τ)",
+    formula: "τ = Σ(520·qc + 180·qr + 400·(qi+qs) + 520·(qg+qh))·dz; albedo = 1 − exp(−τ)",
     assumptions: "Rendering of the simulated hydrometeor field, not a radiance calculation. No sun angle, surface albedo, or satellite geometry.",
     aliases: "visible satellite vis imagery",
   }),
@@ -849,71 +956,89 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "ir",
     core: true,
     definition: "Cloud-top-weighted infrared brightness temperature from the simulated column.",
-    formula: "Column emission weighted by optical depth τ = (40·qc + 18·qr)·dz; emitting temperature from θ and p",
+    formula: "Column emission weighted by optical depth τ = (40·qc + 18·qr + 42·(qi+qs) + 60·(qg+qh))·dz; emitting temperature from θ and p",
     assumptions: "Visual proxy only; no Planck radiance, emissivity, or absorption by water vapour and ozone.",
     aliases: "infrared satellite ir brightness temperature",
   }),
 
   // ── 7. Precipitation, rain and hail ────────────────────────────────────────
   V(S7, "radar", "precip-rate", "Instantaneous precipitation rate", "derived", "surface", "surface", "mm/h", {
+    productId: "precip",
     core: true,
-    definition: "Rain mass flux reaching the surface.",
-    assumptions: "Not implemented. Surface rain-out is discarded by the current microphysics.",
+    definition: "Precipitation mass flux reaching the surface.",
+    formula: "Rain sedimentation plus cold-species sedimentation, as liquid-equivalent mm/h",
+    assumptions: "Bulk surface flux from the microphysics; no sub-grid variability or evaporation below the lowest level.",
     aliases: "rain rate precipitation",
   }),
   V(S7, "radar", "precip-accum", "Accumulated precipitation", "derived", "time", "time", "mm", {
+    productId: "paccum",
     core: true,
-    definition: "Time-integrated surface rainfall.",
-    assumptions: "Not implemented; no accumulation buffer is stored.",
+    definition: "Time-integrated surface precipitation.",
+    formula: "∫ (rain + snow/graupel/hail liquid-equivalent rate) dt",
+    assumptions: "Accumulates from the start of the run; no reset or selectable time window.",
   }),
   V(S7, "radar", "rainfall-rate", "Rainfall rate", "derived", "surface", "surface", "mm/h", {
     definition: "Liquid-equivalent rainfall rate at the ground.",
-    assumptions: "Not implemented.",
+    productId: "rainrate",
+    formula: "precipRate × liquid mass fraction of the lowest hydrometeor-bearing level.",
+    assumptions: "Phase partition assumes sedimentation flux scales with species mass; no separate rain-rate diagnostic.",
   }),
   V(S7, "radar", "snowfall-rate", "Snowfall rate", "derived", "surface", "surface", "cm/h", {
     definition: "Solid precipitation rate at the ground.",
-    assumptions: "Not implemented: no ice or snow species.",
+    productId: "snowrate",
+    formula: "precipRate × (1 − liquid fraction).",
+    assumptions: "Liquid-equivalent frozen rate; not snow depth or crystal habit.",
   }),
   V(S7, "radar", "hail-rate", "Hail production rate", "derived", "column", "column", "kg/m²/s", {
     definition: "Rate of hail mass production.",
-    assumptions: "Not implemented: no hail category in the microphysics.",
+    assumptions: "Hail is prognostic but no production-rate diagnostic is stored.",
   }),
   V(S7, "radar", "hail-size", "Hail size", "derived", "surface", "surface", "mm", {
+    productId: "hailsize",
     core: true,
     definition: "Estimated hailstone diameter.",
-    assumptions: "Not implemented: no hail category or hail-growth calculation.",
+    formula: "D_max from the inverse exponential hail size distribution, column maximum",
+    assumptions: "Bulk single-moment hail with an assumed intercept; not a measured size distribution.",
   }),
   V(S7, "radar", "hail-max", "Maximum hail size", "derived", "column", "column", "mm", {
     definition: "Largest hail size in the column or storm.",
-    assumptions: "Not implemented.",
+    assumptions: "Same column-max hail diameter as the hail-size product.",
   }),
   V(S7, "radar", "hail-concentration", "Hail concentration", "derived", "column", "column", "m⁻³", {
     definition: "Number concentration of hail particles.",
-    assumptions: "Not implemented.",
+    assumptions: "Diagnosed from the assumed exponential hail distribution; not a separate map product.",
   }),
   V(S7, "radar", "graupel", "Graupel content", "simulated", "column", "column", "g/kg", {
+    productId: "graupel",
     definition: "Graupel mixing ratio.",
-    assumptions: "Not implemented: no graupel species.",
+    assumptions: "Column maximum of the prognostic graupel species (qg).",
   }),
   V(S7, "radar", "snow-ice", "Snow and ice content", "simulated", "column", "column", "g/kg", {
+    productId: "snowice",
     definition: "Snow and ice mixing ratios.",
-    assumptions: "Not implemented: warm-rain microphysics only.",
+    assumptions: "Column maximum of qi + qs, reported in g/kg.",
   }),
   V(S7, "radar", "hydrometeor-class", "Hydrometeor classification", "derived", "column", "column", "—", {
     definition: "Rain / snow / hail / graupel classification.",
-    assumptions: "Not implemented.",
+    productId: "hydrometeor",
+    formula: "Class of the largest qc/qr/qi/qs/qg/qh mixing ratio in the column.",
+    assumptions: "Single dominant species; no mixture or particle-size information.",
   }),
   V(S7, "radar", "precip-phase", "Rain–snow transition / precipitation phase", "derived", "surface", "surface", "—", {
+    productId: "preciptype",
     definition: "Whether precipitation reaches the ground as rain or snow.",
-    assumptions: "Not implemented: no ice phase.",
+    formula: "Surface precipitation rate plus the phase of the lowest precipitating level and surface temperature",
+    assumptions: "Categorical bulk classification (none/snow/mixed/rain/hail); no explicit melting-layer model.",
   }),
   V(S7, "radar", "melting-layer", "Melting-layer height", "derived", "column", "column", "m", {
     definition: "Depth over which snow melts to rain.",
-    assumptions: "Not implemented: no ice phase.",
+    assumptions: "Melting is parameterised inside the cold scheme, but no separate melting-layer map is stored.",
   }),
   V(S7, "radar", "virga", "Virga detection", "derived", "column", "column", "—", {
     definition: "Precipitation that evaporates before reaching the ground.",
-    assumptions: "Not implemented.",
+    productId: "virga",
+    formula: "Column-integrated rain/ice water when surface precipRate < 0.05 mm/h.",
+    assumptions: "Detects precipitation aloft that does not reach the surface; excludes cloud water.",
   }),
   V(S7, "radar", "evap-cooling", "Evaporative cooling", "derived", "profile", "profile", "K/h", {
     definition: "Cooling produced by evaporation of precipitation.",
@@ -946,9 +1071,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   V(S7, "radar", "refl", "Radar-equivalent reflectivity (dBZ)", "derived", "column", "column", "dBZ", {
     productId: "refl",
     core: true,
-    definition: "Radar-equivalent reflectivity from rain and cloud water.",
-    formula: "Z = 8×10⁸·qr^1.6 + 2×10⁵·qc²; dBZ = 10·log₁₀(Z), with an updraft core bonus",
-    assumptions: "Warm-rain proxy, not a calibrated radar measurement. No ice, hail, or attenuation.",
+    definition: "Radar-equivalent reflectivity from rain, cloud water, and cold species.",
+    formula: "Z = 8×10⁸·qr^1.6 + 2×10⁵·qc² + 4×10⁹·q_ice^1.6, with an updraft core bonus",
+    assumptions: "Bulk proxy, not a calibrated radar measurement. Ice/snow are weighted below graupel and hail; no attenuation.",
     aliases: "dbz reflectivity radar",
   }),
   V(S7, "radar", "refl-maxcol", "Maximum column reflectivity", "derived", "column", "column", "dBZ", {
@@ -956,7 +1081,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     core: true,
     definition: "Highest reflectivity anywhere in the column (composite reflectivity).",
     formula: "max over k of the reflectivity proxy",
-    assumptions: "Same warm-rain proxy as the reflectivity product.",
+    assumptions: "Same bulk proxy as the reflectivity product.",
   }),
   V(S7, "radar", "refl-composite", "Composite reflectivity", "derived", "column", "column", "dBZ", {
     productId: "refl",
@@ -987,15 +1112,16 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S7, "radar", "vil", "Vertically integrated liquid (VIL)", "derived", "column", "column", "kg/m²", {
     productId: "vil",
-    definition: "Column integral of rainwater mass.",
-    formula: "Σ ρ·qr·dz",
-    assumptions: "Rain water only; no ice or hail contribution.",
+    definition: "Column integral of precipitation-particle mass.",
+    formula: "Σ ρ·(qr + qi + qs + qg + qh)·dz",
+    assumptions: "Includes rain and all cold species; snow and ice are not density-corrected.",
     aliases: "vil liquid water",
   }),
   V(S7, "radar", "vil-density", "VIL density", "derived", "column", "column", "g/m³", {
     definition: "VIL divided by echo-top height.",
-    formula: "VIL / echo-top height",
-    assumptions: "Not implemented as a map product.",
+    productId: "vildensity",
+    formula: "VIL (kg/m²) / echo-top height (km) → g/m³.",
+    assumptions: "Echo top uses the 18 dBZ-equivalent threshold; VIL includes liquid and cold species.",
   }),
   V(S7, "radar", "echotop", "Echo-top height", "derived", "column", "column", "km", {
     productId: "echotop",
@@ -1060,11 +1186,11 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S8, "lightning", "cg", "Cloud-to-ground (CG) lightning", "derived", "column", "column", "flashes/min", {
     definition: "Cloud-to-ground flash rate.",
-    assumptions: "Not implemented: flashes are not classified by channel geometry.",
+    assumptions: "Rendered flashes are classified as CG, IC, or sprite; the map field sums all kinds.",
   }),
   V(S8, "lightning", "ic", "Intracloud (IC) lightning", "derived", "column", "column", "flashes/min", {
     definition: "Intracloud flash rate.",
-    assumptions: "Not implemented.",
+    assumptions: "About two thirds of rendered flashes are intracloud, spawned near cloud top.",
   }),
   V(S8, "lightning", "cloud-cloud", "Cloud-to-cloud lightning", "derived", "column", "column", "flashes/min", {
     definition: "Cloud-to-cloud flash rate.",
@@ -1207,7 +1333,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S10, "wind", "z500", "500 hPa geopotential height", "derived", "500 hPa", "pressure", "m", {
     definition: "Height of the 500 hPa surface.",
-    assumptions: "Not implemented.",
+    productId: "z500",
+    formula: "Hypsometric integral z = ∫ (Rd Tv / g) d ln p from the lowest model level to 500 hPa, plus 0.5 dz.",
+    assumptions: "Uses base-state pressure levels, not the anelastic pressure perturbation; the lowest model level is the lower bound because the model has no terrain.",
   }),
   V(S10, "wind", "jet-stream", "200–300 hPa jet stream", "derived", "200–300 hPa", "pressure", "m/s", {
     definition: "Upper-tropospheric wind maximum.",
@@ -1215,12 +1343,15 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S10, "wind", "thickness", "1000–500 hPa thickness", "derived", "1000–500 hPa", "profile", "m", {
     definition: "Thickness of the 1000–500 hPa layer.",
-    assumptions: "Not implemented.",
+    productId: "thickness",
+    formula: "z(500 hPa) − z(1000 hPa) from the same hypsometric integral.",
+    assumptions: "Uses the lowest model level as the lower bound when it is below 1000 hPa; base-state pressure levels only.",
   }),
   V(S10, "wind", "vort-adv", "Vorticity advection", "derived", "pressure level", "pressure", "s⁻²", {
     definition: "Advection of absolute vorticity by the wind.",
-    formula: "−V·∇(ζ + f)",
-    assumptions: "Not implemented.",
+    productId: "vortadv",
+    formula: "−(u ∂ζ/∂x + v ∂ζ/∂y) × 1e9 at 500 hPa.",
+    assumptions: "Relative vorticity only (Coriolis parameter omitted); centered finite differences.",
   }),
   V(S10, "wind", "q-vector", "Q-vector convergence", "derived", "pressure level", "pressure", "K/(m²·s)", {
     definition: "Convergence of the Q vector, a forcing term for vertical motion.",
@@ -1252,7 +1383,9 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S10, "wind", "tropopause", "Tropopause height", "derived", "column", "column", "m", {
     definition: "Height of the tropopause.",
-    assumptions: "Not implemented.",
+    productId: "tropopause",
+    formula: "Lowest level above 5 km where the 2 km layer lapse rate ≤ 2 K/km.",
+    assumptions: "WMO-style thermal tropopause; no potential-vorticity criterion.",
   }),
   V(S10, "wind", "pv", "Potential vorticity", "derived", "pressure level", "pressure", "PVU", {
     definition: "Ertel potential vorticity.",

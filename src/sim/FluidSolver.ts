@@ -17,6 +17,7 @@ import {
   packLightning,
   packMapProduct as packMapProductRGBA,
   reflectivityDbz,
+  coldReflectivityMass,
 } from "./mapProducts";
 import { volumeDisplaySize } from "./Grid3D";
 import {
@@ -30,14 +31,14 @@ import {
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
 import {
-  stepIceMicrophysics,
   stepCloudTopCooling,
   stepBLMixing,
   stepSynopticOmega,
   stepMarineStratus,
 } from "./stepDynamics";
+import { stepColdMicrophysics } from "./coldMicrophysics";
 
-export type LightningKind = "cg" | "sprite";
+export type LightningKind = "cg" | "ic" | "sprite";
 
 export interface LightningStrike {
   i: number;
@@ -74,6 +75,11 @@ export class FluidSolver implements SimBackend {
   private tmpQv: Float32Array;
   private tmpQc: Float32Array;
   private tmpQr: Float32Array;
+  private tmpQi: Float32Array = new Float32Array(0);
+  private tmpQs: Float32Array = new Float32Array(0);
+  private tmpQg: Float32Array = new Float32Array(0);
+  private tmpQh: Float32Array = new Float32Array(0);
+  private tmpNi: Float32Array = new Float32Array(0);
   private tmpU: Float32Array;
   private tmpV: Float32Array;
   private tmpW: Float32Array;
@@ -127,6 +133,11 @@ export class FluidSolver implements SimBackend {
     this.tmpQv = new Float32Array(n);
     this.tmpQc = new Float32Array(n);
     this.tmpQr = new Float32Array(n);
+    this.tmpQi = new Float32Array(n);
+    this.tmpQs = new Float32Array(n);
+    this.tmpQg = new Float32Array(n);
+    this.tmpQh = new Float32Array(n);
+    this.tmpNi = new Float32Array(n);
     this.tmpU = new Float32Array(g.nu);
     this.tmpV = new Float32Array(g.nv);
     this.tmpW = new Float32Array(g.nw);
@@ -272,7 +283,7 @@ export class FluidSolver implements SimBackend {
         this.radiation,
       );
       stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
-      stepIceMicrophysics(this.grid, this.fields, h, this.exner, this.iceScratch);
+      stepColdMicrophysics(this.grid, this.fields, h, this.exner, this.iceScratch);
       stepCloudTopCooling(this.grid, this.fields, h, this.exner);
       stepBLMixing(this.grid, this.fields, h, this.exner);
       stepSynopticOmega(this.grid, this.fields, h);
@@ -320,7 +331,14 @@ export class FluidSolver implements SimBackend {
             (tha * (1 + 0.608 * qva) + thb * (1 + 0.608 * qvb));
           const qc = 0.5 * (f.qc[ida] + f.qc[idb]);
           const qr = 0.5 * (f.qr[ida] + f.qr[idb]);
-          const buoy = g * ((thv - thv0) / Math.max(1, thv0) - qc - 1.6 * qr);
+          const cold =
+            0.5 *
+            (f.qi[ida] + f.qi[idb] +
+              f.qs[ida] + f.qs[idb] +
+              f.qg[ida] + f.qg[idb] +
+              f.qh[ida] + f.qh[idb]);
+          const buoy =
+            g * ((thv - thv0) / Math.max(1, thv0) - qc - 1.6 * qr - cold);
           f.w[this.grid.wIdx(i, j, k)] += buoy * dt;
         }
       }
@@ -390,6 +408,49 @@ export class FluidSolver implements SimBackend {
     const d01 = d[j00] * omx + d[j10] * fx;
     const d11 = d[j01] * omx + d[j11] * fx;
     out[3] = (d00 * omy + d10 * fy) * omz + (d01 * omy + d11 * fy) * fz;
+  }
+
+  /** Trilinear sample of a single cell-centred field. */
+  private sampleField(
+    arr: Float32Array,
+    x: number,
+    y: number,
+    z: number,
+  ): number {
+    const { nx, ny, nz } = this.grid;
+    const xx = x < 0 ? 0 : x > nx - 1.001 ? nx - 1.001 : x;
+    const yy = y < 0 ? 0 : y > ny - 1.001 ? ny - 1.001 : y;
+    const zz = z < 0 ? 0 : z > nz - 1.001 ? nz - 1.001 : z;
+    const i0 = xx | 0;
+    const j0 = yy | 0;
+    const k0 = zz | 0;
+    const i1 = i0 + 1 < nx ? i0 + 1 : nx - 1;
+    const j1 = j0 + 1 < ny ? j0 + 1 : ny - 1;
+    const k1 = k0 + 1 < nz ? k0 + 1 : nz - 1;
+    const fx = xx - i0;
+    const fy = yy - j0;
+    const fz = zz - k0;
+    const nxny = nx * ny;
+    const row0 = j0 * nx;
+    const row1 = j1 * nx;
+    const kBase0 = k0 * nxny;
+    const kBase1 = k1 * nxny;
+    const c000 = arr[kBase0 + row0 + i0];
+    const c100 = arr[kBase0 + row0 + i1];
+    const c010 = arr[kBase0 + row1 + i0];
+    const c110 = arr[kBase0 + row1 + i1];
+    const c001 = arr[kBase1 + row0 + i0];
+    const c101 = arr[kBase1 + row0 + i1];
+    const c011 = arr[kBase1 + row1 + i0];
+    const c111 = arr[kBase1 + row1 + i1];
+    const c00 = c000 * (1 - fx) + c100 * fx;
+    const c10 = c010 * (1 - fx) + c110 * fx;
+    const c01 = c001 * (1 - fx) + c101 * fx;
+    const c11 = c011 * (1 - fx) + c111 * fx;
+    return (
+      (c00 * (1 - fy) + c10 * fy) * (1 - fz) +
+      (c01 * (1 - fy) + c11 * fy) * fz
+    );
   }
 
   /** Sample u on its native face grid (coords in face-index space). */
@@ -694,7 +755,8 @@ export class FluidSolver implements SimBackend {
   }
 
   /**
-   * One backtrace for θ, qv, qc, and qr.
+   * One backtrace for θ, qv, qc, qr, and the cold species qi/qs/qg/qh plus
+   * the cloud-ice crystal number ni.
    * Open lateral BC: inflow from the synoptic boundary state, condensate from zero.
    */
   private advectScalars(dt: number): void {
@@ -711,6 +773,11 @@ export class FluidSolver implements SimBackend {
     const qvD = this.tmpQv;
     const qcD = this.tmpQc;
     const qrD = this.tmpQr;
+    const qiD = this.tmpQi;
+    const qsD = this.tmpQs;
+    const qgD = this.tmpQg;
+    const qhD = this.tmpQh;
+    const niD = this.tmpNi;
     const invDx = dt / dx;
     const invDy = dt / dy;
     const invDz = dt / dz;
@@ -753,12 +820,23 @@ export class FluidSolver implements SimBackend {
             qvD[id] = Math.min(Math.max(0, qv), cap);
             qcD[id] = 0;
             qrD[id] = 0;
+            qiD[id] = 0;
+            qsD[id] = 0;
+            qgD[id] = 0;
+            qhD[id] = 0;
+            niD[id] = 0;
            } else {
              this.sampleQuad(f.theta, f.qv, f.qc, f.qr, x, y, z);
              thD[id] = samp[0];
              qvD[id] = samp[1];
              qcD[id] = samp[2];
              qrD[id] = samp[3];
+             this.sampleQuad(f.qi, f.qs, f.qg, f.qh, x, y, z);
+             qiD[id] = samp[0];
+             qsD[id] = samp[1];
+             qgD[id] = samp[2];
+             qhD[id] = samp[3];
+             niD[id] = this.sampleField(f.ni, x, y, z);
            }
            // Cap per-step theta change to prevent localized transients
            // (e.g. semi-Lagrangian advection across a moving front) from
@@ -773,6 +851,11 @@ export class FluidSolver implements SimBackend {
     f.qv.set(qvD);
     f.qc.set(qcD);
     f.qr.set(qrD);
+    f.qi.set(qiD);
+    f.qs.set(qsD);
+    f.qg.set(qgD);
+    f.qh.set(qhD);
+    f.ni.set(niD);
   }
 
   /**
@@ -1345,6 +1428,11 @@ export class FluidSolver implements SimBackend {
           const id = g.idx(i, j, k);
           f.qc[id] *= 1 - damp;
           f.qr[id] *= 1 - damp;
+          f.qi[id] *= 1 - damp;
+          f.qs[id] *= 1 - damp;
+          f.qg[id] *= 1 - damp;
+          f.qh[id] *= 1 - damp;
+          f.ni[id] *= 1 - damp;
           f.w[g.wIdx(i, j, k)] *= 1 - damp;
           f.w[g.wIdx(i, j, k + 1)] *= 1 - damp;
           f.u[g.uIdx(i, j, k)] +=
@@ -1371,28 +1459,32 @@ export class FluidSolver implements SimBackend {
    * Pack the volumetric-cloud field.
    * Axes match the world box: X = east, Y = up, Z = south (north is −Z,
    * so grid j = ny−1 is texture Z = 0).
-   * R = liquid, G = ice, B = rain. Warm-rain qc is split by temperature
-   * (all liquid at 0°C, all ice at −20°C). 2 g/kg of cloud and 1.5 g/kg of
-   * rain pack to 1.0, which is what fieldGain = 1 expects for a dense core.
+   * R = cloud liquid (qc), G = cold species (ice + weighted snow/graupel/hail),
+   * B = rain. The cold weighting converts each species to a comparable
+   * extinction: snow is fluffy, graupel denser, hail densest.
+   * 2 g/kg of cloud and 1.5 g/kg of rain pack to 1.0, which is what
+   * fieldGain = 1 expects for a dense core.
    * A = max channel, used only by the empty-volume check.
    */
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
-    const ex = this.exner;
     const cloudUnit = 0.002;
+    const coldUnit = 0.002;
     const rainUnit = 0.0015;
     const byte = (q: number, unit: number): number => {
       if (q <= 0) return 0;
       const v = (q / unit) * 255;
       return v >= 255 ? 255 : v | 0;
     };
-    const write = (id: number, k: number, o: number): void => {
-      const tC = f.theta[id] * ex[k] - 273.15;
-      const iceFrac = tC >= 0 ? 0 : tC <= -20 ? 1 : -tC / 20;
-      const qc = f.qc[id];
-      const liq = byte(qc * (1 - iceFrac), cloudUnit);
-      const ice = byte(qc * iceFrac, cloudUnit);
+    const write = (id: number, _k: number, o: number): void => {
+      const cold =
+        f.qi[id] +
+        1.6 * f.qs[id] +
+        2.4 * f.qg[id] +
+        3.0 * f.qh[id];
+      const liq = byte(f.qc[id], cloudUnit);
+      const ice = byte(cold, coldUnit);
       const rain = byte(f.qr[id], rainUnit);
       out[o] = liq;
       out[o + 1] = ice;
@@ -1440,21 +1532,27 @@ export class FluidSolver implements SimBackend {
         const ij = i + j * nx;
         let wMax = 0;
         let dbz = -30;
+        let coldMax = 0;
         for (let k = 0; k < nz; k++) {
           const id = ij + k * nxny;
           const ww = 0.5 * (w[id] + w[id + nxny]);
           if (ww > wMax) wMax = ww;
+          const cold = coldReflectivityMass(f, id);
+          if (cold > coldMax) coldMax = cold;
           const qr = f.qr[id];
           const qc = f.qc[id];
-          if (qr < 1e-5 && qc < 1e-5) continue;
-          const d = reflectivityDbz(qr, qc);
+          if (qr < 1e-5 && qc < 1e-5 && cold < 1e-6) continue;
+          const d = reflectivityDbz(qr, qc, 0, cold);
           if (d > dbz) dbz = d;
         }
         let next = this.flash[ij] * decay;
         if (wMax > 6 && dbz > 40) {
           const excess = Math.min(1, (dbz - 40) / 30);
           const wFac = Math.min(2, (wMax - 6) / 10);
-          const inst = 4 + 16 * excess * wFac;
+          // Cold-cloud charging: graupel/ice collisions make the strongest
+          // electrification, so an ice-rich updraft gets a boost.
+          const iceFac = 0.6 + 0.4 * Math.min(1, coldMax / 2e-3);
+          const inst = (4 + 16 * excess * wFac) * iceFac;
           next += inst * (1 - decay);
         }
         this.flash[ij] = next;
@@ -1473,7 +1571,13 @@ export class FluidSolver implements SimBackend {
     const { nx, ny, nz } = this.grid;
     const f = this.fields;
     const nxny = nx * ny;
-    const hits: { i: number; j: number; k: number; rate: number }[] = [];
+    const hits: {
+      i: number;
+      j: number;
+      k: number;
+      topK: number;
+      rate: number;
+    }[] = [];
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
         const rate = this.flash[i + j * nx];
@@ -1482,15 +1586,27 @@ export class FluidSolver implements SimBackend {
         if (Math.random() > p) continue;
         let bestK = Math.floor(nz * 0.45);
         let best = -1e9;
+        let topK = bestK;
         for (let k = 1; k < nz - 1; k++) {
           const id = i + nx * (j + ny * k);
-          const score = f.qr[id] * 4 + f.qc[id] + Math.max(0, f.w[id + nxny]) * 0.002;
+          const cold = coldReflectivityMass(f, id);
+          const score =
+            f.qr[id] * 4 +
+            f.qc[id] +
+            cold * 3 +
+            Math.max(0, f.w[id + nxny]) * 0.002;
           if (score > best) {
             best = score;
             bestK = k;
           }
+          if (
+            f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id] >
+            1e-4
+          ) {
+            topK = k;
+          }
         }
-        hits.push({ i, j, k: bestK, rate });
+        hits.push({ i, j, k: bestK, topK, rate });
       }
     }
     hits.sort((a, b) => b.rate - a.rate);
@@ -1498,8 +1614,13 @@ export class FluidSolver implements SimBackend {
     const out: LightningStrike[] = [];
     for (const hit of picked) {
       if (out.length >= 4) break;
-      out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "cg" });
-      if (hit.rate > 8 && out.length < 4 && Math.random() < 0.05) {
+      // Most flashes stay inside the cloud; roughly a third reach ground.
+      const ic = Math.random() < 0.65;
+      const k = ic
+        ? Math.max(hit.k, Math.min(nz - 2, hit.topK - 1))
+        : hit.k;
+      out.push({ i: hit.i, j: hit.j, k, kind: ic ? "ic" : "cg" });
+      if (!ic && hit.rate > 8 && out.length < 4 && Math.random() < 0.06) {
         out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "sprite" });
       }
     }
@@ -1528,9 +1649,11 @@ export class FluidSolver implements SimBackend {
     let rainMax = 0;
     let cloudMass = 0;
     for (let i = 0; i < f.qc.length; i++) {
-      if (f.qc[i] > cloudMax) cloudMax = f.qc[i];
+      const cold = f.qi[i] + f.qs[i] + f.qg[i] + f.qh[i];
+      const cloud = f.qc[i] + cold;
+      if (cloud > cloudMax) cloudMax = cloud;
       if (f.qr[i] > rainMax) rainMax = f.qr[i];
-      cloudMass += f.qc[i] + f.qr[i];
+      cloudMass += cloud + f.qr[i];
     }
     return { cloudMax, rainMax, cloudMass };
   }

@@ -1,6 +1,12 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
+import { hailMaxDiameter } from "./coldMicrophysics";
 import { integrateCapeCin } from "./cape";
+import {
+  DERIVED_LEGENDS,
+  packDerivedProduct,
+  type DerivedProductId,
+} from "./mapDerived";
 import { surfacePressureBiasHpa } from "./synoptic";
 import {
   CP,
@@ -32,15 +38,24 @@ export type MapProductId =
   | "frz"
   | "cape03"
   | "pwat"
+  | "t925"
+  | "t700"
+  | "t500"
   | "t850"
+  | "td925"
+  | "td700"
+  | "td500"
   | "td850"
   | "w850"
   // ── Wind and dynamics ─────────────────────────────────────────────────────
   | "wdir"
   | "wmax"
   | "w3k"
+  | "shear01"
+  | "shear03"
   | "shear06"
   | "conv"
+  | "div"
   | "vort"
   | "mconv"
   | "uh25"
@@ -53,7 +68,76 @@ export type MapProductId =
   // ── Radar and precipitation ───────────────────────────────────────────────
   | "refl1k"
   | "echotop"
-  | "vil";
+  | "vil"
+  | "precip"
+  | "paccum"
+  | "preciptype"
+  // ── Cold species ──────────────────────────────────────────────────────────
+  | "graupel"
+  | "snowice"
+  | "hailsize"
+  // ── Synoptic ──────────────────────────────────────────────────────────────
+  | "mslp"
+  // ── Derived instability and parcel diagnostics ────────────────────────────
+  | "mlcape"
+  | "mucape"
+  | "li"
+  | "showalter"
+  | "kindex"
+  | "totaltotals"
+  | "lapse700500"
+  | "lapse03"
+  | "wbz"
+  | "convtemp"
+  | "dcape"
+  | "capeshear"
+  // ── Derived moisture and surface thermodynamics ───────────────────────────
+  | "dptdep"
+  | "qsfc"
+  | "mixratio"
+  | "mflux"
+  | "dryint"
+  | "blrh"
+  | "wetbulb"
+  | "evappot"
+  // ── Derived cloud structure ───────────────────────────────────────────────
+  | "cice"
+  | "iwp"
+  | "cttemp"
+  | "cdepth"
+  | "overshoot"
+  | "ctdiv"
+  | "downdraft"
+  // ── Derived wind and dynamics ─────────────────────────────────────────────
+  | "w925"
+  | "w700"
+  | "w500"
+  | "w300"
+  | "w200"
+  | "omega"
+  | "shear08"
+  | "srh01"
+  | "srh03"
+  | "srw"
+  | "brn"
+  | "llj"
+  | "ulj"
+  | "ucomp"
+  | "vcomp"
+  // ── Derived precipitation and synoptic fields ─────────────────────────────
+  | "virga"
+  | "vildensity"
+  | "hydrometeor"
+  | "rainrate"
+  | "snowrate"
+  | "z500"
+  | "thickness"
+  | "tropopause"
+  | "vortadv"
+  | "coldpool"
+  | "pgrad"
+  | "tgrad"
+  | "tdgrad";
 
 export interface MapScale {
   min: number;
@@ -292,6 +376,72 @@ const VIL_STOPS: RgbaStop[] = [
   [75, 255, 210, 255],
 ];
 
+/** Surface precipitation rate, 0–60 mm/h. */
+const PRECIP_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [0.5, 30, 78, 120],
+  [2, 40, 150, 170],
+  [6, 60, 190, 110],
+  [12, 236, 216, 70],
+  [25, 244, 132, 36],
+  [40, 220, 40, 60],
+  [60, 200, 90, 220],
+];
+
+/** Storm-total accumulation, 0–100 mm. */
+const ACCUM_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [2, 32, 84, 130],
+  [8, 40, 156, 176],
+  [20, 70, 196, 110],
+  [40, 238, 216, 70],
+  [65, 244, 128, 36],
+  [100, 210, 50, 190],
+];
+
+/** Graupel mixing ratio, 0–3 g/kg. */
+const GRAUPEL_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [0.1, 54, 88, 150],
+  [0.4, 60, 160, 190],
+  [0.9, 80, 200, 120],
+  [1.5, 236, 216, 70],
+  [2.2, 244, 132, 36],
+  [3, 240, 220, 255],
+];
+
+/** Snow + cloud ice mixing ratio, 0–6 g/kg. */
+const SNOW_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [0.2, 58, 92, 158],
+  [0.8, 78, 156, 206],
+  [1.8, 140, 198, 226],
+  [3.2, 214, 230, 240],
+  [6, 255, 255, 255],
+];
+
+/** Hail diameter, 0–80 mm. */
+const HAIL_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [5, 40, 120, 170],
+  [12, 60, 190, 140],
+  [25, 236, 216, 70],
+  [40, 244, 120, 36],
+  [60, 214, 40, 70],
+  [80, 255, 230, 255],
+];
+
+/** Mean sea-level pressure, 980–1040 hPa. */
+const MSLP_STOPS: RgbaStop[] = [
+  [980, 60, 40, 170],
+  [995, 60, 110, 220],
+  [1005, 130, 190, 230],
+  [1013, 236, 236, 240],
+  [1021, 250, 210, 130],
+  [1030, 240, 140, 60],
+  [1040, 190, 50, 50],
+];
+
 /** Updraft helicity, 0–300 m²/s². */
 const UH_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
@@ -315,6 +465,27 @@ const WDIR_STOPS: RgbaStop[] = [
   [315, 230, 110, 140],
   [360, 230, 90, 70],
 ];
+
+/** Compact metadata builder for the derived-scalar products. */
+function pm(
+  id: MapProductId,
+  title: string,
+  units: string,
+  legendCss: string,
+  min: number,
+  max: number,
+  values: number[],
+  ticks: string[],
+): MapProductMeta {
+  return {
+    id,
+    title,
+    units,
+    legendCss,
+    ticks,
+    scale: { min, max, values },
+  };
+}
 
 export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   refl: {
@@ -621,6 +792,194 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     ticks: ["0", "15", "30", "45", "60", "75"],
     scale: { min: 0, max: 75, values: [0, 15, 30, 45, 60, 75] },
   },
+  t925: {
+    id: "t925",
+    title: "925 hPa temperature",
+    units: "°C",
+    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
+    ticks: ["-15", "0", "15", "30", "40"],
+    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+  },
+  t700: {
+    id: "t700",
+    title: "700 hPa temperature",
+    units: "°C",
+    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
+    ticks: ["-15", "0", "15", "30", "40"],
+    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+  },
+  t500: {
+    id: "t500",
+    title: "500 hPa temperature",
+    units: "°C",
+    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
+    ticks: ["-15", "0", "15", "30", "40"],
+    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+  },
+  td925: {
+    id: "td925",
+    title: "925 hPa dewpoint",
+    units: "°C",
+    legendCss: legendFromStops(DEW_STOPS, -5, 28),
+    ticks: ["-5", "5", "15", "22", "28"],
+    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+  },
+  td700: {
+    id: "td700",
+    title: "700 hPa dewpoint",
+    units: "°C",
+    legendCss: legendFromStops(DEW_STOPS, -5, 28),
+    ticks: ["-5", "5", "15", "22", "28"],
+    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+  },
+  td500: {
+    id: "td500",
+    title: "500 hPa dewpoint",
+    units: "°C",
+    legendCss: legendFromStops(DEW_STOPS, -5, 28),
+    ticks: ["-5", "5", "15", "22", "28"],
+    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+  },
+  shear01: {
+    id: "shear01",
+    title: "0–1 km bulk shear",
+    units: "m/s",
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
+    ticks: ["0", "15", "30", "45", "60"],
+    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+  },
+  shear03: {
+    id: "shear03",
+    title: "0–3 km bulk shear",
+    units: "m/s",
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
+    ticks: ["0", "15", "30", "45", "60"],
+    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+  },
+  div: {
+    id: "div",
+    title: "Surface wind divergence",
+    units: "10⁻⁴ s⁻¹",
+    legendCss:
+      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    ticks: ["-20", "0", "+20"],
+  },
+  precip: {
+    id: "precip",
+    title: "Surface precipitation rate",
+    units: "mm/h",
+    legendCss: legendFromStops(PRECIP_STOPS, 0, 60),
+    ticks: ["0", "2", "6", "12", "25", "40", "60"],
+    scale: { min: 0, max: 60, values: [0, 2, 6, 12, 25, 40, 60] },
+  },
+  paccum: {
+    id: "paccum",
+    title: "Accumulated precipitation",
+    units: "mm",
+    legendCss: legendFromStops(ACCUM_STOPS, 0, 100),
+    ticks: ["0", "2", "8", "20", "40", "65", "100"],
+    scale: { min: 0, max: 100, values: [0, 2, 8, 20, 40, 65, 100] },
+  },
+  preciptype: {
+    id: "preciptype",
+    title: "Precipitation type at the surface",
+    units: "—",
+    legendCss:
+      "linear-gradient(90deg,#141820 0%,#3c78e0 26%,#b07ad8 52%,#38b060 78%,#dcf0ff 100%)",
+    ticks: ["none", "snow", "mixed", "rain"],
+  },
+  graupel: {
+    id: "graupel",
+    title: "Column-max graupel",
+    units: "g/kg",
+    legendCss: legendFromStops(GRAUPEL_STOPS, 0, 3),
+    ticks: ["0", "0.4", "0.9", "1.5", "2.2", "3"],
+    scale: { min: 0, max: 3, values: [0, 0.4, 0.9, 1.5, 2.2, 3] },
+  },
+  snowice: {
+    id: "snowice",
+    title: "Column-max snow and cloud ice",
+    units: "g/kg",
+    legendCss: legendFromStops(SNOW_STOPS, 0, 6),
+    ticks: ["0", "0.8", "1.8", "3.2", "6"],
+    scale: { min: 0, max: 6, values: [0, 0.8, 1.8, 3.2, 6] },
+  },
+  hailsize: {
+    id: "hailsize",
+    title: "Column-max hail diameter",
+    units: "mm",
+    legendCss: legendFromStops(HAIL_STOPS, 0, 80),
+    ticks: ["0", "5", "12", "25", "40", "60", "80"],
+    scale: { min: 0, max: 80, values: [0, 5, 12, 25, 40, 60, 80] },
+  },
+  mslp: {
+    id: "mslp",
+    title: "Mean sea-level pressure",
+    units: "hPa",
+    legendCss: legendFromStops(MSLP_STOPS, 980, 1040),
+    ticks: ["980", "995", "1005", "1013", "1021", "1030", "1040"],
+    scale: { min: 980, max: 1040, values: [980, 995, 1005, 1013, 1021, 1030, 1040] },
+  },
+  // ── Derived instability and parcel diagnostics ────────────────────────────
+  mlcape: pm("mlcape", "Mixed-layer CAPE (lowest 100 hPa)", "J/kg", DERIVED_LEGENDS.scalar, 0, 5000, [0, 1000, 2500, 5000], ["0", "1000", "2500", "5000"]),
+  mucape: pm("mucape", "Most-unstable CAPE", "J/kg", DERIVED_LEGENDS.scalar, 0, 5000, [0, 1000, 2500, 5000], ["0", "1000", "2500", "5000"]),
+  li: pm("li", "Lifted index (500 hPa)", "K", DERIVED_LEGENDS.diverging, -10, 10, [-10, 0, 10], ["-10", "0", "+10"]),
+  showalter: pm("showalter", "Showalter index", "K", DERIVED_LEGENDS.diverging, -8, 8, [-8, 0, 8], ["-8", "0", "+8"]),
+  kindex: pm("kindex", "K index", "K", DERIVED_LEGENDS.scalar, 0, 50, [0, 15, 30, 50], ["0", "15", "30", "50"]),
+  totaltotals: pm("totaltotals", "Total totals index", "K", DERIVED_LEGENDS.scalar, 40, 70, [40, 50, 60, 70], ["40", "50", "60", "70"]),
+  lapse700500: pm("lapse700500", "700–500 hPa lapse rate", "K/km", DERIVED_LEGENDS.scalar, 3, 10, [3, 5, 7, 10], ["3", "5", "7", "10"]),
+  lapse03: pm("lapse03", "0–3 km lapse rate", "K/km", DERIVED_LEGENDS.scalar, 3, 10, [3, 5, 7, 10], ["3", "5", "7", "10"]),
+  wbz: pm("wbz", "Wet-bulb-zero height", "m", DERIVED_LEGENDS.scalar, 0, 5000, [0, 1000, 2000, 3000, 5000], ["0", "1k", "2k", "3k", "5k"]),
+  convtemp: pm("convtemp", "Convective temperature", "°C", DERIVED_LEGENDS.scalar, 5, 45, [5, 15, 25, 35, 45], ["5", "15", "25", "35", "45"]),
+  dcape: pm("dcape", "Downdraft CAPE (DCAPE)", "J/kg", DERIVED_LEGENDS.scalar, 0, 2000, [0, 500, 1000, 2000], ["0", "500", "1000", "2000"]),
+  capeshear: pm("capeshear", "CAPE × 0–6 km shear", "J·m/(kg·s)", DERIVED_LEGENDS.scalar, 0, 300000, [0, 75000, 150000, 300000], ["0", "75k", "150k", "300k"]),
+  // ── Derived moisture and surface thermodynamics ───────────────────────────
+  dptdep: pm("dptdep", "Surface dew-point depression", "K", DERIVED_LEGENDS.scalar, 0, 30, [0, 10, 20, 30], ["0", "10", "20", "30"]),
+  qsfc: pm("qsfc", "Surface specific humidity", "g/kg", DERIVED_LEGENDS.scalar, 0, 25, [0, 5, 10, 15, 25], ["0", "5", "10", "15", "25"]),
+  mixratio: pm("mixratio", "Surface water-vapour mixing ratio", "g/kg", DERIVED_LEGENDS.scalar, 0, 25, [0, 5, 10, 15, 25], ["0", "5", "10", "15", "25"]),
+  mflux: pm("mflux", "Surface moisture flux", "g kg⁻¹ m s⁻¹", DERIVED_LEGENDS.scalar, 0, 400, [0, 100, 200, 300, 400], ["0", "100", "200", "300", "400"]),
+  dryint: pm("dryint", "Mid-level dry-air intrusion", "%", DERIVED_LEGENDS.scalar, 0, 100, [0, 25, 50, 75, 100], ["0", "25", "50", "75", "100"]),
+  blrh: pm("blrh", "Boundary-layer relative humidity", "%", DERIVED_LEGENDS.scalar, 0, 100, [0, 25, 50, 75, 100], ["0", "25", "50", "75", "100"]),
+  wetbulb: pm("wetbulb", "Surface wet-bulb temperature", "°C", DERIVED_LEGENDS.scalar, -15, 40, [-15, 0, 15, 30, 40], ["-15", "0", "15", "30", "40"]),
+  evappot: pm("evappot", "Surface evaporation potential", "g/kg", DERIVED_LEGENDS.scalar, 0, 20, [0, 5, 10, 20], ["0", "5", "10", "20"]),
+  // ── Derived cloud structure ───────────────────────────────────────────────
+  cice: pm("cice", "Column-max cloud ice", "g/kg", DERIVED_LEGENDS.scalar, 0, 3, [0, 0.5, 1, 2, 3], ["0", "0.5", "1", "2", "3"]),
+  iwp: pm("iwp", "Ice water path", "g/m²", DERIVED_LEGENDS.scalar, 0, 600, [0, 50, 150, 300, 600], ["0", "50", "150", "300", "600"]),
+  cttemp: pm("cttemp", "Cloud-top temperature", "°C", DERIVED_LEGENDS.cold, -80, 20, [-80, -60, -40, -20, 0, 20], ["-80", "-60", "-40", "-20", "0", "20"]),
+  cdepth: pm("cdepth", "Cloud depth", "m", DERIVED_LEGENDS.scalar, 0, 15000, [0, 3000, 6000, 9000, 15000], ["0", "3k", "6k", "9k", "15k"]),
+  overshoot: pm("overshoot", "Overshooting-top depth", "m", DERIVED_LEGENDS.scalar, 0, 3000, [0, 500, 1000, 2000, 3000], ["0", "500", "1k", "2k", "3k"]),
+  ctdiv: pm("ctdiv", "Cloud-top divergence", "10⁻⁴ s⁻¹", DERIVED_LEGENDS.diverging, -20, 20, [-20, 0, 20], ["-20", "0", "+20"]),
+  downdraft: pm("downdraft", "Column-max downdraft", "m/s", DERIVED_LEGENDS.scalar, 0, 20, [0, 5, 10, 15, 20], ["0", "5", "10", "15", "20"]),
+  // ── Derived wind and dynamics ─────────────────────────────────────────────
+  w925: pm("w925", "925 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 60, [0, 15, 30, 45, 60], ["0", "15", "30", "45", "60"]),
+  w700: pm("w700", "700 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  w500: pm("w500", "500 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  w300: pm("w300", "300 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  w200: pm("w200", "200 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  omega: pm("omega", "700 hPa pressure vertical velocity", "Pa/s", DERIVED_LEGENDS.diverging, -5, 5, [-5, 0, 5], ["-5", "0", "+5"]),
+  shear08: pm("shear08", "0–8 km bulk shear", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  srh01: pm("srh01", "0–1 km storm-relative helicity", "m²/s²", DERIVED_LEGENDS.diverging, -150, 150, [-150, 0, 150], ["-150", "0", "+150"]),
+  srh03: pm("srh03", "0–3 km storm-relative helicity", "m²/s²", DERIVED_LEGENDS.diverging, -300, 300, [-300, 0, 300], ["-300", "0", "+300"]),
+  srw: pm("srw", "Surface storm-relative wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 60, [0, 15, 30, 45, 60], ["0", "15", "30", "45", "60"]),
+  brn: pm("brn", "Bulk Richardson number", "–", DERIVED_LEGENDS.scalar, 0, 100, [0, 10, 25, 50, 100], ["0", "10", "25", "50", "100"]),
+  llj: pm("llj", "Low-level jet (0–3 km max wind)", "m/s", DERIVED_LEGENDS.scalar, 0, 40, [0, 10, 20, 30, 40], ["0", "10", "20", "30", "40"]),
+  ulj: pm("ulj", "Upper-level jet (8–12 km max wind)", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  ucomp: pm("ucomp", "Surface u-component wind", "m/s", DERIVED_LEGENDS.diverging, -30, 30, [-30, 0, 30], ["-30", "0", "+30"]),
+  vcomp: pm("vcomp", "Surface v-component wind", "m/s", DERIVED_LEGENDS.diverging, -30, 30, [-30, 0, 30], ["-30", "0", "+30"]),
+  // ── Derived precipitation and synoptic fields ─────────────────────────────
+  virga: pm("virga", "Virga water path", "g/m²", DERIVED_LEGENDS.scalar, 0, 1200, [0, 100, 300, 600, 1200], ["0", "100", "300", "600", "1200"]),
+  vildensity: pm("vildensity", "VIL density", "g/m³", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 3, 5], ["0", "1", "2", "3", "5"]),
+  hydrometeor: pm("hydrometeor", "Dominant hydrometeor class", "–", DERIVED_LEGENDS.hydro, 0, 6, [0, 1, 2, 3, 4, 5, 6], ["none", "cloud", "rain", "ice", "snow", "graupel", "hail"]),
+  rainrate: pm("rainrate", "Liquid rainfall rate", "mm/h", DERIVED_LEGENDS.scalar, 0, 60, [0, 2, 6, 12, 25, 40, 60], ["0", "2", "6", "12", "25", "40", "60"]),
+  snowrate: pm("snowrate", "Frozen precipitation rate", "mm/h", DERIVED_LEGENDS.scalar, 0, 60, [0, 2, 6, 12, 25, 40, 60], ["0", "2", "6", "12", "25", "40", "60"]),
+  z500: pm("z500", "500 hPa geopotential height", "m", DERIVED_LEGENDS.scalar, 4800, 6000, [4800, 5200, 5500, 5800, 6000], ["4800", "5200", "5500", "5800", "6000"]),
+  thickness: pm("thickness", "1000–500 hPa thickness", "m", DERIVED_LEGENDS.scalar, 4800, 6000, [4800, 5200, 5500, 5800, 6000], ["4800", "5200", "5500", "5800", "6000"]),
+  tropopause: pm("tropopause", "Tropopause height", "m", DERIVED_LEGENDS.scalar, 5000, 16000, [5000, 8000, 11000, 14000, 16000], ["5k", "8k", "11k", "14k", "16k"]),
+  vortadv: pm("vortadv", "500 hPa vorticity advection", "10⁻⁹ s⁻²", DERIVED_LEGENDS.diverging, -50, 50, [-50, 0, 50], ["-50", "0", "+50"]),
+  coldpool: pm("coldpool", "Surface cold-pool temperature deficit", "K", DERIVED_LEGENDS.scalar, 0, 10, [0, 2, 4, 7, 10], ["0", "2", "4", "7", "10"]),
+  pgrad: pm("pgrad", "Surface pressure gradient", "hPa/km", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 3, 5], ["0", "1", "2", "3", "5"]),
+  tgrad: pm("tgrad", "Surface temperature gradient", "K/km", DERIVED_LEGENDS.scalar, 0, 10, [0, 2, 4, 7, 10], ["0", "2", "4", "7", "10"]),
+  tdgrad: pm("tdgrad", "Surface dew-point gradient", "K/km", DERIVED_LEGENDS.scalar, 0, 10, [0, 2, 4, 7, 10], ["0", "2", "4", "7", "10"]),
 };
 
 /** Paint a legend bar and its ticks from one product definition. */
@@ -715,8 +1074,26 @@ export function packMapProduct(
     case "t850":
       packTempAt(grid, fields, out, 85000);
       break;
+    case "t500":
+      packTempAt(grid, fields, out, 50000);
+      break;
+    case "t700":
+      packTempAt(grid, fields, out, 70000);
+      break;
+    case "t925":
+      packTempAt(grid, fields, out, 92500);
+      break;
     case "td850":
       packDewAt(grid, fields, out, 85000);
+      break;
+    case "td500":
+      packDewAt(grid, fields, out, 50000);
+      break;
+    case "td700":
+      packDewAt(grid, fields, out, 70000);
+      break;
+    case "td925":
+      packDewAt(grid, fields, out, 92500);
       break;
     case "w850":
       packWindAt(grid, fields, out, 85000);
@@ -730,11 +1107,20 @@ export function packMapProduct(
     case "w3k":
       packVerticalVelocityAt(grid, fields, out, 3000);
       break;
+    case "shear03":
+      packBulkShear(grid, fields, out, 3000);
+      break;
+    case "shear01":
+      packBulkShear(grid, fields, out, 1000);
+      break;
     case "shear06":
       packBulkShear06(grid, fields, out);
       break;
     case "conv":
-      packSurfaceConvergence(grid, fields, out);
+      packSurfaceConvergence(grid, fields, out, true);
+      break;
+    case "div":
+      packSurfaceConvergence(grid, fields, out, false);
       break;
     case "vort":
       packSurfaceVorticity(grid, fields, out);
@@ -769,6 +1155,94 @@ export function packMapProduct(
     case "vil":
       packVil(grid, fields, out);
       break;
+    case "precip":
+      packPrecip(grid, fields, out);
+      break;
+    case "paccum":
+      packPaccum(grid, fields, out);
+      break;
+    case "preciptype":
+      packPrecipType(grid, fields, out);
+      break;
+    case "graupel":
+      packGraupel(grid, fields, out);
+      break;
+    case "snowice":
+      packSnowIce(grid, fields, out);
+      break;
+    case "hailsize":
+      packHailSize(grid, fields, out);
+      break;
+    case "mslp":
+      packMslp(grid, fields, out);
+      break;
+    case "w925":
+      packWindAt(grid, fields, out, 92500);
+      break;
+    case "w700":
+      packWindAt(grid, fields, out, 70000);
+      break;
+    case "w500":
+      packWindAt(grid, fields, out, 50000);
+      break;
+    case "w300":
+      packWindAt(grid, fields, out, 30000);
+      break;
+    case "w200":
+      packWindAt(grid, fields, out, 20000);
+      break;
+    case "mlcape":
+    case "mucape":
+    case "li":
+    case "showalter":
+    case "kindex":
+    case "totaltotals":
+    case "lapse700500":
+    case "lapse03":
+    case "wbz":
+    case "convtemp":
+    case "dcape":
+    case "capeshear":
+    case "dptdep":
+    case "qsfc":
+    case "mixratio":
+    case "mflux":
+    case "dryint":
+    case "blrh":
+    case "wetbulb":
+    case "evappot":
+    case "cice":
+    case "iwp":
+    case "cttemp":
+    case "cdepth":
+    case "overshoot":
+    case "ctdiv":
+    case "downdraft":
+    case "omega":
+    case "shear08":
+    case "srh01":
+    case "srh03":
+    case "srw":
+    case "brn":
+    case "llj":
+    case "ulj":
+    case "ucomp":
+    case "vcomp":
+    case "virga":
+    case "vildensity":
+    case "hydrometeor":
+    case "rainrate":
+    case "snowrate":
+    case "z500":
+    case "thickness":
+    case "tropopause":
+    case "vortadv":
+    case "coldpool":
+    case "pgrad":
+    case "tgrad":
+    case "tdgrad":
+      packDerivedProduct(id as DerivedProductId, grid, fields, out);
+      break;
   }
 }
 
@@ -791,7 +1265,12 @@ function packReflectivity(
       for (let k = 0; k < nz; k += stepK) {
         const id = grid.idx(i, j, k);
         const ww = 0.5 * (f.w[id] + f.w[id + nxny]);
-        const dbz = reflectivityDbz(f.qr[id], f.qc[id], ww);
+        const dbz = reflectivityDbz(
+          f.qr[id],
+          f.qc[id],
+          ww,
+          coldReflectivityMass(f, id),
+        );
         if (dbz > maxDbz) maxDbz = dbz;
       }
       dbzToRgba(maxDbz, out, mapPix(i, j, nx, ny));
@@ -808,7 +1287,11 @@ function packVisible(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let tau = 0;
       for (let k = 0; k < nz; k++) {
         const id = i + j * nx + k * nxny;
-        tau += f.qc[id] * 520 + f.qr[id] * 180;
+        tau +=
+          f.qc[id] * 520 +
+          f.qr[id] * 180 +
+          (f.qi[id] + f.qs[id]) * 400 +
+          (f.qg[id] + f.qh[id]) * 520;
       }
       const alb = 1 - Math.exp(-tau);
       const g = (18 + alb * 237) | 0;
@@ -838,7 +1321,12 @@ function packInfrared(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let acc = 0;
       for (let k = nz - 1; k >= 0 && trans > 0.02; k--) {
         const id = sfc + k * nxny;
-        const dTau = (f.qc[id] * 40 + f.qr[id] * 18) * dzN;
+        const dTau =
+          (f.qc[id] * 40 +
+            f.qr[id] * 18 +
+            (f.qi[id] + f.qs[id]) * 42 +
+            (f.qg[id] + f.qh[id]) * 60) *
+          dzN;
         if (dTau <= 1e-6) continue;
         const emit = 1 - Math.exp(-dTau);
         const tC = TFromTheta(f.theta[id], f.p0[k]) - 273.15;
@@ -1083,16 +1571,27 @@ export function dbzOpacity(dbz: number): number {
 }
 
 /**
- * Reflectivity from warm-rain mixing ratios.
+ * Reflectivity from bulk mixing ratios.
  * The prefactor maps the rain this model actually holds onto 5–70 dBZ.
  * A strong updraft over heavy rain adds a compact core so pink and white
  * stay inside the updraft instead of painting the whole echo.
+ * `ice` is a pre-weighted cold-species mass (see `coldReflectivityMass`):
+ * snow contributes little, graupel and hail a lot.
  */
-export function reflectivityDbz(qr: number, qc: number, w = 0): number {
+export function reflectivityDbz(
+  qr: number,
+  qc: number,
+  w = 0,
+  ice = 0,
+): number {
   const qrp = Math.max(0, qr);
   const qcp = Math.max(0, qc);
-  if (qrp < 1e-8 && qcp < 5e-5) return -30;
-  const ze = 8.0e8 * Math.pow(qrp, 1.6) + 2.0e5 * qcp * qcp;
+  const qip = Math.max(0, ice);
+  if (qrp < 1e-8 && qcp < 5e-5 && qip < 1e-9) return -30;
+  const ze =
+    8.0e8 * Math.pow(qrp, 1.6) +
+    2.0e5 * qcp * qcp +
+    4.0e9 * Math.pow(qip, 1.6);
   let dbz = 10 * Math.log10(Math.max(ze, 1e-8));
   if (w > 4 && qrp > 2e-4) {
     const up = Math.min(1, (w - 4) / 12);
@@ -1100,6 +1599,19 @@ export function reflectivityDbz(qr: number, qc: number, w = 0): number {
     dbz += 16 * up * rain;
   }
   return dbz;
+}
+
+/**
+ * Radar-relevant cold mass: cloud ice at face value, snow heavily discounted
+ * for its low density, graupel and hail boosted.
+ */
+export function coldReflectivityMass(f: SimFields, id: number): number {
+  return (
+    Math.max(0, f.qi[id]) +
+    0.6 * Math.max(0, f.qs[id]) +
+    2.0 * Math.max(0, f.qg[id]) +
+    3.5 * Math.max(0, f.qh[id])
+  );
 }
 
 function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
@@ -1427,14 +1939,20 @@ function packColumnMaxW(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   }
 }
 
-/** 0–6 km bulk shear from the base-state sounding (uniform in x/y). */
-function packBulkShear06(grid: Grid3D, f: SimFields, out: Uint8Array): void {  const { nx, ny, nz, dz } = grid;
-  const k6 = Math.min(nz - 1, Math.max(0, Math.round(6000 / Math.max(dz, 1))));
-  const shear = Math.hypot(f.u0[k6] - f.u0[0], f.v0[k6] - f.v0[0]);
+/** Bulk shear between surface and height zM from the base-state sounding (uniform). */
+function packBulkShear(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  zM: number,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const k1 = Math.min(nz - 1, Math.max(0, Math.round(zM / Math.max(dz, 1))));
+  const shear = Math.hypot(f.u0[k1] - f.u0[0], f.v0[k1] - f.v0[0]);
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       lerpStops(
-        clamp(shear, 0, 60),
+        clamp(shear, 0, 80),
         SHEAR_STOPS,
         out,
         mapPix(i, j, nx, ny),
@@ -1442,6 +1960,11 @@ function packBulkShear06(grid: Grid3D, f: SimFields, out: Uint8Array): void {  c
       );
     }
   }
+}
+
+/** 0–6 km bulk shear from the base-state sounding (uniform in x/y). */
+function packBulkShear06(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  packBulkShear(grid, f, out, 6000);
 }
 
 function packVerticalVelocityAt(
@@ -1470,6 +1993,7 @@ function packSurfaceConvergence(
   grid: Grid3D,
   f: SimFields,
   out: Uint8Array,
+  convergentPositive = true,
 ): void {
   const { nx, ny, dx, dy } = grid;
   for (let j = 0; j < ny; j++) {
@@ -1485,8 +2009,9 @@ function packSurfaceConvergence(
         (grid.vCenter(f.v, i, jp, 0) - grid.vCenter(f.v, i, jm, 0)) /
         Math.max(1e-3, (jp - jm) * dy);
       const conv = -(duDx + dvDy) * 1e4;
+      const val = convergentPositive ? conv : -conv;
       divergingToRgba(
-        clamp(conv, -20, 20),
+        clamp(val, -20, 20),
         -20,
         20,
         out,
@@ -1495,6 +2020,7 @@ function packSurfaceConvergence(
     }
   }
 }
+
 
 /** Relative vorticity at the surface: ∂v/∂x − ∂u/∂y, × 10⁴. */
 function packSurfaceVorticity(
@@ -1613,7 +2139,13 @@ function packCloudTop(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let top = 0;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
-        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) top = (k + 0.5) * dz;
+        if (f.qc[id] +
+          f.qr[id] +
+          f.qi[id] +
+          f.qs[id] +
+          f.qg[id] +
+          f.qh[id] >
+          CLOUD_THRESHOLD) top = (k + 0.5) * dz;
       }
       lerpStops(
         clamp(top, 0, 15000),
@@ -1634,7 +2166,13 @@ function packCloudBase(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let base = 0;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
-        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) {
+        if (f.qc[id] +
+          f.qr[id] +
+          f.qi[id] +
+          f.qs[id] +
+          f.qg[id] +
+          f.qh[id] >
+          CLOUD_THRESHOLD) {
           base = (k + 0.5) * dz;
           break;
         }
@@ -1658,7 +2196,13 @@ function packCloudFraction(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let n = 0;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
-        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) n++;
+        if (f.qc[id] +
+          f.qr[id] +
+          f.qi[id] +
+          f.qs[id] +
+          f.qg[id] +
+          f.qh[id] >
+          CLOUD_THRESHOLD) n++;
       }
       const frac = (n / Math.max(1, nz)) * 100;
       lerpStops(frac, CFR_STOPS, out, mapPix(i, j, nx, ny), 255);
@@ -1725,7 +2269,16 @@ function packReflectivityAt(
     for (let i = 0; i < nx; i++) {
       const id = grid.idx(i, j, k);
       const w = grid.wCenter(f.w, i, j, k);
-      dbzToRgba(reflectivityDbz(f.qr[id], f.qc[id], w), out, mapPix(i, j, nx, ny));
+      dbzToRgba(
+        reflectivityDbz(
+          f.qr[id],
+          f.qc[id],
+          w,
+          coldReflectivityMass(f, id),
+        ),
+        out,
+        mapPix(i, j, nx, ny),
+      );
     }
   }
 }
@@ -1739,7 +2292,14 @@ function packEchoTop(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
         const w = grid.wCenter(f.w, i, j, k);
-        if (reflectivityDbz(f.qr[id], f.qc[id], w) >= ECHO_TOP_DBZ) {
+        if (
+          reflectivityDbz(
+            f.qr[id],
+            f.qc[id],
+            w,
+            coldReflectivityMass(f, id),
+          ) >= ECHO_TOP_DBZ
+        ) {
           top = (k + 0.5) * dz;
         }
       }
@@ -1762,9 +2322,226 @@ function packVil(grid: Grid3D, f: SimFields, out: Uint8Array): void {
       let vil = 0;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
-        vil += f.rho0[k] * Math.max(0, f.qr[id]) * dz;
+        vil +=
+          f.rho0[k] *
+          (Math.max(0, f.qr[id]) +
+            Math.max(0, f.qi[id]) +
+            Math.max(0, f.qs[id]) +
+            Math.max(0, f.qg[id]) +
+            Math.max(0, f.qh[id])) *
+          dz;
       }
       lerpStops(clamp(vil, 0, 75), VIL_STOPS, out, mapPix(i, j, nx, ny), 255);
     }
   }
+}
+
+/**
+ * Precipitation-type categories. Positions match the legend gradient in
+ * `MAP_PRODUCTS.preciptype` (0 none, 26 snow, 52 mixed, 78 rain, 100 hail).
+ */
+const PRECIP_TYPE_STOPS: RgbaStop[] = [
+  [0, 20, 24, 32],
+  [26, 60, 120, 224],
+  [52, 176, 122, 216],
+  [78, 56, 176, 96],
+  [100, 220, 240, 255],
+];
+
+/** Surface precipitation rate (mm/h). */
+function packPrecip(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const rate = Math.max(0, f.precipRate[i + j * nx] || 0);
+      lerpStops(
+        clamp(rate, 0, 60),
+        PRECIP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Storm-total rain plus frozen accumulation (mm liquid equivalent). */
+function packPaccum(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const s = i + j * nx;
+      const mm =
+        Math.max(0, f.rainAccum[s] || 0) + Math.max(0, f.snowAccum[s] || 0);
+      lerpStops(clamp(mm, 0, 100), ACCUM_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+/** Column-max graupel mixing ratio (g/kg). */
+function packGraupel(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let g = 0;
+      for (let k = 0; k < nz; k++) {
+        const qg = Math.max(0, f.qg[grid.idx(i, j, k)]);
+        if (qg > g) g = qg;
+      }
+      lerpStops(
+        clamp(g * 1000, 0, 3),
+        GRAUPEL_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Column-max cloud ice plus snow mixing ratio (g/kg). */
+function packSnowIce(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let s = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        const q = Math.max(0, f.qi[id]) + Math.max(0, f.qs[id]);
+        if (q > s) s = q;
+      }
+      lerpStops(
+        clamp(s * 1000, 0, 6),
+        SNOW_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Column-max hailstone diameter (mm). */
+function packHailSize(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let d = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        const qh = Math.max(0, f.qh[id]);
+        if (qh <= 0) continue;
+        const mm = hailMaxDiameter(qh, f.rho0[k]) * 1000;
+        if (mm > d) d = mm;
+      }
+      lerpStops(clamp(d, 0, 80), HAIL_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+/**
+ * Mean sea-level pressure from the surface perturbation, hydrostatically
+ * reduced to z = 0 and combined with the synoptic high/low pattern.
+ */
+function packMslp(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, dz } = grid;
+  const p0 = f.p0[0];
+  const rho0 = f.rho0[0];
+  const zSfc = 0.5 * dz;
+  const gOverR = 9.80665 / 287.05;
+  const xDen = Math.max(1, nx - 1);
+  const yDen = Math.max(1, ny - 1);
+  for (let j = 0; j < ny; j++) {
+    const yn = j / yDen;
+    for (let i = 0; i < nx; i++) {
+      const s = i + j * nx;
+      const pSfc = p0 + rho0 * f.p[s];
+      const tV =
+        TFromTheta(f.theta[s], p0) * (1 + 0.608 * Math.max(0, f.qv[s]));
+      const reduced = pSfc * Math.exp((gOverR * zSfc) / Math.max(180, tV));
+      const hpa = reduced / 100 + surfacePressureBiasHpa(i / xDen, yn);
+      lerpStops(
+        clamp(hpa, 980, 1040),
+        MSLP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/**
+ * Surface precipitation type. Uses the lowest precipitating level to decide
+ * whether the column is delivering snow, a rain/snow mix, graupel/sleet,
+ * rain, or hail.
+ */
+function packPrecipType(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const s = i + j * nx;
+      const rate = Math.max(0, f.precipRate[s] || 0);
+      const accum =
+        Math.max(0, f.rainAccum[s] || 0) + Math.max(0, f.snowAccum[s] || 0);
+      const code = precipTypeCode(grid, f, i, j, nz, rate, accum);
+      lerpStops(code * 26, PRECIP_TYPE_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+/** 0 none, 1 snow, 2 mixed, 3 rain, 4 hail — on the legend's 0–100 scale. */
+function precipTypeCode(
+  grid: Grid3D,
+  f: SimFields,
+  i: number,
+  j: number,
+  nz: number,
+  rate: number,
+  accum: number,
+): number {
+  if (rate < 0.05 && accum < 0.01) return 0;
+
+  let kLow = -1;
+  for (let k = 0; k < nz; k++) {
+    const id = grid.idx(i, j, k);
+    if (
+      f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id] >
+      1e-5
+    ) {
+      kLow = k;
+      break;
+    }
+  }
+  const s = i + j * grid.nx;
+  const tSfc = TFromTheta(f.theta[s], f.p0[0]) - 273.15;
+
+  let hailMM = 0;
+  for (let k = 0; k < nz; k++) {
+    const id = grid.idx(i, j, k);
+    const qh = Math.max(0, f.qh[id]);
+    if (qh > 0) {
+      const mm = hailMaxDiameter(qh, f.rho0[k]) * 1000;
+      if (mm > hailMM) hailMM = mm;
+    }
+  }
+  if (hailMM >= 10) return 4;
+
+  if (kLow >= 0) {
+    const id = grid.idx(i, j, kLow);
+    const liquid = Math.max(0, f.qr[id]);
+    const frozen =
+      Math.max(0, f.qi[id]) +
+      Math.max(0, f.qs[id]) +
+      Math.max(0, f.qg[id]) +
+      Math.max(0, f.qh[id]);
+    const rimed = Math.max(0, f.qg[id]) + Math.max(0, f.qh[id]);
+    if (rimed > liquid + frozen * 0.5 && tSfc < 8) return 2;
+    if (frozen > liquid * 1.5 && tSfc <= 1) return 1;
+    if (frozen > liquid && tSfc <= 3) return 2;
+  }
+
+  if (tSfc <= 0.5) return 1;
+  if (tSfc <= 3) return 2;
+  return 3;
 }
