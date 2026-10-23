@@ -436,10 +436,15 @@ export class SynopticEditor {
     let best: DrawnFront | null = null;
     let bestD = 0.03;
     for (const f of this.setup.fronts) {
-      const hit = nearestOnPolyline(f.points, p.x, p.y);
-      if (hit && hit.dist < bestD) {
-        best = f;
-        bestD = hit.dist;
+      const pts = f.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const abx = b.x - a.x, aby = b.y - a.y;
+        const apx = p.x - a.x, apy = p.y - a.y;
+        const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / Math.max(1e-9, abx * abx + aby * aby)));
+        const px = a.x + t * abx, py = a.y + t * aby;
+        const d = Math.hypot(p.x - px, p.y - py);
+        if (d < bestD) { best = f; bestD = d; }
       }
     }
     return best;
@@ -576,6 +581,27 @@ export class SynopticEditor {
     return { x: p.x * w, y: (1 - p.y) * h };
   }
 
+  private previewMasses(xn: number, yn: number) {
+    const s = this.setup;
+    let cold = 0, dry = 0, low = 0, high = 0;
+    for (const c of s.centers) {
+      const d = Math.hypot(c.x - xn, c.y - yn);
+      const v = Math.exp(-d * d / 0.01);
+      if (c.kind === "low") low += v * Math.min(1, Math.abs(c.hPa) / 20);
+      else high += v * Math.min(1, Math.abs(c.hPa) / 20);
+    }
+    for (const f of s.fronts) {
+      if (!f.enabled) continue;
+      let minD = 1;
+      for (const p of f.points) minD = Math.min(minD, Math.hypot(p.x - xn, p.y - yn));
+      const v = Math.exp(-minD * minD / 0.002);
+      if (f.kind === "cold") cold += v * 0.8;
+      else if ((f.kind as string) === "occluded") { cold += v * 0.6; dry += v * 0.4; }
+      else dry += v * 0.4;
+    }
+    return { cold, dry, low, high };
+  }
+
   private paintTint(w: number, h: number): void {
     const n = 28;
     const cw = w / n;
@@ -584,7 +610,7 @@ export class SynopticEditor {
       for (let i = 0; i < n; i++) {
         const xn = (i + 0.5) / n;
         const yn = 1 - (j + 0.5) / n;
-        const m = previewMasses(this.setup, xn, yn);
+        const m = this.previewMasses(xn, yn);
         if (m.cold > 0.2) {
           this.ctx.fillStyle = `rgba(80, 150, 220, ${0.14 * m.cold})`;
           this.ctx.fillRect(i * cw, j * ch, cw + 0.5, ch + 0.5);

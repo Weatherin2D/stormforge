@@ -145,7 +145,7 @@ export class App {
               <button id="btn-menu">Main menu</button>
               <button id="btn-clouds" class="active" title="3D cloud volume (turn off to reduce lag)">Clouds</button>
               <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
-              <button id="btn-radar2d" title="2D maps: Reflectivity, Doppler, CAPE, Surface T">Maps 2D</button>
+              <button id="btn-radar2d" title="2D maps: Reflectivity, CAPE, shear, clouds, precipitation, and more">Maps 2D</button>
               <button id="btn-winds" title="Surface wind direction arrows (overlay on 3D or Maps 2D)">Winds</button>
               <button id="btn-teleport" title="Open the map and click to move">Teleport</button>
               <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>

@@ -4,6 +4,14 @@ import {
   MapProductMeta,
   paintLegend,
 } from "../sim/mapProducts";
+import {
+  CatalogView,
+  VIEW_LEVEL_LABELS,
+  VIEW_PROVENANCE_LABELS,
+  catalogStats,
+  liveViewsByProduct,
+  searchCatalog,
+} from "../sim/viewCatalog";
 import { upsampleRgba } from "./upsampleRgba";
 import {
   SurfaceWindSample,
@@ -13,7 +21,7 @@ import { DrawnFront, FRONT_COLORS } from "../sim/synoptic";
 import type { LightningKind } from "../sim/FluidSolver";
 
 /**
- * Flat top-down map display for reflectivity / Doppler / CAPE / Tsfc.
+ * Flat top-down map display for reflectivity / Doppler / diagnostics.
  */
 export class Radar2DView {
   readonly root: HTMLElement;
@@ -21,9 +29,16 @@ export class Radar2DView {
   private ctx: CanvasRenderingContext2D;
   private titleEl: HTMLElement;
   private unitsEl: HTMLElement;
+  private provenanceEl: HTMLElement;
   private legendBar: HTMLElement;
   private legendTicks: HTMLElement;
   private tabsEl: HTMLElement;
+  private pinnedEl: HTMLElement;
+  private searchInput: HTMLInputElement;
+  private searchResultsEl: HTMLElement;
+  private searchDetailEl: HTMLElement | null = null;
+  private aboutEl: HTMLElement;
+  private aboutBodyEl: HTMLElement;
   private image: ImageData | null = null;
   private nx = 0;
   private ny = 0;
@@ -44,27 +59,71 @@ export class Radar2DView {
   private detail = 2;
   private onDetailChange: ((scale: number) => void) | null = null;
   private detailVal: HTMLElement | null = null;
+  private pinned: Set<MapProductId> = new Set();
+  /** Live catalog entry for each implemented product, used for provenance. */
+  private readonly liveViews = liveViewsByProduct();
+  private searchHits: CatalogView[] = [];
+  private searchActive = -1;
+  private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
+
+  private static readonly PIN_KEY = "stormforge.map2d.pins.v1";
+
+  private static readonly PRODUCT_ORDER: MapProductId[] = [
+    "refl",
+    "refl1k",
+    "echotop",
+    "vil",
+    "doppler",
+    "ltg",
+    "cape",
+    "cin",
+    "cape03",
+    "lcl",
+    "lfc",
+    "el",
+    "frz",
+    "tsfc",
+    "td",
+    "rh",
+    "psfc",
+    "thetae",
+    "pwat",
+    "t850",
+    "td850",
+    "w850",
+    "wspd",
+    "wdir",
+    "w3k",
+    "wmax",
+    "shear06",
+    "conv",
+    "vort",
+    "mconv",
+    "uh25",
+    "cfr",
+    "clwc",
+    "lwp",
+    "ctop",
+    "cbase",
+    "vis",
+    "ir",
+  ];
 
   constructor(host: HTMLElement) {
     this.root = document.createElement("div");
     this.root.className = "radar2d-panel hidden";
     this.root.innerHTML = `
       <div class="radar2d-frame">
-        <input id="map2d-search" type="search" placeholder="Search views…" style="width:100%;margin:4px 0;padding:4px 6px;background:#0a101c;color:#e8eef7;border:1px solid #2a3a55;border-radius:4px;" />
-        <div class="map2d-pinned" id="map2d-pinned" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
-        <div class="map2d-tabs" id="map2d-tabs">
-          <button type="button" data-product="refl" class="active">Reflectivity</button>
-          <button type="button" data-product="doppler">Doppler</button>
-          <button type="button" data-product="cape">CAPE</button>
-          <button type="button" data-product="cin">CIN</button>
-          <button type="button" data-product="tsfc">Surface T</button>
-          <button type="button" data-product="td">Dewpoint</button>
-          <button type="button" data-product="wspd">Wind</button>
-          <button type="button" data-product="psfc">Pressure</button>
-          <button type="button" data-product="ltg">Lightning</button>
-          <button type="button" data-product="vis">Visible</button>
-          <button type="button" data-product="ir">Infrared</button>
+        <div class="map2d-search">
+          <input id="map2d-search" type="search" placeholder="Search views…" autocomplete="off" spellcheck="false" aria-label="Search 2D views" aria-controls="map2d-search-results" aria-expanded="false" />
+          <div class="map2d-results hidden" id="map2d-search-results" role="listbox" aria-label="2D view catalog"></div>
         </div>
+        <div class="map2d-pinned" id="map2d-pinned" style="display:none"></div>
+        <div class="map2d-tabs" id="map2d-tabs"></div>
+        <details class="map2d-about" id="map2d-about">
+          <summary>About this view</summary>
+          <div class="map2d-about-body" id="map2d-about-body"></div>
+        </details>
         <label class="map2d-detail">
           View detail
           <input id="map2d-detail" type="range" min="1" max="4" step="1" value="2" />
@@ -81,7 +140,10 @@ export class Radar2DView {
         </div>
         <div class="radar2d-meta">
           <span class="radar2d-title">Column-max reflectivity</span>
-          <span class="radar2d-units">dBZ</span>
+          <span class="map2d-meta-right">
+            <span class="map2d-provenance" id="map2d-provenance"></span>
+            <span class="radar2d-units">dBZ</span>
+          </span>
         </div>
         <div class="radar2d-legend">
           <div class="radar-legend-bar"></div>
@@ -95,6 +157,9 @@ export class Radar2DView {
     this.ctx.imageSmoothingEnabled = false;
     this.titleEl = this.root.querySelector(".radar2d-title") as HTMLElement;
     this.unitsEl = this.root.querySelector(".radar2d-units") as HTMLElement;
+    this.provenanceEl = this.root.querySelector(
+      "#map2d-provenance",
+    ) as HTMLElement;
     this.legendBar = this.root.querySelector(
       ".radar-legend-bar",
     ) as HTMLElement;
@@ -102,24 +167,80 @@ export class Radar2DView {
       ".radar-legend-ticks",
     ) as HTMLElement;
     this.tabsEl = this.root.querySelector("#map2d-tabs") as HTMLElement;
+    this.pinnedEl = this.root.querySelector("#map2d-pinned") as HTMLElement;
+    this.searchInput = this.root.querySelector("#map2d-search") as HTMLInputElement;
+    this.searchResultsEl = this.root.querySelector(
+      "#map2d-search-results",
+    ) as HTMLElement;
+    this.aboutEl = this.root.querySelector("#map2d-about") as HTMLElement;
+    this.aboutBodyEl = this.root.querySelector(
+      "#map2d-about-body",
+    ) as HTMLElement;
+    this.loadPins();
+    this.buildTabs();
 
-    const searchInput = this.root.querySelector("#map2d-search") as HTMLInputElement;
-    searchInput.addEventListener("input", () => {
-      const q = searchInput.value.trim().toLowerCase();
-      for (const btn of this.tabsEl.querySelectorAll("button[data-product]")) {
-        const label = (btn.textContent || "").toLowerCase();
-        const id = (btn.getAttribute("data-product") || "").toLowerCase();
-        (btn as HTMLElement).style.display =
-          q === "" || label.includes(q) || id.includes(q) ? "" : "none";
-      }
+    const stats = catalogStats();
+    this.searchInput.placeholder =
+      `Search ${stats.total} views — ${stats.live} live, ${stats.planned} planned…`;
+
+    this.searchInput.addEventListener("focus", () => this.openSearch());
+    this.searchInput.addEventListener("input", () => {
+      this.openSearch();
+      this.renderSearch();
+    });
+    this.searchInput.addEventListener("keydown", (e) =>
+      this.onSearchKeyDown(e),
+    );
+    this.searchResultsEl.addEventListener("click", (e) =>
+      this.onSearchClick(e),
+    );
+    this.searchResultsEl.addEventListener("pointerover", (e) => {
+      const row = (e.target as HTMLElement).closest(
+        ".map2d-result",
+      ) as HTMLElement | null;
+      if (!row) return;
+      const idx = Number(row.dataset.index);
+      if (!Number.isFinite(idx) || idx === this.searchActive) return;
+      this.setSearchActive(idx, false);
     });
 
+    this.onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (this.searchInput.contains(t) || this.searchResultsEl.contains(t)) {
+        return;
+      }
+      this.closeSearch();
+    };
+    document.addEventListener("pointerdown", this.onDocPointerDown);
+
     this.tabsEl.addEventListener("click", (e) => {
+      const pin = (e.target as HTMLElement).closest(".map2d-pin") as HTMLElement | null;
+      if (pin) {
+        const btn = pin.closest("button[data-product]") as HTMLButtonElement | null;
+        if (!btn) return;
+        const id = btn.dataset.product as MapProductId;
+        this.togglePin(id);
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const btn = (e.target as HTMLElement).closest(
         "button[data-product]",
       ) as HTMLButtonElement | null;
       if (!btn || btn.disabled) return;
       const id = btn.dataset.product as MapProductId;
+      this.setProduct(id);
+      this.onProductChange?.(id);
+    });
+
+    this.pinnedEl.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest(
+        ".map2d-pinned-btn",
+      ) as HTMLButtonElement | null;
+      if (!btn) return;
+      const id = btn.dataset.product as MapProductId;
+      if (!id) return;
       this.setProduct(id);
       this.onProductChange?.(id);
     });
@@ -154,14 +275,381 @@ export class Radar2DView {
     return this.detail;
   }
 
+  private openSearch(): void {
+    this.renderSearch();
+    this.searchResultsEl.classList.remove("hidden");
+    this.searchInput.setAttribute("aria-expanded", "true");
+  }
+
+  private closeSearch(): void {
+    this.searchResultsEl.classList.add("hidden");
+    this.searchInput.setAttribute("aria-expanded", "false");
+    this.searchActive = -1;
+    this.searchDetailEl = null;
+  }
+
+  private renderSearch(): void {
+    if (!this.searchResultsEl) return;
+    this.searchHits = searchCatalog(this.searchInput.value);
+    const stats = catalogStats();
+    const q = this.searchInput.value.trim();
+    this.searchResultsEl.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "map2d-search-head";
+    head.textContent = q
+      ? `${this.searchHits.length} match${this.searchHits.length === 1 ? "" : "es"} for “${q}” · ${stats.live} live / ${stats.planned} planned in the catalog`
+      : `Showing ${this.searchHits.length} of ${stats.total} views · ${stats.live} live, ${stats.planned} planned — type to narrow`;
+    this.searchResultsEl.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "map2d-result-list";
+    if (this.searchHits.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "map2d-search-empty";
+      empty.textContent =
+        "No catalog view matches. Try CAPE, shear, cloud base, reflectivity, satellite, or vorticity.";
+      list.appendChild(empty);
+    } else {
+      this.searchHits.forEach((view, index) => {
+        list.appendChild(this.buildSearchRow(view, index));
+      });
+    }
+    this.searchResultsEl.appendChild(list);
+
+    const detail = document.createElement("div");
+    detail.className = "map2d-search-detail";
+    this.searchDetailEl = detail;
+    this.searchResultsEl.appendChild(detail);
+    this.searchActive = -1;
+    if (this.searchHits.length > 0) this.setSearchActive(0, false);
+  }
+
+  private buildSearchRow(view: CatalogView, index: number): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "map2d-result";
+    row.dataset.index = String(index);
+    row.dataset.viewId = view.id;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    const blocked =
+      !!view.productId && this.recordedOnly && view.productId !== "refl";
+    if (blocked) row.classList.add("blocked");
+
+    const top = document.createElement("div");
+    top.className = "map2d-result-top";
+    const label = document.createElement("span");
+    label.className = "map2d-result-label";
+    label.textContent = view.label;
+    top.appendChild(label);
+
+    const actions = document.createElement("span");
+    actions.className = "map2d-result-actions";
+    if (view.productId) {
+      const isPinned = this.pinned.has(view.productId);
+      const pin = document.createElement("button");
+      pin.type = "button";
+      pin.className = "map2d-result-pin";
+      pin.dataset.pinProduct = view.productId;
+      pin.title = isPinned ? "Unpin from top bar" : "Pin to top bar";
+      pin.setAttribute(
+        "aria-label",
+        `${isPinned ? "Unpin" : "Pin"} ${view.label} ${isPinned ? "from" : "to"} the top bar`,
+      );
+      pin.setAttribute("aria-pressed", String(isPinned));
+      pin.textContent = isPinned ? "★" : "☆";
+      if (blocked) {
+        pin.disabled = true;
+        pin.title = "Only reflectivity is recorded in batch review";
+      }
+      actions.appendChild(pin);
+    }
+    top.appendChild(actions);
+    row.appendChild(top);
+
+    const badges = document.createElement("span");
+    badges.className = "map2d-result-badges";
+    badges.appendChild(
+      this.badge(
+        VIEW_PROVENANCE_LABELS[view.provenance],
+        `prov-${view.provenance}`,
+      ),
+    );
+    badges.appendChild(this.badge(view.level, "level"));
+    badges.appendChild(this.badge(view.units, "units"));
+    if (blocked) badges.appendChild(this.badge("Reflectivity only", "blocked"));
+    else if (view.productId) badges.appendChild(this.badge("Live", "live"));
+    else badges.appendChild(this.badge("Planned", "planned"));
+    row.appendChild(badges);
+
+    if (blocked) {
+      row.title = "Batch review recordings contain reflectivity only.";
+    } else if (!view.productId) {
+      row.title =
+        "Catalogued but not plotted until its inputs and formula are implemented and tested.";
+    }
+    return row;
+  }
+
+  private badge(text: string, cls: string): HTMLElement {
+    const el = document.createElement("span");
+    el.className = `map2d-badge ${cls}`;
+    el.textContent = text;
+    return el;
+  }
+
+  private setSearchActive(index: number, scroll: boolean): void {
+    this.searchActive = index;
+    for (const row of this.searchResultsEl.querySelectorAll(".map2d-result")) {
+      const el = row as HTMLElement;
+      const on = Number(el.dataset.index) === index;
+      el.classList.toggle("active", on);
+      el.setAttribute("aria-selected", String(on));
+      if (on && scroll) el.scrollIntoView({ block: "nearest" });
+    }
+    const view = this.searchHits[index];
+    if (view && this.searchDetailEl) {
+      this.renderViewDetail(view, this.searchDetailEl);
+    }
+  }
+
+  private renderViewDetail(view: CatalogView, host: HTMLElement): void {
+    host.innerHTML = "";
+
+    const title = document.createElement("div");
+    title.className = "map2d-detail-title";
+    title.textContent = view.label;
+    host.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "map2d-detail-meta";
+    meta.textContent =
+      `${VIEW_PROVENANCE_LABELS[view.provenance]} · ` +
+      `${VIEW_LEVEL_LABELS[view.levelKind]} · ${view.level} · ${view.units}`;
+    host.appendChild(meta);
+
+    const status = document.createElement("div");
+    status.className = "map2d-detail-status";
+    if (view.productId) {
+      status.classList.add("live");
+      status.textContent = `Live map product: ${MAP_PRODUCTS[view.productId].title}.`;
+    } else {
+      status.classList.add("planned");
+      status.textContent =
+        "Planned — not plotted. It stays searchable until its inputs, formula and assumptions are implemented and tested.";
+    }
+    host.appendChild(status);
+
+    this.appendDetailLine(
+      host,
+      "Definition",
+      view.definition ?? "No definition recorded.",
+    );
+    this.appendDetailLine(
+      host,
+      "Formula",
+      view.formula ??
+        (view.provenance === "derived"
+          ? "Not implemented — no formula is evaluated for this view."
+          : "Not applicable."),
+    );
+    this.appendDetailLine(
+      host,
+      "Assumptions",
+      view.assumptions ?? "None documented.",
+    );
+    this.appendDetailLine(
+      host,
+      "Layer",
+      `${view.level} (${VIEW_LEVEL_LABELS[view.levelKind]})`,
+    );
+  }
+
+  private appendDetailLine(
+    host: HTMLElement,
+    key: string,
+    value: string,
+  ): void {
+    const line = document.createElement("div");
+    line.className = "map2d-detail-line";
+    const k = document.createElement("span");
+    k.className = "map2d-detail-key";
+    k.textContent = key;
+    const v = document.createElement("span");
+    v.className = "map2d-detail-value";
+    v.textContent = value;
+    line.append(k, v);
+    host.appendChild(line);
+  }
+
+  private onSearchKeyDown(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      this.closeSearch();
+      this.searchInput.blur();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (this.searchResultsEl.classList.contains("hidden")) this.openSearch();
+      if (this.searchHits.length === 0) return;
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      const next =
+        this.searchActive < 0
+          ? 0
+          : (this.searchActive + step + this.searchHits.length) %
+            this.searchHits.length;
+      this.setSearchActive(next, true);
+      return;
+    }
+    if (e.key !== "Enter") return;
+    const view = this.searchHits[this.searchActive];
+    if (!view) return;
+    e.preventDefault();
+    if (!view.productId) return;
+    if (this.recordedOnly && view.productId !== "refl") return;
+    this.chooseProduct(view.productId);
+  }
+
+  private onSearchClick(e: MouseEvent): void {
+    const target = e.target as HTMLElement;
+    const pin = target.closest(".map2d-result-pin") as HTMLButtonElement | null;
+    if (pin) {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = pin.dataset.pinProduct as MapProductId | undefined;
+      if (id) this.togglePin(id);
+      return;
+    }
+    const row = target.closest(".map2d-result") as HTMLElement | null;
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (!Number.isFinite(index)) return;
+    const view = this.searchHits[index];
+    if (!view) return;
+    if (!view.productId) {
+      this.setSearchActive(index, true);
+      return;
+    }
+    if (this.recordedOnly && view.productId !== "refl") return;
+    this.chooseProduct(view.productId);
+  }
+
+  private chooseProduct(id: MapProductId): void {
+    this.setProduct(id);
+    this.onProductChange?.(id);
+    this.searchInput.value = "";
+    this.closeSearch();
+    this.searchInput.blur();
+  }
+
+  private buildTabs(): void {
+    this.tabsEl.innerHTML = "";
+    for (const id of Radar2DView.PRODUCT_ORDER) {
+      const meta = (MAP_PRODUCTS as Record<string, MapProductMeta>)[id];
+      if (!meta) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.product = id;
+      btn.innerHTML = `<span>${meta.title}</span><span class="map2d-pin" title="Pin to top bar" aria-label="Pin ${meta.title} to top bar">★</span>`;
+      this.tabsEl.appendChild(btn);
+    }
+    this.refreshPins();
+  }
+
+  private loadPins(): void {
+    try {
+      if (typeof localStorage === "undefined") return;
+      const raw = localStorage.getItem(Radar2DView.PIN_KEY);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const value of parsed) {
+        if (typeof value !== "string") continue;
+        const id = value as MapProductId;
+        if (MAP_PRODUCTS[id]) this.pinned.add(id);
+      }
+    } catch {
+      /* Storage may be unavailable (private mode / tests); pins stay ephemeral. */
+    }
+  }
+
+  private savePins(): void {
+    try {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(
+        Radar2DView.PIN_KEY,
+        JSON.stringify(Array.from(this.pinned)),
+      );
+    } catch {
+      /* Ignore quota/security errors. */
+    }
+  }
+
+  private togglePin(id: MapProductId): void {
+    if (!MAP_PRODUCTS[id]) return;
+    if (this.recordedOnly && id !== "refl") return;
+    if (this.pinned.has(id)) this.pinned.delete(id);
+    else this.pinned.add(id);
+    this.savePins();
+    this.refreshPins();
+    this.refreshSearchPin(id);
+  }
+
+  private refreshTabPins(): void {
+    for (const btn of this.tabsEl.querySelectorAll("button[data-product]")) {
+      const id = btn.getAttribute("data-product") as MapProductId;
+      const isPinned = this.pinned.has(id);
+      btn.classList.toggle("pinned", isPinned);
+      const star = btn.querySelector(".map2d-pin");
+      if (star) star.setAttribute("aria-pressed", String(isPinned));
+    }
+  }
+
+  private refreshSearchPin(id: MapProductId): void {
+    const isPinned = this.pinned.has(id);
+    this.searchResultsEl
+      .querySelectorAll(`.map2d-result-pin[data-pin-product="${id}"]`)
+      .forEach((el) => {
+        el.classList.toggle("pinned", isPinned);
+        el.setAttribute("aria-pressed", String(isPinned));
+        el.textContent = isPinned ? "★" : "☆";
+      });
+  }
+
+  private refreshPins(): void {
+    this.pinnedEl.innerHTML = "";
+    for (const id of this.pinned) {
+      const mp = MAP_PRODUCTS[id as MapProductId];
+      if (!mp) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "map2d-pinned-btn";
+      btn.dataset.product = id;
+      btn.textContent = mp.title;
+      btn.title = `Show ${mp.title}`;
+      btn.classList.toggle("active", id === this.product);
+      this.pinnedEl.appendChild(btn);
+    }
+    this.refreshTabPins();
+    this.pinnedEl.style.display = this.pinned.size ? "flex" : "none";
+    this.applyRecordedOnly();
+  }
+
   setProduct(id: MapProductId): void {
     const next = this.recordedOnly && id !== "refl" ? "refl" : id;
+    if (!MAP_PRODUCTS[next]) return;
     this.product = next;
     this.applyMeta(MAP_PRODUCTS[next]);
-    for (const btn of this.tabsEl.querySelectorAll("button")) {
-      btn.classList.toggle(
+    for (const el of this.tabsEl.querySelectorAll("button[data-product]")) {
+      el.classList.toggle(
         "active",
-        btn.getAttribute("data-product") === next,
+        el.getAttribute("data-product") === next,
+      );
+    }
+    for (const el of this.pinnedEl.querySelectorAll(".map2d-pinned-btn")) {
+      el.classList.toggle(
+        "active",
+        el.getAttribute("data-product") === next,
       );
     }
   }
@@ -173,21 +661,56 @@ export class Radar2DView {
   /** Batch review: lock Maps 2D to recorded reflectivity only. */
   setRecordedOnly(on: boolean): void {
     this.recordedOnly = on;
-    for (const btn of this.tabsEl.querySelectorAll("button")) {
+    this.applyRecordedOnly();
+    if (!this.searchResultsEl.classList.contains("hidden")) this.renderSearch();
+    if (on) this.setProduct("refl");
+  }
+
+  private applyRecordedOnly(): void {
+    for (const btn of this.tabsEl.querySelectorAll("button[data-product]")) {
       const id = btn.getAttribute("data-product");
-      const allowed = !on || id === "refl";
+      const allowed = !this.recordedOnly || id === "refl";
       (btn as HTMLButtonElement).disabled = !allowed;
-      btn.title = allowed
+      (btn as HTMLButtonElement).title = allowed
         ? ""
         : "Not recorded in batch review (reflectivity only)";
     }
-    if (on) this.setProduct("refl");
+    for (const btn of this.pinnedEl.querySelectorAll(".map2d-pinned-btn")) {
+      const id = btn.getAttribute("data-product");
+      const allowed = !this.recordedOnly || id === "refl";
+      (btn as HTMLButtonElement).disabled = !allowed;
+      (btn as HTMLButtonElement).title = allowed
+        ? `Show ${btn.textContent ?? ""}`
+        : "Not recorded in batch review (reflectivity only)";
+    }
   }
 
   private applyMeta(meta: MapProductMeta): void {
     this.titleEl.textContent = meta.title;
     this.unitsEl.textContent = meta.units;
     paintLegend(this.legendBar, this.legendTicks, meta);
+
+    const view = this.liveViews.get(meta.id);
+    this.provenanceEl.textContent = view
+      ? `${VIEW_PROVENANCE_LABELS[view.provenance]} · ${VIEW_LEVEL_LABELS[view.levelKind]}`
+      : "";
+    this.provenanceEl.title = view?.level ? `Layer: ${view.level}` : "";
+
+    const summary = this.aboutEl.querySelector("summary") as HTMLElement;
+    if (view) {
+      summary.textContent =
+        `About this view — ${VIEW_PROVENANCE_LABELS[view.provenance]} · ` +
+        `${view.units} · ${view.level}`;
+      this.renderViewDetail(view, this.aboutBodyEl);
+    } else {
+      summary.textContent = "About this view";
+      this.aboutBodyEl.innerHTML = "";
+      this.appendDetailLine(
+        this.aboutBodyEl,
+        "Status",
+        "No catalog entry is registered for this map product.",
+      );
+    }
   }
 
   setVisible(on: boolean): void {
@@ -474,6 +997,10 @@ export class Radar2DView {
   dispose(): void {
     this.ro?.disconnect();
     this.ro = null;
+    if (this.onDocPointerDown) {
+      document.removeEventListener("pointerdown", this.onDocPointerDown);
+      this.onDocPointerDown = null;
+    }
     this.root.remove();
   }
 }

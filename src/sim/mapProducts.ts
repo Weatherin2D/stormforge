@@ -2,7 +2,14 @@ import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { integrateCapeCin } from "./cape";
 import { surfacePressureBiasHpa } from "./synoptic";
-import { TFromTheta, dewpointFromE } from "./thermo";
+import {
+  CP,
+  LV,
+  TFromTheta,
+  dewpointFromE,
+  qsat,
+  spdDirFromUv,
+} from "./thermo";
 
 export type MapProductId =
   | "refl"
@@ -15,7 +22,38 @@ export type MapProductId =
   | "psfc"
   | "ltg"
   | "vis"
-  | "ir";
+  | "ir"
+  // ── Thermodynamics ────────────────────────────────────────────────────────
+  | "rh"
+  | "thetae"
+  | "lcl"
+  | "lfc"
+  | "el"
+  | "frz"
+  | "cape03"
+  | "pwat"
+  | "t850"
+  | "td850"
+  | "w850"
+  // ── Wind and dynamics ─────────────────────────────────────────────────────
+  | "wdir"
+  | "wmax"
+  | "w3k"
+  | "shear06"
+  | "conv"
+  | "vort"
+  | "mconv"
+  | "uh25"
+  // ── Clouds ────────────────────────────────────────────────────────────────
+  | "ctop"
+  | "cbase"
+  | "cfr"
+  | "clwc"
+  | "lwp"
+  // ── Radar and precipitation ───────────────────────────────────────────────
+  | "refl1k"
+  | "echotop"
+  | "vil";
 
 export interface MapScale {
   min: number;
@@ -131,6 +169,153 @@ const IR_STOPS: RgbaStop[] = [
   [40, 0, 255, 255],
 ];
 
+/** Low-level relative humidity: dry brown → saturated green/blue. */
+const RH_STOPS: RgbaStop[] = [
+  [0, 120, 78, 34],
+  [25, 168, 138, 66],
+  [45, 216, 206, 84],
+  [65, 96, 190, 92],
+  [80, 24, 150, 74],
+  [100, 40, 96, 190],
+];
+
+/** Equivalent potential temperature, 300–380 K. */
+const THETAE_STOPS: RgbaStop[] = [
+  [300, 60, 40, 140],
+  [312, 40, 90, 210],
+  [324, 40, 180, 200],
+  [334, 60, 200, 96],
+  [344, 226, 220, 60],
+  [356, 250, 150, 32],
+  [368, 226, 48, 40],
+  [380, 170, 30, 110],
+];
+
+/** LCL height, 0–4000 m. */
+const LCL_STOPS: RgbaStop[] = [
+  [0, 24, 36, 56],
+  [400, 64, 116, 190],
+  [900, 60, 190, 190],
+  [1500, 80, 200, 90],
+  [2400, 236, 214, 60],
+  [3200, 244, 144, 40],
+  [4000, 200, 44, 44],
+];
+
+/** Precipitable water, 0–70 mm. */
+const PWAT_STOPS: RgbaStop[] = [
+  [0, 20, 30, 48],
+  [8, 44, 92, 170],
+  [18, 40, 160, 190],
+  [30, 70, 190, 100],
+  [42, 232, 214, 60],
+  [54, 244, 142, 40],
+  [70, 210, 52, 160],
+];
+
+/** Bulk shear, 0–60 m/s. */
+const SHEAR_STOPS: RgbaStop[] = [
+  [0, 24, 36, 56],
+  [8, 48, 110, 190],
+  [16, 44, 180, 190],
+  [25, 70, 196, 100],
+  [35, 236, 214, 60],
+  [45, 244, 120, 40],
+  [55, 214, 44, 120],
+  [60, 255, 255, 255],
+];
+
+/** Column-max updraft, 0–35 m/s. */
+const WMAX_STOPS: RgbaStop[] = [
+  [0, 24, 36, 56],
+  [2, 46, 92, 180],
+  [5, 40, 160, 200],
+  [9, 70, 196, 110],
+  [15, 236, 216, 70],
+  [23, 244, 132, 36],
+  [35, 220, 40, 60],
+];
+
+/** Cloud-top / echo-top height, 0–15 km. */
+const TOP_STOPS: RgbaStop[] = [
+  [0, 24, 36, 56],
+  [2000, 52, 92, 190],
+  [4000, 48, 168, 200],
+  [6000, 66, 196, 108],
+  [8000, 226, 214, 66],
+  [10000, 244, 140, 40],
+  [13000, 214, 44, 120],
+  [15000, 255, 230, 255],
+];
+
+/** Cloud fraction, 0–100 %. */
+const CFR_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [15, 60, 84, 116],
+  [35, 120, 148, 180],
+  [55, 182, 202, 222],
+  [75, 226, 236, 246],
+  [100, 255, 255, 255],
+];
+
+/** Cloud liquid water content, 0–6 g/kg. */
+const CLWC_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [0.3, 44, 92, 180],
+  [0.8, 40, 160, 200],
+  [1.5, 70, 196, 110],
+  [2.5, 236, 216, 70],
+  [4, 244, 132, 36],
+  [6, 220, 40, 60],
+];
+
+/** Liquid water path, 0–1200 g/m². */
+const LWP_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [60, 44, 92, 180],
+  [180, 40, 160, 200],
+  [380, 70, 196, 110],
+  [650, 236, 216, 70],
+  [900, 244, 132, 36],
+  [1200, 232, 232, 255],
+];
+
+/** Vertically integrated liquid, 0–75 kg/m². */
+const VIL_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [5, 44, 92, 180],
+  [15, 40, 160, 200],
+  [28, 70, 196, 110],
+  [40, 236, 216, 70],
+  [55, 244, 132, 36],
+  [68, 220, 40, 90],
+  [75, 255, 210, 255],
+];
+
+/** Updraft helicity, 0–300 m²/s². */
+const UH_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [25, 44, 92, 180],
+  [75, 40, 168, 200],
+  [150, 70, 196, 110],
+  [220, 236, 216, 70],
+  [270, 244, 120, 40],
+  [300, 220, 40, 60],
+];
+
+/** Meteorological wind direction, circular 0–360°. */
+const WDIR_STOPS: RgbaStop[] = [
+  [0, 230, 90, 70],
+  [45, 230, 170, 70],
+  [90, 90, 200, 90],
+  [135, 70, 200, 190],
+  [180, 70, 130, 230],
+  [225, 140, 100, 220],
+  [270, 230, 190, 80],
+  [315, 230, 110, 140],
+  [360, 230, 90, 70],
+];
+
 export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   refl: {
     id: "refl",
@@ -220,6 +405,222 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     ticks: ["40", "0", "-40", "-70", "-90"],
     scale: { min: -90, max: 40, values: [40, 0, -40, -70, -90] },
   },
+  rh: {
+    id: "rh",
+    title: "Surface relative humidity",
+    units: "%",
+    legendCss: legendFromStops(RH_STOPS, 0, 100),
+    ticks: ["0", "25", "50", "75", "100"],
+    scale: { min: 0, max: 100, values: [0, 25, 50, 75, 100] },
+  },
+  thetae: {
+    id: "thetae",
+    title: "Surface equivalent potential temperature",
+    units: "K",
+    legendCss: legendFromStops(THETAE_STOPS, 300, 380),
+    ticks: ["300", "320", "340", "360", "380"],
+    scale: { min: 300, max: 380, values: [300, 320, 340, 360, 380] },
+  },
+  lcl: {
+    id: "lcl",
+    title: "Lifting condensation level (surface parcel)",
+    units: "m",
+    legendCss: legendFromStops(LCL_STOPS, 0, 4000),
+    ticks: ["0", "1000", "2000", "3000", "4000"],
+    scale: { min: 0, max: 4000, values: [0, 1000, 2000, 3000, 4000] },
+  },
+  lfc: {
+    id: "lfc",
+    title: "Level of free convection",
+    units: "m",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "3k", "6k", "9k", "12k", "15k"],
+    scale: { min: 0, max: 15000, values: [0, 3000, 6000, 9000, 12000, 15000] },
+  },
+  el: {
+    id: "el",
+    title: "Equilibrium level",
+    units: "m",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "3k", "6k", "9k", "12k", "15k"],
+    scale: { min: 0, max: 15000, values: [0, 3000, 6000, 9000, 12000, 15000] },
+  },
+  frz: {
+    id: "frz",
+    title: "Freezing-level height",
+    units: "m",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "3k", "6k", "9k", "12k", "15k"],
+    scale: { min: 0, max: 15000, values: [0, 3000, 6000, 9000, 12000, 15000] },
+  },
+  cape03: {
+    id: "cape03",
+    title: "0–3 km CAPE",
+    units: "J/kg",
+    legendCss: legendFromStops(CAPE_LEGEND, 0, 5000),
+    ticks: ["0", "1000", "2500", "5000"],
+    scale: { min: 0, max: 5000, values: [0, 1000, 2500, 5000] },
+  },
+  pwat: {
+    id: "pwat",
+    title: "Precipitable water",
+    units: "mm",
+    legendCss: legendFromStops(PWAT_STOPS, 0, 70),
+    ticks: ["0", "15", "30", "45", "60", "70"],
+    scale: { min: 0, max: 70, values: [0, 15, 30, 45, 60, 70] },
+  },
+  t850: {
+    id: "t850",
+    title: "850 hPa temperature",
+    units: "°C",
+    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
+    ticks: ["-15", "0", "15", "30", "40"],
+    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+  },
+  td850: {
+    id: "td850",
+    title: "850 hPa dewpoint",
+    units: "°C",
+    legendCss: legendFromStops(DEW_STOPS, -5, 28),
+    ticks: ["-5", "5", "15", "22", "28"],
+    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+  },
+  w850: {
+    id: "w850",
+    title: "850 hPa wind speed",
+    units: "m/s",
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
+    ticks: ["0", "15", "30", "45", "60"],
+    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+  },
+  wdir: {
+    id: "wdir",
+    title: "Surface wind direction (from)",
+    units: "°",
+    legendCss: legendFromStops(WDIR_STOPS, 0, 360),
+    ticks: ["N", "E", "S", "W", "N"],
+    scale: { min: 0, max: 360, values: [0, 90, 180, 270, 360] },
+  },
+  wmax: {
+    id: "wmax",
+    title: "Column-max updraft",
+    units: "m/s",
+    legendCss: legendFromStops(WMAX_STOPS, 0, 35),
+    ticks: ["0", "5", "10", "20", "35"],
+    scale: { min: 0, max: 35, values: [0, 5, 10, 20, 35] },
+  },
+  w3k: {
+    id: "w3k",
+    title: "3 km vertical velocity",
+    units: "m/s",
+    legendCss:
+      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 35%,#b8b8b8 50%,#ffb0a0 65%,#ff2020 100%)",
+    ticks: ["-15", "-5", "0", "+5", "+15"],
+  },
+  shear06: {
+    id: "shear06",
+    title: "0–6 km bulk shear",
+    units: "m/s",
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
+    ticks: ["0", "15", "30", "45", "60"],
+    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+  },
+  conv: {
+    id: "conv",
+    title: "Surface wind convergence",
+    units: "10⁻⁴ s⁻¹",
+    legendCss:
+      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    ticks: ["-20", "0", "+20"],
+  },
+  vort: {
+    id: "vort",
+    title: "Surface relative vorticity",
+    units: "10⁻⁴ s⁻¹",
+    legendCss:
+      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    ticks: ["-20", "0", "+20"],
+  },
+  mconv: {
+    id: "mconv",
+    title: "Surface moisture convergence",
+    units: "10⁻⁶ kg kg⁻¹ s⁻¹",
+    legendCss:
+      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    ticks: ["-20", "0", "+20"],
+  },
+  uh25: {
+    id: "uh25",
+    title: "2–5 km updraft helicity",
+    units: "m²/s²",
+    legendCss: legendFromStops(UH_STOPS, 0, 300),
+    ticks: ["0", "75", "150", "225", "300"],
+    scale: { min: 0, max: 300, values: [0, 75, 150, 225, 300] },
+  },
+  ctop: {
+    id: "ctop",
+    title: "Cloud-top height",
+    units: "m",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "3k", "6k", "9k", "12k", "15k"],
+    scale: { min: 0, max: 15000, values: [0, 3000, 6000, 9000, 12000, 15000] },
+  },
+  cbase: {
+    id: "cbase",
+    title: "Cloud-base height",
+    units: "m",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "3k", "6k", "9k", "12k", "15k"],
+    scale: { min: 0, max: 15000, values: [0, 3000, 6000, 9000, 12000, 15000] },
+  },
+  cfr: {
+    id: "cfr",
+    title: "Cloud fraction",
+    units: "%",
+    legendCss: legendFromStops(CFR_STOPS, 0, 100),
+    ticks: ["0", "25", "50", "75", "100"],
+    scale: { min: 0, max: 100, values: [0, 25, 50, 75, 100] },
+  },
+  clwc: {
+    id: "clwc",
+    title: "Column-max cloud liquid water",
+    units: "g/kg",
+    legendCss: legendFromStops(CLWC_STOPS, 0, 6),
+    ticks: ["0", "1", "2", "4", "6"],
+    scale: { min: 0, max: 6, values: [0, 1, 2, 4, 6] },
+  },
+  lwp: {
+    id: "lwp",
+    title: "Liquid water path",
+    units: "g/m²",
+    legendCss: legendFromStops(LWP_STOPS, 0, 1200),
+    ticks: ["0", "200", "400", "800", "1200"],
+    scale: { min: 0, max: 1200, values: [0, 200, 400, 800, 1200] },
+  },
+  refl1k: {
+    id: "refl1k",
+    title: "1 km reflectivity",
+    units: "dBZ",
+    legendCss: legendFromStops(REFL_STOPS, 5, 75),
+    ticks: ["5", "20", "35", "50", "65", "75"],
+    scale: { min: 5, max: 75, values: [5, 20, 35, 50, 65, 75] },
+  },
+  echotop: {
+    id: "echotop",
+    title: "18 dBZ echo-top height",
+    units: "km",
+    legendCss: legendFromStops(TOP_STOPS, 0, 15000),
+    ticks: ["0", "4", "8", "12", "15"],
+    scale: { min: 0, max: 15000, values: [0, 4000, 8000, 12000, 15000] },
+  },
+  vil: {
+    id: "vil",
+    title: "Vertically integrated liquid",
+    units: "kg/m²",
+    legendCss: legendFromStops(VIL_STOPS, 0, 75),
+    ticks: ["0", "15", "30", "45", "60", "75"],
+    scale: { min: 0, max: 75, values: [0, 15, 30, 45, 60, 75] },
+  },
 };
 
 /** Paint a legend bar and its ticks from one product definition. */
@@ -286,6 +687,87 @@ export function packMapProduct(
       break;
     case "ir":
       packInfrared(grid, fields, out);
+      break;
+    case "rh":
+      packSurfaceRh(grid, fields, out);
+      break;
+    case "thetae":
+      packSurfaceThetaE(grid, fields, out);
+      break;
+    case "lcl":
+      packLcl(grid, fields, out);
+      break;
+    case "lfc":
+      packThermo(grid, fields, out, "lfc");
+      break;
+    case "el":
+      packThermo(grid, fields, out, "el");
+      break;
+    case "frz":
+      packFreezingLevel(grid, fields, out);
+      break;
+    case "cape03":
+      packThermo(grid, fields, out, "cape03");
+      break;
+    case "pwat":
+      packPwat(grid, fields, out);
+      break;
+    case "t850":
+      packTempAt(grid, fields, out, 85000);
+      break;
+    case "td850":
+      packDewAt(grid, fields, out, 85000);
+      break;
+    case "w850":
+      packWindAt(grid, fields, out, 85000);
+      break;
+    case "wdir":
+      packWindDirection(grid, fields, out);
+      break;
+    case "wmax":
+      packColumnMaxW(grid, fields, out);
+      break;
+    case "w3k":
+      packVerticalVelocityAt(grid, fields, out, 3000);
+      break;
+    case "shear06":
+      packBulkShear06(grid, fields, out);
+      break;
+    case "conv":
+      packSurfaceConvergence(grid, fields, out);
+      break;
+    case "vort":
+      packSurfaceVorticity(grid, fields, out);
+      break;
+    case "mconv":
+      packMoistureConvergence(grid, fields, out);
+      break;
+    case "uh25":
+      packUpdraftHelicity(grid, fields, out);
+      break;
+    case "ctop":
+      packCloudTop(grid, fields, out);
+      break;
+    case "cbase":
+      packCloudBase(grid, fields, out);
+      break;
+    case "cfr":
+      packCloudFraction(grid, fields, out);
+      break;
+    case "clwc":
+      packCloudLwc(grid, fields, out);
+      break;
+    case "lwp":
+      packLiquidWaterPath(grid, fields, out);
+      break;
+    case "refl1k":
+      packReflectivityAt(grid, fields, out, 1000);
+      break;
+    case "echotop":
+      packEchoTop(grid, fields, out);
+      break;
+    case "vil":
+      packVil(grid, fields, out);
       break;
   }
 }
@@ -431,7 +913,7 @@ function packThermo(
   grid: Grid3D,
   f: SimFields,
   out: Uint8Array,
-  which: "cape" | "cin",
+  which: "cape" | "cin" | "cape03" | "lfc" | "el",
 ): void {
   const { nx, ny, nz, dz, zTop } = grid;
   const stepK = Math.max(1, Math.floor(nz / 20));
@@ -465,7 +947,42 @@ function packThermo(
       );
       const pix = mapPix(i, j, nx, ny);
       if (which === "cape") capeToRgba(idx.cape, out, pix);
-      else cinToRgba(idx.cin, out, pix);
+      else if (which === "cin") cinToRgba(idx.cin, out, pix);
+      else if (which === "cape03") capeToRgba(idx.cape0to3, out, pix);
+      else if (which === "lfc") topToRgba(idx.lfcM, out, pix);
+      else topToRgba(idx.elM, out, pix);
+    }
+  }
+}
+
+function topToRgba(heightM: number, out: Uint8Array, o: number): void {
+  if (heightM <= 0) {
+    out[o] = MAP_BG[1];
+    out[o + 1] = MAP_BG[2];
+    out[o + 2] = MAP_BG[3];
+    out[o + 3] = 255;
+    return;
+  }
+  lerpStops(clamp(heightM, 0, 15000), TOP_STOPS, out, o, 255);
+}
+
+/** Height where the environment first reaches 0 °C, linearly interpolated. */
+function packFreezingLevel(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let height = 0;
+      let prevT = TFromTheta(f.theta[grid.idx(i, j, 0)], f.p0[0]);
+      for (let k = 1; k < nz; k++) {
+        const T = TFromTheta(f.theta[grid.idx(i, j, k)], f.p0[k]);
+        if (prevT > 273.15 && T <= 273.15) {
+          const frac = (prevT - 273.15) / Math.max(1e-6, prevT - T);
+          height = (k - 1 + frac + 0.5) * dz;
+          break;
+        }
+        prevT = T;
+      }
+      topToRgba(height, out, mapPix(i, j, nx, ny));
     }
   }
 }
@@ -704,4 +1221,550 @@ function lerpStops(
   out[o + 1] = (a[2] + (b[2] - a[2]) * t) | 0;
   out[o + 2] = (a[3] + (b[3] - a[3]) * t) | 0;
   out[o + 3] = alpha;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Derived 2D fields (see src/sim/viewCatalog.ts for provenance and formulas)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Cloud and rain are treated as "present" above this mixing ratio (kg/kg). */
+const CLOUD_THRESHOLD = 1e-4;
+/** Echo top uses this radar-equivalent threshold. */
+const ECHO_TOP_DBZ = 18;
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Index of the model level whose base pressure is closest to `pPa`. */
+function pressureLevelK(f: SimFields, pPa: number): number {
+  let best = 0;
+  let bestD = Infinity;
+  for (let k = 0; k < f.p0.length; k++) {
+    const d = Math.abs(f.p0[k] - pPa);
+    if (d < bestD) {
+      bestD = d;
+      best = k;
+    }
+  }
+  return best;
+}
+
+/** Surface temperature / dewpoint (°C) from the lowest model level. */
+function surfaceTdC(f: SimFields, id: number, p0: number): number {
+  const qv = Math.max(0, f.qv[id]);
+  if (qv <= 1e-12) return -80;
+  return dewpointFromE(Math.max(1, (qv * p0) / (0.622 + qv)));
+}
+
+function packSurfaceRh(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  const p = f.p0[0];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, 0);
+      const T = TFromTheta(f.theta[id], p);
+      const qs = qsat(T, p);
+      const rh = qs > 1e-12 ? (Math.max(0, f.qv[id]) / qs) * 100 : 0;
+      lerpStops(clamp(rh, 0, 100), RH_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+function packSurfaceThetaE(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  const p = f.p0[0];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, 0);
+      const T = TFromTheta(f.theta[id], p);
+      const qv = Math.max(0, f.qv[id]);
+      const thetaE = f.theta[id] * Math.exp((LV * qv) / (CP * Math.max(T, 1)));
+      lerpStops(
+        clamp(thetaE, 300, 380),
+        THETAE_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** LCL from the surface parcel: 125 m per °C of T−Td (rough estimate). */
+function packLcl(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  const p = f.p0[0];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, 0);
+      const tC = TFromTheta(f.theta[id], p) - 273.15;
+      const tdC = surfaceTdC(f, id, p);
+      const lcl = clamp(125 * (tC - tdC), 0, 4000);
+      lerpStops(lcl, LCL_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+/** Column water vapour: Σ ρ·qv·dz. 1 kg/m² = 1 mm of precipitable water. */
+function packPwat(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let pw = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        pw += f.rho0[k] * Math.max(0, f.qv[id]) * dz;
+      }
+      lerpStops(clamp(pw, 0, 70), PWAT_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+function packTempAt(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  pPa: number,
+): void {
+  const { nx, ny } = grid;
+  const k = pressureLevelK(f, pPa);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, k);
+      tempToRgba(
+        TFromTheta(f.theta[id], f.p0[k]) - 273.15,
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+function packDewAt(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  pPa: number,
+): void {
+  const { nx, ny } = grid;
+  const k = pressureLevelK(f, pPa);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, k);
+      dewToRgba(
+        surfaceTdC(f, id, f.p0[k]),
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+function packWindAt(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  pPa: number,
+): void {
+  const { nx, ny } = grid;
+  const k = pressureLevelK(f, pPa);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const spd = Math.hypot(
+        grid.uCenter(f.u, i, j, k),
+        grid.vCenter(f.v, i, j, k),
+      );
+      lerpStops(
+        clamp(spd, 0, 60),
+        SHEAR_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Meteorological direction the surface wind blows FROM. Calm is dark. */
+function packWindDirection(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const u = grid.uCenter(f.u, i, j, 0);
+      const v = grid.vCenter(f.v, i, j, 0);
+      const { dir, spd } = spdDirFromUv(u, v);
+      const o = mapPix(i, j, nx, ny);
+      if (spd < 0.1) {
+        out[o] = MAP_BG[1];
+        out[o + 1] = MAP_BG[2];
+        out[o + 2] = MAP_BG[3];
+        out[o + 3] = 255;
+      } else {
+        lerpStops(dir, WDIR_STOPS, out, o, 255);
+      }
+    }
+  }
+}
+
+function packColumnMaxW(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let wMax = 0;
+      for (let k = 0; k < nz; k++) {
+        const w = grid.wCenter(f.w, i, j, k);
+        if (w > wMax) wMax = w;
+      }
+      lerpStops(
+        clamp(wMax, 0, 35),
+        WMAX_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** 0–6 km bulk shear from the base-state sounding (uniform in x/y). */
+function packBulkShear06(grid: Grid3D, f: SimFields, out: Uint8Array): void {  const { nx, ny, nz, dz } = grid;
+  const k6 = Math.min(nz - 1, Math.max(0, Math.round(6000 / Math.max(dz, 1))));
+  const shear = Math.hypot(f.u0[k6] - f.u0[0], f.v0[k6] - f.v0[0]);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      lerpStops(
+        clamp(shear, 0, 60),
+        SHEAR_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+function packVerticalVelocityAt(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  zM: number,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const k = Math.min(nz - 2, Math.max(0, Math.round(zM / Math.max(dz, 1))));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      divergingToRgba(
+        clamp(grid.wCenter(f.w, i, j, k), -15, 15),
+        -15,
+        15,
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+/** Horizontal wind convergence at the surface: −(∂u/∂x + ∂v/∂y) × 10⁴. */
+function packSurfaceConvergence(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const { nx, ny, dx, dy } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ip = Math.min(nx - 1, i + 1);
+      const im = Math.max(0, i - 1);
+      const jp = Math.min(ny - 1, j + 1);
+      const jm = Math.max(0, j - 1);
+      const duDx =
+        (grid.uCenter(f.u, ip, j, 0) - grid.uCenter(f.u, im, j, 0)) /
+        Math.max(1e-3, (ip - im) * dx);
+      const dvDy =
+        (grid.vCenter(f.v, i, jp, 0) - grid.vCenter(f.v, i, jm, 0)) /
+        Math.max(1e-3, (jp - jm) * dy);
+      const conv = -(duDx + dvDy) * 1e4;
+      divergingToRgba(
+        clamp(conv, -20, 20),
+        -20,
+        20,
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+/** Relative vorticity at the surface: ∂v/∂x − ∂u/∂y, × 10⁴. */
+function packSurfaceVorticity(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const { nx, ny, dx, dy } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ip = Math.min(nx - 1, i + 1);
+      const im = Math.max(0, i - 1);
+      const jp = Math.min(ny - 1, j + 1);
+      const jm = Math.max(0, j - 1);
+      const dvDx =
+        (grid.vCenter(f.v, ip, j, 0) - grid.vCenter(f.v, im, j, 0)) /
+        Math.max(1e-3, (ip - im) * dx);
+      const duDy =
+        (grid.uCenter(f.u, i, jp, 0) - grid.uCenter(f.u, i, jm, 0)) /
+        Math.max(1e-3, (jp - jm) * dy);
+      const zeta = (dvDx - duDy) * 1e4;
+      divergingToRgba(
+        clamp(zeta, -20, 20),
+        -20,
+        20,
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+/** Surface moisture convergence: −∇·(qv·V), scaled to 10⁻⁶ kg kg⁻¹ s⁻¹. */
+function packMoistureConvergence(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const { nx, ny, dx, dy } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ip = Math.min(nx - 1, i + 1);
+      const im = Math.max(0, i - 1);
+      const jp = Math.min(ny - 1, j + 1);
+      const jm = Math.max(0, j - 1);
+      const qip = Math.max(0, f.qv[grid.idx(ip, j, 0)]);
+      const qim = Math.max(0, f.qv[grid.idx(im, j, 0)]);
+      const qjp = Math.max(0, f.qv[grid.idx(i, jp, 0)]);
+      const qjm = Math.max(0, f.qv[grid.idx(i, jm, 0)]);
+      const dquDx =
+        (qip * grid.uCenter(f.u, ip, j, 0) -
+          qim * grid.uCenter(f.u, im, j, 0)) /
+        Math.max(1e-3, (ip - im) * dx);
+      const dqvDy =
+        (qjp * grid.vCenter(f.v, i, jp, 0) -
+          qjm * grid.vCenter(f.v, i, jm, 0)) /
+        Math.max(1e-3, (jp - jm) * dy);
+      const mconv = -(dquDx + dqvDy) * 1e6;
+      divergingToRgba(
+        clamp(mconv, -30, 30),
+        -30,
+        30,
+        out,
+        mapPix(i, j, nx, ny),
+      );
+    }
+  }
+}
+
+/**
+ * 2–5 km updraft helicity: ∫ w·ζ dz over the 2–5 km layer, updrafts only.
+ * This is a storm-scale diagnostic, not an observed rotation measurement.
+ */
+function packUpdraftHelicity(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const { nx, ny, nz, dz, dx, dy } = grid;
+  const k0 = Math.max(1, Math.floor(2000 / Math.max(dz, 1)));
+  const k1 = Math.min(nz - 2, Math.ceil(5000 / Math.max(dz, 1)));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ip = Math.min(nx - 1, i + 1);
+      const im = Math.max(0, i - 1);
+      const jp = Math.min(ny - 1, j + 1);
+      const jm = Math.max(0, j - 1);
+      let uh = 0;
+      for (let k = k0; k <= k1; k++) {
+        const w = grid.wCenter(f.w, i, j, k);
+        if (w <= 0) continue;
+        const dvDx =
+          (grid.vCenter(f.v, ip, j, k) - grid.vCenter(f.v, im, j, k)) /
+          Math.max(1e-3, (ip - im) * dx);
+        const duDy =
+          (grid.uCenter(f.u, i, jp, k) - grid.uCenter(f.u, i, jm, k)) /
+          Math.max(1e-3, (jp - jm) * dy);
+        uh += w * (dvDx - duDy) * dz;
+      }
+      lerpStops(
+        clamp(uh, 0, 300),
+        UH_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Height (m) of the highest level containing cloud or rain water. */
+function packCloudTop(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let top = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) top = (k + 0.5) * dz;
+      }
+      lerpStops(
+        clamp(top, 0, 15000),
+        TOP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Height (m) of the lowest level containing cloud or rain water. */
+function packCloudBase(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let base = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) {
+          base = (k + 0.5) * dz;
+          break;
+        }
+      }
+      lerpStops(
+        clamp(base, 0, 15000),
+        TOP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Fraction of column levels that carry cloud or rain water. */
+function packCloudFraction(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let n = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        if (f.qc[id] + f.qr[id] > CLOUD_THRESHOLD) n++;
+      }
+      const frac = (n / Math.max(1, nz)) * 100;
+      lerpStops(frac, CFR_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
+}
+
+/** Column-max cloud liquid-water content (g/kg). Ice is not modelled. */
+function packCloudLwc(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let lwc = 0;
+      for (let k = 0; k < nz; k++) {
+        const qc = Math.max(0, f.qc[grid.idx(i, j, k)]);
+        if (qc > lwc) lwc = qc;
+      }
+      lerpStops(
+        clamp(lwc * 1000, 0, 6),
+        CLWC_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Column-integrated cloud liquid water (g/m²). */
+function packLiquidWaterPath(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let lwp = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        lwp += f.rho0[k] * Math.max(0, f.qc[id]) * dz * 1000;
+      }
+      lerpStops(
+        clamp(lwp, 0, 1200),
+        LWP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Reflectivity at a fixed height (used for the 1 km product). */
+function packReflectivityAt(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  zM: number,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const k = Math.min(nz - 1, Math.max(0, Math.round(zM / Math.max(dz, 1))));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const id = grid.idx(i, j, k);
+      const w = grid.wCenter(f.w, i, j, k);
+      dbzToRgba(reflectivityDbz(f.qr[id], f.qc[id], w), out, mapPix(i, j, nx, ny));
+    }
+  }
+}
+
+/** Highest level whose radar-equivalent reflectivity reaches 18 dBZ. */
+function packEchoTop(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let top = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        const w = grid.wCenter(f.w, i, j, k);
+        if (reflectivityDbz(f.qr[id], f.qc[id], w) >= ECHO_TOP_DBZ) {
+          top = (k + 0.5) * dz;
+        }
+      }
+      lerpStops(
+        clamp(top, 0, 15000),
+        TOP_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Vertically integrated liquid water (kg/m²). */
+function packVil(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny, nz, dz } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      let vil = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = grid.idx(i, j, k);
+        vil += f.rho0[k] * Math.max(0, f.qr[id]) * dz;
+      }
+      lerpStops(clamp(vil, 0, 75), VIL_STOPS, out, mapPix(i, j, nx, ny), 255);
+    }
+  }
 }
