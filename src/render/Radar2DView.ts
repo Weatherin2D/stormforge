@@ -845,6 +845,8 @@ export class Radar2DView {
 
     // The map is always presented as a square, matching the radar-style view.
     const size = Math.max(1, Math.min(w, h));
+    wrap.style.width = `${size}px`;
+    wrap.style.height = `${size}px`;
     const cw = size;
     const ch = size;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);

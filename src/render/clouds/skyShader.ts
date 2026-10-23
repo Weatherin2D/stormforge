@@ -75,7 +75,8 @@ void main(){
       float F = 0.02 + 0.98 * pow(max(1.0 + d.y, 0.0), 5.0);
       surface = surface * (1.0 - F) + skyAt(vec3(d.x, -d.y, d.z)) * F;
     } else {
-      c = surface * T + skyAt(vec3(d.x, -d.y, d.z)) * (1.0 - T);
+      // Below the horizon: the ground, not the sky mirrored above it.
+      c = surface * T + uGroundLight * (1.0 - T);
       c = mix(c, vec3(0.009, 0.026, 0.044), uLab);
       fragColor = vec4(c, 1.0);
       #include <tonemapping_fragment>
