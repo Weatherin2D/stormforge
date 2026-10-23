@@ -1,5 +1,7 @@
 import {
   DrawnFront,
+  FRONT_COLORS,
+  FRONT_LABELS,
   FrontKind,
   MapPoint,
   PressureCenter,
@@ -16,21 +18,15 @@ type Tool =
   | "low"
   | "high";
 
-const KIND_LABEL: Record<FrontKind, string> = {
-  cold: "Cold front",
-  warm: "Warm front",
-  stationary: "Stationary",
-  dryline: "Dryline",
-  outflow: "Outflow",
-};
+const KIND_LABEL = FRONT_LABELS;
+const KIND_COLOR = FRONT_COLORS;
 
-const KIND_COLOR: Record<FrontKind, string> = {
-  cold: "#4db8ff",
-  warm: "#ff5d5d",
-  stationary: "#c084fc",
-  dryline: "#e0a15a",
-  outflow: "#d070e0",
-};
+export interface SynopticEditorOptions {
+  /** Compact layout for the in-simulation panel. */
+  compact?: boolean;
+  /** Pattern to show when the editor opens. */
+  setup?: SynopticSetup;
+}
 
 /**
  * Setup map where fronts are drawn and toggled, and surface
@@ -38,6 +34,8 @@ const KIND_COLOR: Record<FrontKind, string> = {
  */
 export class SynopticEditor {
   readonly root: HTMLElement;
+  /** Fired whenever the pattern changes, so the host can apply it. */
+  onChange: ((setup: SynopticSetup) => void) | null = null;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private listEl: HTMLElement;
@@ -63,16 +61,23 @@ export class SynopticEditor {
   private seq = 10;
   private ro: ResizeObserver | null = null;
 
-  constructor() {
+  constructor(opts: SynopticEditorOptions = {}) {
+    const compact = opts.compact === true;
     this.root = document.createElement("aside");
-    this.root.className = "setup-card setup-fronts";
+    this.root.className = compact
+      ? "setup-fronts synoptic-compact"
+      : "setup-card setup-fronts";
     this.root.tabIndex = 0;
     this.root.innerHTML = `
-      <h2>Fronts</h2>
-      <p class="hint fronts-desc">
+      ${compact ? "" : "<h2>Fronts</h2>"}
+      ${
+        compact
+          ? ""
+          : `<p class="hint fronts-desc">
         Draw a front where it should sit. The air on the left of your stroke
         is the cold or dry side. Triangles point the way it will move.
-      </p>
+      </p>`
+      }
       <div class="front-tools" id="sf-front-tools">
         <button type="button" data-tool="select">Select</button>
         <button type="button" data-tool="cold" class="active">Cold</button>
@@ -106,9 +111,9 @@ export class SynopticEditor {
           Move west→east
         </label>
         <div class="front-strength" id="sf-move-row">
-          Move speed
-          <input id="sf-move-speed" type="range" min="0" max="0.3" step="0.01" value="0.08" />
-          <span id="sf-move-speed-val">0.08</span>
+          Front speed (km/h)
+          <input id="sf-move-speed" type="range" min="0" max="160" step="5" value="35" />
+          <span id="sf-move-speed-val">35</span>
         </div>
         <div class="front-list" id="sf-front-list"></div>
         <label class="front-strength" id="sf-front-strength">
@@ -156,10 +161,12 @@ export class SynopticEditor {
     this.marineInput.addEventListener("change", () => {
       this.setup.marine = this.marineInput.checked;
       this.draw();
+      this.notify();
     });
     this.synopticToggle.addEventListener("change", () => {
       this.setup.enabled = this.synopticToggle.checked;
       this.draw();
+      this.notify();
     });
     this.jetstreamToggle.addEventListener("change", () => {
       this.setup.jetstream = this.jetstreamToggle.checked;
@@ -167,17 +174,20 @@ export class SynopticEditor {
         this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
       }
       this.draw();
+      this.notify();
     });
     this.moveToggle.addEventListener("change", () => {
       this.setup.move = this.moveToggle.checked;
       if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
       this.draw();
+      this.notify();
     });
     this.moveSpeed.addEventListener("input", () => {
       const v = Number(this.moveSpeed.value);
       this.setup.moveSpeed = v;
-      if (this.moveSpeedVal) this.moveSpeedVal.textContent = v.toFixed(2);
+      if (this.moveSpeedVal) this.moveSpeedVal.textContent = String(Math.round(v));
       this.draw();
+      this.notify();
     });
 
     this.strengthInput.addEventListener("input", () => {
@@ -187,6 +197,7 @@ export class SynopticEditor {
       this.strengthVal.textContent = `${center.hPa} hPa`;
       this.renderList();
       this.draw();
+      this.notify();
     });
 
     this.deleteBtn.addEventListener("click", () => this.deleteSelected());
@@ -209,12 +220,13 @@ export class SynopticEditor {
         if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
       }
       if (this.moveSpeed) {
-        this.moveSpeed.value = String(this.setup.moveSpeed ?? 0.08);
-        if (this.moveSpeedVal) this.moveSpeedVal.textContent = (this.setup.moveSpeed ?? 0.08).toFixed(2);
+        this.moveSpeed.value = String(this.setup.moveSpeed ?? 35);
+        if (this.moveSpeedVal) this.moveSpeedVal.textContent = String(Math.round(this.setup.moveSpeed ?? 35));
       }
       this.syncSelectionUi();
       this.renderList();
       this.draw();
+      this.notify();
     });
 
     this.listEl.addEventListener("click", (e) => {
@@ -230,6 +242,7 @@ export class SynopticEditor {
         if (front) front.enabled = on;
         if (center) center.enabled = on;
         this.draw();
+        this.notify();
         return;
       }
       this.selectedId = id;
@@ -252,6 +265,7 @@ export class SynopticEditor {
 
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(this.canvas);
+    if (opts.setup) this.setup = cloneSynoptic(opts.setup);
     this.renderList();
     this.syncSelectionUi();
     // Initialize synoptic/jetstream UI state
@@ -269,14 +283,46 @@ export class SynopticEditor {
       if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
     }
     if (this.moveSpeed) {
-      this.moveSpeed.value = String(this.setup.moveSpeed ?? 0.08);
-      if (this.moveSpeedVal) this.moveSpeedVal.textContent = (this.setup.moveSpeed ?? 0.08).toFixed(2);
+      this.moveSpeed.value = String(this.setup.moveSpeed ?? 35);
+      if (this.moveSpeedVal) this.moveSpeedVal.textContent = String(Math.round(this.setup.moveSpeed ?? 35));
     }
     if (this.marineInput) this.marineInput.checked = this.setup.marine !== false;
   }
 
   getSetup(): SynopticSetup {
     return cloneSynoptic(this.setup);
+  }
+
+  /** Load a pattern into the editor (used when a run starts). */
+  setSetup(setup: SynopticSetup): void {
+    this.setup = cloneSynoptic(setup);
+    this.selectedId = null;
+    this.draft = null;
+    if (this.synopticToggle) this.synopticToggle.checked = this.setup.enabled === true;
+    if (this.jetstreamToggle) {
+      this.jetstreamToggle.checked = this.setup.jetstream === true;
+      if (this.jetstreamRow) this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
+    }
+    if (this.jetstreamSlider) {
+      this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
+      if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+    }
+    if (this.moveToggle) {
+      this.moveToggle.checked = this.setup.move !== false;
+      if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
+    }
+    if (this.moveSpeed) {
+      this.moveSpeed.value = String(this.setup.moveSpeed ?? 35);
+      if (this.moveSpeedVal) this.moveSpeedVal.textContent = String(Math.round(this.setup.moveSpeed ?? 35));
+    }
+    if (this.marineInput) this.marineInput.checked = this.setup.marine !== false;
+    this.renderList();
+    this.syncSelectionUi();
+    this.draw();
+  }
+
+  private notify(): void {
+    this.onChange?.(this.getSetup());
   }
 
   resize(): void {
@@ -300,6 +346,7 @@ export class SynopticEditor {
     this.syncSelectionUi();
     this.renderList();
     this.draw();
+    this.notify();
   }
 
   private syncSelectionUi(): void {
@@ -389,6 +436,7 @@ export class SynopticEditor {
       this.syncSelectionUi();
       this.renderList();
       this.draw();
+      this.notify();
       return;
     }
     if (this.tool === "select") {
@@ -418,6 +466,7 @@ export class SynopticEditor {
       c.x = Math.min(1, Math.max(0, p.x + this.dragging.dx));
       c.y = Math.min(1, Math.max(0, p.y + this.dragging.dy));
       this.draw();
+      this.notify();
       return;
     }
     if (!this.draft) return;
@@ -458,6 +507,7 @@ export class SynopticEditor {
     this.syncSelectionUi();
     this.renderList();
     this.draw();
+    this.notify();
   }
 
   private draw(): void {

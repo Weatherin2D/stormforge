@@ -238,6 +238,55 @@ label {
   padding: 0.15rem 0.1rem;
 }
 
+/* Front editor docked in the running simulation's side panel. */
+.fronts-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.3rem 0 0.6rem;
+}
+
+.fronts-panel.hidden {
+  display: none;
+}
+
+.fronts-apply-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.fronts-apply-row .hint {
+  font-size: 0.78rem;
+}
+
+.synoptic-compact {
+  flex: none;
+  min-width: 0;
+  max-width: none;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  gap: 0.35rem;
+}
+
+.synoptic-compact .front-list {
+  min-height: 110px;
+  max-height: 210px;
+}
+
+.synoptic-compact .front-tools button {
+  font-size: 0.72rem;
+  padding: 0.16rem 0.42rem;
+}
+
+.synoptic-compact .front-marine,
+.synoptic-compact .front-strength {
+  font-size: 0.78rem;
+}
+
 .front-row {
   display: flex;
   align-items: center;

@@ -15,6 +15,7 @@
     "smoke-thermo": "tsx scripts/smoke-thermo.ts",
     "smoke-webgpu": "tsx scripts/smoke-webgpu.ts",
     "smoke-benchmark": "tsx scripts/smoke-benchmark.ts",
+    "smoke-fronts": "tsx scripts/smoke-fronts.ts",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 ﻿import { SetupScreen, SetupValues } from "./setup/SetupScreen";
-import { SynopticSetup, defaultSynoptic } from "./sim/synoptic";
+import { SynopticSetup, defaultSynoptic, cloneSynoptic } from "./sim/synoptic";
+import type { DrawnFront, MapPoint } from "./sim/synoptic";
 import {
   copyFullVolumeToDisplay,
   Grid3D,
@@ -15,6 +16,7 @@ import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
 import { SkewTEditor } from "./skewt/SkewTEditor";
 import { HodographEditor } from "./skewt/HodographEditor";
+import { SynopticEditor } from "./setup/SynopticEditor";
 import { defaultSounding, SoundingLevel } from "./sim/thermo";
 import { formatSolarClock, sunDirection } from "./sim/SurfaceRadiation";
 import { MAP_PRODUCTS, MapProductId, paintLegend } from "./sim/mapProducts";
@@ -23,7 +25,7 @@ import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
 import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 
-type PanelView = "skewt" | "hodograph";
+type PanelView = "skewt" | "hodograph" | "fronts";
 type SessionMode = "live" | "batching" | "playback";
 
 const MONTH_NAMES = [
@@ -40,6 +42,16 @@ const MONTH_NAMES = [
   "Nov",
   "Dec",
 ];
+
+/** True when two front polylines are the same line. */
+function samePoints(a: MapPoint[], b: MapPoint[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs(a[i].x - b[i].x) > 1e-6) return false;
+    if (Math.abs(a[i].y - b[i].y) > 1e-6) return false;
+  }
+  return true;
+}
 
 export class App {
   private setup: SetupScreen;
@@ -58,6 +70,9 @@ export class App {
   private solver: SimBackend | null = null;
   private skewt: SkewTEditor | null = null;
   private hodo: HodographEditor | null = null;
+  /** Front editor inside the running simulation. */
+  private frontEditor: SynopticEditor | null = null;
+  private frontsApplyTimer = 0;
   private sounding: SoundingLevel[] = defaultSounding(12000, 41);
   private panelView: PanelView = "skewt";
   private bubbleStrength = 3;
@@ -97,6 +112,10 @@ export class App {
   private batchCancel = false;
   private pendingSetup: SetupValues | null = null;
   private synoptic: SynopticSetup = defaultSynoptic();
+  /** Where the fronts are in the running simulation (they drift east). */
+  private simFronts: DrawnFront[] = [];
+  /** The pattern the front editor last handed over, before merging. */
+  private lastEditorSetup: SynopticSetup | null = null;
   private playbackAccumMs = 0;
   /** Pending save to apply after the new run mounts (for load-save flow). */
   private pendingLoadSave: StormforgeSave | null = null;
@@ -278,6 +297,7 @@ export class App {
           <div class="panel-toggle">
             <button id="view-skewt" class="active">Skew-T</button>
             <button id="view-hodo">Hodograph</button>
+            <button id="view-fronts">Fronts</button>
           </div>
           <div class="mode-tabs" id="mode-tabs">
             <button id="mode-t" class="active">T</button>
@@ -287,6 +307,13 @@ export class App {
           <div id="skewt-metrics" class="skewt-metrics"></div>
           <canvas id="hodo-canvas" class="hidden"></canvas>
           <div id="hodo-metrics" class="skewt-metrics hidden"></div>
+          <div id="fronts-panel" class="fronts-panel hidden">
+            <div id="fronts-editor-host"></div>
+            <div class="fronts-apply-row">
+              <button id="btn-apply-fronts" class="primary">Apply fronts</button>
+              <span class="hint" id="fronts-status">Applies to the running simulation</span>
+            </div>
+          </div>
           <div class="panel-actions">
             <button id="btn-apply" class="primary">Apply sounding</button>
             <button id="btn-export">Export</button>
@@ -350,6 +377,7 @@ export class App {
     const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
     q("#view-skewt").classList.toggle("active", view === "skewt");
     q("#view-hodo").classList.toggle("active", view === "hodograph");
+    q("#view-fronts").classList.toggle("active", view === "fronts");
 
     const metrics = this.simScreen.querySelector(
       "#skewt-metrics",
@@ -357,6 +385,36 @@ export class App {
     const hodoMetrics = this.simScreen.querySelector(
       "#hodo-metrics",
     ) as HTMLElement | null;
+    const frontsPanel = this.simScreen.querySelector(
+      "#fronts-panel",
+    ) as HTMLElement | null;
+
+    if (view === "fronts") {
+      // Keep the sounding edits in sync before the front map is shown.
+      const hodo = this.hodo;
+      const skewt = this.skewt;
+      if (hodo) {
+        this.sounding = hodo.getLevels();
+        skewt?.setLevels(this.sounding);
+      } else if (skewt) {
+        this.sounding = skewt.getLevels();
+      }
+      this.skewtCanvas?.classList.add("hidden");
+      metrics?.classList.add("hidden");
+      this.hodoCanvas?.classList.add("hidden");
+      hodoMetrics?.classList.add("hidden");
+      this.modeTabs?.classList.add("hidden");
+      frontsPanel?.classList.remove("hidden");
+      if (this.panelTitle) this.panelTitle.textContent = "Fronts";
+      if (this.panelDesc) {
+        this.panelDesc.textContent =
+          "Draw a front: the air on the left of your stroke is the cold or dry side. Edits apply to the running simulation.";
+      }
+      requestAnimationFrame(() => this.frontEditor?.resize());
+      return;
+    }
+
+    frontsPanel?.classList.add("hidden");
 
     if (view === "skewt") {
       // Pull wind edits from hodograph before showing thermo
@@ -400,6 +458,61 @@ export class App {
   private setPaused(paused: boolean): void {
     this.paused = paused;
     this.syncPauseButton();
+  }
+
+  /**
+   * Push a new synoptic pattern into the running simulation. The front
+   * forcing re-imposes the pattern on the fields, so the change shows up in
+   * the next steps instead of waiting for a restart.
+   */
+  private applyFronts(setup: SynopticSetup): void {
+    this.lastEditorSetup = cloneSynoptic(setup);
+    const merged = this.mergeSimPositions(setup);
+    this.synoptic = merged;
+    this.solver?.setSynoptic(merged);
+    this.live?.synoptic(merged);
+    this.pushFrontsToMap();
+    const status = this.simScreen.querySelector("#fronts-status") as HTMLElement | null;
+    if (status) {
+      const fronts = merged.fronts.filter((f) => f.enabled).length;
+      status.textContent = `Applied · ${fronts} front${fronts === 1 ? "" : "s"} active`;
+    }
+  }
+
+  /**
+   * Fronts travel east while the simulation runs, so the pattern the editor
+   * holds is behind the one on the map. A front the user has not touched
+   * keeps the position it has in the simulation, so applying the pattern
+   * does not snap it back to where it was drawn.
+   */
+  private mergeSimPositions(setup: SynopticSetup): SynopticSetup {
+    const out = cloneSynoptic(setup);
+    if (!this.simFronts.length) return out;
+    for (const front of out.fronts) {
+      const sim = this.simFronts.find((f) => f.id === front.id);
+      if (!sim) continue;
+      const prev = this.lastEditorSetup?.fronts.find((f) => f.id === front.id);
+      const untouched = !prev || samePoints(prev.points, front.points);
+      if (!untouched) continue;
+      front.points = sim.points.map((p) => ({ x: p.x, y: p.y }));
+    }
+    return out;
+  }
+
+  /** Apply the edited pattern a moment after the user stops changing it. */
+  private scheduleFrontsApply(setup: SynopticSetup): void {
+    const status = this.simScreen.querySelector("#fronts-status") as HTMLElement | null;
+    if (status) status.textContent = "Pending…";
+    if (this.frontsApplyTimer) window.clearTimeout(this.frontsApplyTimer);
+    this.frontsApplyTimer = window.setTimeout(() => {
+      this.frontsApplyTimer = 0;
+      this.applyFronts(setup);
+    }, 500);
+  }
+
+  /** Draw the active fronts on the 2D map so they are visible while running. */
+  private pushFrontsToMap(): void {
+    this.radar2d?.setFronts(this.synoptic.fronts);
   }
 
   private syncPauseButton(): void {
@@ -797,6 +910,13 @@ export class App {
     q("#view-hodo").addEventListener("click", () =>
       this.setPanelView("hodograph"),
     );
+    q("#view-fronts").addEventListener("click", () => this.setPanelView("fronts"));
+
+    const applyFrontsBtn = q("#btn-apply-fronts");
+    applyFrontsBtn.addEventListener("click", () => {
+      if (!this.frontEditor) return;
+      this.applyFronts(this.frontEditor.getSetup());
+    });
 
     q("#mode-t").addEventListener("click", () => {
       this.skewt?.setMode("T");
@@ -1280,6 +1400,22 @@ export class App {
       this.sounding = levels;
     };
 
+    // Front editor for the running simulation. It starts from the pattern the
+    // run was launched with and can change it while the simulation runs.
+    const frontsHost = this.simScreen.querySelector(
+      "#fronts-editor-host",
+    ) as HTMLElement | null;
+    this.frontEditor?.root.remove();
+    this.frontEditor = new SynopticEditor({
+      compact: true,
+      setup: this.synoptic,
+    });
+    this.frontEditor.onChange = (setup) => {
+      this.scheduleFrontsApply(setup);
+    };
+    frontsHost?.appendChild(this.frontEditor.root);
+    this.pushFrontsToMap();
+
     this.setPanelView("skewt");
     this.skewt.resize();
     this.renderer.resize();
@@ -1759,6 +1895,11 @@ export class App {
     if (st.winds) {
       if (this.showRadar2d && this.radar2d) this.radar2d.updateWinds(st.winds);
       else this.renderer.updateWinds(st.winds);
+    }
+    if (st.fronts) {
+      // The fronts travel east in the simulation: follow them on the map.
+      this.simFronts = st.fronts;
+      if (this.showRadar2d && this.radar2d) this.radar2d.setFronts(st.fronts);
     }
     for (const hit of st.strikes) {
       if (this.lightningFreq >= 1 || Math.random() < this.lightningFreq) this.placeStrike(hit);

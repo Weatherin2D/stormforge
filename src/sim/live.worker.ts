@@ -6,6 +6,8 @@ import { InitOptions } from "./InitFromSounding";
 import { RadiationOptions } from "./SurfaceRadiation";
 import { MapProductId } from "./mapProducts";
 import { sampleSurfaceWinds, SurfaceWindSample } from "./surfaceWinds";
+import { DrawnFront, getActiveSynoptic } from "./synoptic";
+import type { SynopticSetup } from "./synoptic";
 
 let solver: SimBackend | null = null;
 
@@ -27,6 +29,20 @@ function surfaceDth(s: SimBackend): number {
   const th0 = f.theta0[0];
   for (let i = 0; i < n; i++) sum += f.theta[i] - th0;
   return n ? sum / n : 0;
+}
+
+/** Where the fronts are right now, so the map can follow them. */
+function frontPositions(): DrawnFront[] {
+  const active = getActiveSynoptic();
+  if (active.enabled === false) return [];
+  return active.fronts
+    .filter((f) => f.enabled && f.points.length >= 2)
+    .map((f) => ({
+      id: f.id,
+      kind: f.kind,
+      enabled: f.enabled,
+      points: f.points.map((p) => ({ x: p.x, y: p.y })),
+    }));
 }
 
 function publish(extra: {
@@ -59,6 +75,7 @@ function publish(extra: {
     map: extra.map,
     mapId: extra.mapId,
     winds: extra.winds,
+    fronts: frontPositions(),
   };
   (self as unknown as { postMessage(message: unknown, transfer: Transferable[]): void }).postMessage(
     payload,
@@ -80,6 +97,7 @@ self.onmessage = (ev: MessageEvent) => {
     | { type: "bubble"; strength: number }
     | { type: "radiation"; radiation: Partial<RadiationOptions> }
     | { type: "clock"; paused: boolean }
+    | { type: "synoptic"; setup: SynopticSetup }
     | StepMsg;
   if (msg.type === "rebuild") {
     const grid = new Grid3D(msg.grid);
@@ -106,6 +124,11 @@ self.onmessage = (ev: MessageEvent) => {
   }
   if (msg.type === "clock") {
     solver.clockPaused = msg.paused;
+    return;
+  }
+  if (msg.type === "synoptic") {
+    // Fronts edited while the run is going: swap the pattern in place.
+    solver.setSynoptic(msg.setup);
     return;
   }
   solver.step(msg.dt);

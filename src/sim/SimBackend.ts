@@ -20,6 +20,7 @@ import type { SoundingLevel } from "./thermo";
 import type { RadiationOptions, SolarStatus } from "./SurfaceRadiation";
 import type { MapProductId } from "./mapProducts";
 import type { LightningStrike } from "./FluidSolver";
+import type { SynopticSetup } from "./synoptic";
 
 /** Backend selector. "cpu" is the only shipping backend; "gpu" is Phase 2. */
 export type SolverKind = "cpu" | "gpu";
@@ -91,6 +92,12 @@ export interface SimBackend {
 
   rebuild(grid: Grid3D, sounding: SoundingLevel[], opts: InitOptions): void;
   reset(sounding: SoundingLevel[], opts: InitOptions): void;
+  /**
+   * Replace the synoptic pattern (fronts, highs/lows) of the running
+   * simulation without restarting it. The new pattern is re-imposed on the
+   * fields by the front forcing, so edits take effect on the next step.
+   */
+  setSynoptic(setup: SynopticSetup): void;
   setRadiation(partial: Partial<RadiationOptions>): void;
   setSolarHour(hour: number): void;
   getSolarStatus(): SolarStatus;

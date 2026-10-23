@@ -42,7 +42,9 @@ import {
   stepMarineStratus,
 } from "./stepDynamics";
 import { stepShallowCu } from "./shallowCu";
-import { getActiveSynoptic, advanceSynoptic } from "./synoptic";
+import { getActiveSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
+import type { SynopticSetup } from "./synoptic";
+import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
 import { WebGPUDevice } from "./WebGPUDevice";
 import type { LightningStrike } from "./FluidSolver";
 import { volumeDisplaySize, copyFullVolumeToDisplay } from "./Grid3D";
@@ -807,6 +809,14 @@ export class WebGPUBackend implements SimBackend {
     this.uploadFields(this.fields, this.grid, this.b!);
   }
 
+  /** Swap the synoptic pattern of the running simulation. */
+  setSynoptic(setup: SynopticSetup): void {
+    const previous = getActiveSynoptic();
+    setActiveSynoptic(setup);
+    applySynopticPattern(this.grid, this.fields, previous, setup);
+    if (this.b) this.uploadFields(this.fields, this.grid, this.b);
+  }
+
   setRadiation(partial: Partial<RadiationOptions>): void {
     this.radiation = { ...this.radiation, ...partial };
     if (this.radiation.month < 1) this.radiation.month = 1;
@@ -962,7 +972,8 @@ export class WebGPUBackend implements SimBackend {
     stepBLMixing(g, f, dt, exner);
     stepSynopticOmega(g, f, dt);
     stepMarineStratus(g, f, dt, exner, landMask);
-    advanceSynoptic(dt);
+    advanceSynoptic(dt, g.xExtent);
+    stepSynopticForcing(g, f, dt);
   }
 
   respawnBubble(opts?: Partial<InitOptions>): void {

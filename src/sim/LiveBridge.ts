@@ -4,6 +4,7 @@ import { RadiationOptions } from "./SurfaceRadiation";
 import { MapProductId } from "./mapProducts";
 import { SurfaceWindSample } from "./surfaceWinds";
 import type { LightningStrike } from "./FluidSolver";
+import type { DrawnFront, SynopticSetup } from "./synoptic";
 
 export interface LiveState {
   type: "state";
@@ -22,6 +23,8 @@ export interface LiveState {
   map: Uint8Array | null;
   mapId: MapProductId | null;
   winds: SurfaceWindSample[] | null;
+  /** Where the fronts are now, so the map line follows the simulation. */
+  fronts: DrawnFront[];
 }
 
 /** Physics runs off the render thread so the camera stays smooth. */
@@ -71,6 +74,11 @@ export class LiveBridge {
 
   clock(paused: boolean): void {
     this.worker.postMessage({ type: "clock", paused });
+  }
+
+  /** Replace the synoptic pattern of the running simulation. */
+  synoptic(setup: SynopticSetup): void {
+    this.worker.postMessage({ type: "synoptic", setup });
   }
 
   step(payload: {

@@ -9,7 +9,9 @@ import {
 } from "./InitFromSounding";
 import { stepMicrophysics } from "./Microphysics";
 import { SoundingLevel, G, TFromTheta, exnerFromP, qsat } from "./thermo";
-import { getActiveSynoptic, sampleSynoptic, advanceSynoptic } from "./synoptic";
+import { getActiveSynoptic, sampleSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
+import type { SynopticSetup } from "./synoptic";
+import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
 import {
   MapProductId,
   packLightning,
@@ -178,6 +180,17 @@ export class FluidSolver implements SimBackend {
     this.refreshExner();
   }
 
+  /** Swap the synoptic pattern of the running simulation. */
+  setSynoptic(setup: SynopticSetup): void {
+    const previous = getActiveSynoptic();
+    setActiveSynoptic(setup);
+    // Put the new pattern on the fields that are already running: only the
+    // difference is applied, so the weather that has developed so far stays.
+    applySynopticPattern(this.grid, this.fields, previous, setup);
+    this.lastBubbleOpts = { ...this.lastBubbleOpts, synoptic: setup };
+    this.refreshLandMask();
+  }
+
   setRadiation(partial: Partial<RadiationOptions>): void {
     this.radiation = { ...this.radiation, ...partial };
     if (this.radiation.month < 1) this.radiation.month = 1;
@@ -264,7 +277,7 @@ export class FluidSolver implements SimBackend {
       stepBLMixing(this.grid, this.fields, h, this.exner);
       stepSynopticOmega(this.grid, this.fields, h);
       stepMarineStratus(this.grid, this.fields, h, this.exner, this.landMask);
-      advanceSynoptic(h);
+      advanceSynoptic(h, this.grid.xExtent);
       this.updateLightning(h);
       this.applySponge(h);
       if (!this.clockPaused) {
@@ -277,6 +290,9 @@ export class FluidSolver implements SimBackend {
       this.time += h;
       this.stepCount++;
     }
+    // The fronts are a slow relaxation of the pattern onto the fields, so
+    // they are put back once per step rather than once per sub-step.
+    stepSynopticForcing(this.grid, this.fields, dt);
   }
 
   /** Virtual-θ buoyancy + condensate loading on interior w-faces. */
