@@ -194,6 +194,15 @@ export class Radar2DView {
           <input id="map2d-search" type="search" placeholder="Search views…" autocomplete="off" spellcheck="false" aria-label="Search 2D views" aria-controls="map2d-search-results" aria-expanded="false" />
           <div class="map2d-results hidden" id="map2d-search-results" role="listbox" aria-label="2D view catalog"></div>
         </div>
+        <div class="radar2d-canvas-wrap">
+          <canvas id="radar2d-canvas"></canvas>
+          <div class="map2d-compass" aria-hidden="true">
+            <span class="n">N</span>
+            <span class="e">E</span>
+            <span class="s">S</span>
+            <span class="w">W</span>
+          </div>
+        </div>
         <div class="map2d-pinned" id="map2d-pinned" style="display:none"></div>
         <div class="map2d-tabs" id="map2d-tabs"></div>
         <details class="map2d-about" id="map2d-about">
@@ -205,15 +214,6 @@ export class Radar2DView {
           <input id="map2d-detail" type="range" min="1" max="4" step="1" value="2" />
           <span id="map2d-detail-val">2×</span>
         </label>
-        <div class="radar2d-canvas-wrap">
-          <canvas id="radar2d-canvas"></canvas>
-          <div class="map2d-compass" aria-hidden="true">
-            <span class="n">N</span>
-            <span class="e">E</span>
-            <span class="s">S</span>
-            <span class="w">W</span>
-          </div>
-        </div>
         <div class="radar2d-meta">
           <span class="radar2d-title">Column-max reflectivity</span>
           <span class="map2d-meta-right">
