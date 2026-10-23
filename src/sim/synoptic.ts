@@ -51,6 +51,8 @@ export interface SynopticSetup {
   move?: boolean;
   /** Translation speed of the systems in km/h. */
   moveSpeed?: number;
+  /** Continuously spawn fresh, non-repeating systems entering from the west. */
+  autoGenerate?: boolean;
 }
 
 export interface SynopticSample {
@@ -271,9 +273,10 @@ export function cloneSynoptic(setup: SynopticSetup): SynopticSetup {
     enabled: setup.enabled,
     jetstream: setup.jetstream,
     jetstreamSouth: setup.jetstreamSouth,
-    move: setup.move,
-    moveSpeed: setup.moveSpeed,
-    fronts: setup.fronts.map((f) => ({
+  move: setup.move,
+  moveSpeed: setup.moveSpeed,
+  autoGenerate: setup.autoGenerate,
+  fronts: setup.fronts.map((f) => ({
       ...f,
       points: f.points.map((p) => ({ x: p.x, y: p.y })),
     })),
@@ -299,6 +302,99 @@ export function getActiveSynoptic(): SynopticSetup {
  * A front that runs off the east edge re-enters on the west side; the whole
  * front is shifted at once so its shape survives the trip.
  */
+/** Counter for uniquely-id'd generated systems. */
+let genCounter = 0;
+
+function rnd(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
+function rndInt(min: number, max: number): number {
+  return Math.floor(rnd(min, max + 1));
+}
+
+/** Build one realistic, randomly-shaped synoptic system entering from the west. */
+function buildSystem(sysId: number, yBase: number): { fronts: DrawnFront[]; centers: PressureCenter[] } {
+  const fronts: DrawnFront[] = [];
+  const centers: PressureCenter[] = [];
+  const isLow = Math.random() < 0.7;
+  const cx = rnd(-0.25, 0.05);
+  const cy = yBase;
+  const hPa = isLow ? rnd(5, 10) : rnd(4, 8);
+  centers.push({ id: `gen-${sysId}-${isLow ? "low" : "high"}`, kind: isLow ? "low" : "high", enabled: true, x: cx, y: cy, hPa });
+
+  if (isLow) {
+    // Cold front trailing to the SW of the low.
+    const nPts = rndInt(3, 5);
+    const len = rnd(0.25, 0.5);
+    const pts: MapPoint[] = [];
+    for (let i = 0; i < nPts; i++) {
+      const t = i / (nPts - 1);
+      const x = cx - t * len + (Math.random() - 0.5) * 0.06;
+      const y = cy - t * (len * 0.6) + (Math.random() - 0.5) * 0.05;
+      pts.push({ x: Math.max(-0.4, Math.min(1.1, x)), y: Math.max(0.02, Math.min(0.98, y)) });
+    }
+    fronts.push({ id: `gen-${sysId}-cold`, kind: "cold", enabled: true, points: pts });
+
+    // Warm front trailing to the E/NE (sometimes).
+    if (Math.random() < 0.6) {
+      const nW = rndInt(3, 4);
+      const lenW = rnd(0.2, 0.4);
+      const ptsW: MapPoint[] = [];
+      for (let i = 0; i < nW; i++) {
+        const t = i / (nW - 1);
+        const x = cx + t * lenW + (Math.random() - 0.5) * 0.05;
+        const y = cy + t * (lenW * 0.35) + (Math.random() - 0.5) * 0.04;
+        ptsW.push({ x: Math.max(-0.4, Math.min(1.1, x)), y: Math.max(0.02, Math.min(0.98, y)) });
+      }
+      fronts.push({ id: `gen-${sysId}-warm`, kind: "warm", enabled: true, points: ptsW });
+    }
+  }
+  return { fronts, centers };
+}
+
+/**
+ * Generate a fresh, non-repeating synoptic setup: several realistic systems
+ * entering from the west, drifting east. Each call produces a unique pattern.
+ */
+export function generateSynopticSystems(opts?: { count?: number; latitudeDeg?: number }): SynopticSetup {
+  const count = opts?.count ?? rndInt(2, 4);
+  const latitudeDeg = opts?.latitudeDeg ?? 35;
+  const fronts: DrawnFront[] = [];
+  const centers: PressureCenter[] = [];
+  const ySlots = [0.2, 0.35, 0.5, 0.65, 0.8];
+  for (let i = 0; i < count; i++) {
+    const yBase = ySlots[i % ySlots.length] + (Math.random() - 0.5) * 0.08;
+    const sys = buildSystem(++genCounter, yBase);
+    fronts.push(...sys.fronts);
+    centers.push(...sys.centers);
+  }
+  return {
+    marine: Math.random() < 0.5,
+    latitudeDeg,
+    enabled: true,
+    jetstream: Math.random() < 0.4,
+    jetstreamSouth: rnd(0.3, 0.7),
+    move: true,
+    moveSpeed: rnd(25, 45),
+    autoGenerate: true,
+    fronts,
+    centers,
+  };
+}
+
+/**
+ * Spawner: when autoGenerate is on, systems that have left the east edge are
+ * removed and replaced by a fresh system entering from the west, so the
+ * pattern never repeats.
+ */
+function spawnReplacement(): void {
+  const sys = buildSystem(++genCounter, rnd(0.2, 0.8));
+  const active2 = getActiveSynoptic();
+  active2.fronts.push(...sys.fronts);
+  active2.centers.push(...sys.centers);
+}
+
 export function advanceSynoptic(dt: number, domainWidthM: number): void {
   if (active.enabled === false) return;
   if (!active.move) return;
@@ -311,9 +407,36 @@ export function advanceSynoptic(dt: number, domainWidthM: number): void {
   for (const front of active.fronts) {
     if (!front.enabled || front.points.length < 2) continue;
     for (const p of front.points) p.x += dx;
-    // A front that has left the domain altogether comes back in on the
-    // other side. A front that only partly leaves it keeps its shape: the
-    // part that is off the map re-enters through the boundary.
+  }
+
+  // Spawner for auto-generated, non-repeating systems: detect systems that
+  // have fully exited to the east (before wrapping) and replace them.
+  if (active.autoGenerate) {
+    const exited = new Set<string>();
+    for (const f of active.fronts) {
+      if (!f.id.startsWith("gen-")) continue;
+      const sysId = f.id.split("-").slice(0, 2).join("-");
+      let minX = Infinity;
+      for (const p of f.points) if (p.x < minX) minX = p.x;
+      if (minX >= 1) exited.add(sysId);
+    }
+    for (const c of active.centers) {
+      if (!c.id.startsWith("gen-")) continue;
+      const sysId = c.id.split("-").slice(0, 2).join("-");
+      if (c.x >= 1) exited.add(sysId);
+    }
+    for (const sysId of exited) {
+      active.fronts = active.fronts.filter((f) => !f.id.startsWith(sysId + "-"));
+      active.centers = active.centers.filter((c) => !c.id.startsWith(sysId + "-"));
+    }
+    for (let i = 0; i < exited.size && i < 3; i++) spawnReplacement();
+  }
+
+  // A front that has left the domain altogether comes back in on the
+  // other side. A front that only partly leaves it keeps its shape: the
+  // part that is off the map re-enters through the boundary.
+  for (const front of active.fronts) {
+    if (!front.enabled || front.points.length < 2) continue;
     let minX = Infinity;
     let maxX = -Infinity;
     for (const p of front.points) {

@@ -8,8 +8,7 @@ import {
   SynopticSetup,
   cloneSynoptic,
   defaultSynoptic,
-  nearestOnPolyline,
-  previewMasses,
+  generateSynopticSystems,
 } from "../sim/synoptic";
 
 type Tool =
@@ -121,10 +120,11 @@ export class SynopticEditor {
           <input id="sf-front-hpa" type="range" min="2" max="12" step="1" value="6" />
           <span id="sf-front-hpa-val">6 hPa</span>
         </label>
-      <div class="panel-actions">
-        <button type="button" id="sf-front-delete" disabled>Delete</button>
-        <button type="button" id="sf-front-reset">Reset pattern</button>
-      </div>
+       <div class="panel-actions">
+         <button type="button" id="sf-front-delete" disabled>Delete</button>
+         <button type="button" id="sf-front-reset">Reset pattern</button>
+         <button type="button" id="sf-gen-systems">Generate systems</button>
+       </div>
     `;
 
     this.canvas = this.root.querySelector("#sf-front-canvas") as HTMLCanvasElement;
@@ -206,6 +206,33 @@ export class SynopticEditor {
       this.selectedId = null;
       this.draft = null;
       this.marineInput.checked = true;
+      if (this.synopticToggle) this.synopticToggle.checked = this.setup.enabled === true;
+      if (this.jetstreamToggle) {
+        this.jetstreamToggle.checked = this.setup.jetstream === true;
+        if (this.jetstreamRow) this.jetstreamRow.style.display = this.jetstreamToggle.checked ? "flex" : "none";
+      }
+      if (this.jetstreamSlider) {
+        this.jetstreamSlider.value = String(this.setup.jetstreamSouth ?? 0.5);
+        if (this.jetstreamVal) this.jetstreamVal.textContent = Math.round((this.setup.jetstreamSouth ?? 0.5) * 100) + "%";
+      }
+      if (this.moveToggle) {
+        this.moveToggle.checked = this.setup.move !== false;
+        if (this.moveRow) this.moveRow.style.display = this.moveToggle.checked ? "flex" : "none";
+      }
+      if (this.moveSpeed) {
+        this.moveSpeed.value = String(this.setup.moveSpeed ?? 35);
+        if (this.moveSpeedVal) this.moveSpeedVal.textContent = String(Math.round(this.setup.moveSpeed ?? 35));
+      }
+      this.syncSelectionUi();
+      this.renderList();
+      this.draw();
+      this.notify();
+    });
+    this.root.querySelector("#sf-gen-systems")!.addEventListener("click", () => {
+      this.setup = generateSynopticSystems();
+      this.selectedId = null;
+      this.draft = null;
+      if (this.marineInput) this.marineInput.checked = this.setup.marine !== false;
       if (this.synopticToggle) this.synopticToggle.checked = this.setup.enabled === true;
       if (this.jetstreamToggle) {
         this.jetstreamToggle.checked = this.setup.jetstream === true;
