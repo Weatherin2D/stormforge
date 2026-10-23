@@ -263,13 +263,14 @@ export class CloudRainRenderer {
     this.groundFlashMesh.position.y = -0.5;
     this.groundFlashMesh.frustumCulled = false;
     this.scene.add(this.groundFlashMesh);
-    this.scene.fog = new THREE.Fog(0x8fb4d4, 18000, 70000);
-    this.renderer.setClearColor(0x8fb4d4, 1);
+    this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.00001);
+    this.renderer.setClearColor(0x9fb4c4, 1);
 
     const groundGeo = new THREE.PlaneGeometry(4, 4);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x3c7a45,
-      roughness: 0.95,
+      color: 0x596d45,
+      roughness: 0.96,
+      metalness: 0,
     });
     this.ground = new THREE.Mesh(groundGeo, groundMat);
     this.ground.rotation.x = -Math.PI / 2;
@@ -578,10 +579,10 @@ export class CloudRainRenderer {
       const fogColor = ((Math.round(r + 10) & 0xff) << 16) | ((Math.round(g + 15) & 0xff) << 8) | (Math.round(b + 25) & 0xff);
       this.scene.fog.color.set(fogColor);
     }
-    this.hemi.intensity = mix(0.08, 0.95, f);
-    this.hemi.color.setRGB(mix(0.4, 0.7, f), mix(0.5, 0.8, f), mix(0.8, 1.0, f));
-    this.hemi.groundColor.setRGB(mix(0.08, 0.25, f), mix(0.12, 0.32, f), mix(0.15, 0.18, f));
-    this.sunLight.intensity = mix(0.02, 1.25, f);
+    this.hemi.intensity = mix(0.4, 1.0, f);
+    this.hemi.color.setRGB(0.851, 0.937, 1.0);
+    this.hemi.groundColor.setRGB(0.294, 0.267, 0.224);
+    this.sunLight.intensity = mix(0.2, 1.0, f);
   }
 
   /** Daylight fraction plus the world sun direction (+X east, +Y up, −Z north). */
@@ -592,14 +593,7 @@ export class CloudRainRenderer {
     else this.sunDir.normalize();
     this.sunLight.position.copy(this.sunDir).multiplyScalar(400);
     const elev = this.sunDir.y;
-    const day = Math.min(1, Math.max(0, frac));
-    const up = Math.min(1, Math.max(0, (elev + 0.05) / 0.35));
-    const warm = Math.min(1, Math.max(0, 1 - Math.abs(elev) / 0.12)) * (1 - up);
-    this.sunLight.color.setRGB(
-      (0.4 + up * 0.5 + warm * 0.28) * (0.25 + day * 0.75),
-      (0.5 + up * 0.4 + warm * 0.06) * (0.35 + day * 0.65),
-      Math.max(0.1, (0.7 + up * 0.25 - warm * 0.52)) * (0.4 + day * 0.6),
-    );
+    this.sunLight.color.set(1.0, 0.941, 0.824);
     this.updateSkyFromSun();
     this.applyCloudSun();
   }
@@ -618,16 +612,21 @@ export class CloudRainRenderer {
     this.skyState = state;
     // Upload the sky table as an RGBA HalfFloat texture.
     const data = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
+    const toHalf = (v: number) => {
+      const f = Math.max(0, Math.min(1, v));
+      const e = Math.floor(Math.log2(f));
+      const m = f / Math.pow(2, e) - 1;
+      const exp = (e + 15) & 0x1f;
+      const mant = Math.floor(m * 1024) & 0x3ff;
+      return (exp << 10) | mant;
+    };
     const sky = state.sky;
-    for (let row = 0; row < SKY_ROWS; row++) {
-      for (let col = 0; col < SKY_COLS; col++) {
-        const o = (row * SKY_COLS + col) * 4;
-        const s = sky[(row * SKY_COLS + col) * 3];
-        data[o] = Math.min(65535, Math.round(s * 65535));
-        data[o + 1] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 1] * 65535));
-        data[o + 2] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 2] * 65535));
-        data[o + 3] = 65535;
-      }
+    for (let i = 0; i < SKY_ROWS * SKY_COLS; i++) {
+      const o = i * 4;
+      data[o] = toHalf(sky[i * 3]);
+      data[o + 1] = toHalf(sky[i * 3 + 1]);
+      data[o + 2] = toHalf(sky[i * 3 + 2]);
+      data[o + 3] = 0xffff;
     }
     (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
     this.skyTexture.needsUpdate = true;
@@ -640,10 +639,8 @@ export class CloudRainRenderer {
     (mat.uniforms.uHaze as { value: number }).value = haze;
     (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
     (mat.uniforms.uStars as { value: number }).value = elDeg < -8 ? 1 : 0;
-    // Ground light from sky irradiance.
     const irr = state.skyIrradiance;
     (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(irr[0], irr[1], irr[2]);
-    // Sun disc color bright at day, dim at night.
     const day = Math.min(1, Math.max(0, (elDeg + 8) / 20));
     (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setScalar(40 * day);
   }
