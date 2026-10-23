@@ -59,7 +59,7 @@ export class Radar2DView {
   private detail = 2;
   private onDetailChange: ((scale: number) => void) | null = null;
   private detailVal: HTMLElement | null = null;
-  private pinned: Set<MapProductId> = new Set();
+  private pinned: Set<MapProductId> = new Set(Radar2DView.DEFAULT_PINNED);
   /** Live catalog entry for each implemented product, used for provenance. */
   private readonly liveViews = liveViewsByProduct();
   private searchHits: CatalogView[] = [];
@@ -71,6 +71,18 @@ export class Radar2DView {
   private static readonly LEGACY_PIN_KEYS = [
     "stormforge.map2d.pins.v1",
     "stormforge.map2d.pins.v2",
+  ];
+  /** Products pinned by default; everything else starts hidden. */
+  private static readonly DEFAULT_PINNED: MapProductId[] = [
+    "refl",
+    "cape",
+    "mucape",
+    "shear06",
+    "tsfc",
+    "td",
+    "rh",
+    "vis",
+    "ctop",
   ];
 
   private static readonly PRODUCT_ORDER: MapProductId[] = [
@@ -645,6 +657,7 @@ export class Radar2DView {
       if (!raw) return;
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
+      this.pinned.clear();
       for (const value of parsed) {
         if (typeof value !== "string") continue;
         const id = value as MapProductId;
