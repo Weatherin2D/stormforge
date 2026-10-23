@@ -290,8 +290,8 @@ export class CloudRainRenderer {
     this.scene.add(this.domainBox);
 
     // Atmospheric sky table (CPU-computed via sky.ts), uploaded as a texture.
-    const skyData = new Uint8Array(SKY_COLS * SKY_ROWS * 4);
-    this.skyTexture = new THREE.DataTexture(skyData, SKY_COLS, SKY_ROWS, THREE.RGBAFormat, THREE.UnsignedByteType);
+    const skyData = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
+    this.skyTexture = new THREE.DataTexture(skyData, SKY_COLS, SKY_ROWS, THREE.RGBAFormat, THREE.HalfFloatType);
     this.skyTexture.minFilter = this.skyTexture.magFilter = THREE.LinearFilter;
     this.skyTexture.needsUpdate = true;
 
@@ -616,20 +616,20 @@ export class CloudRainRenderer {
     this.haze = haze;
     const state = computeSky(elDeg * Math.PI / 180, haze, 0.2);
     this.skyState = state;
-    // Upload the sky table as an RGBA UnsignedByte texture.
-    const data = new Uint8Array(SKY_COLS * SKY_ROWS * 4);
+    // Upload the sky table as an RGBA HalfFloat texture.
+    const data = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
     const sky = state.sky;
     for (let row = 0; row < SKY_ROWS; row++) {
       for (let col = 0; col < SKY_COLS; col++) {
         const o = (row * SKY_COLS + col) * 4;
         const s = sky[(row * SKY_COLS + col) * 3];
-        data[o] = Math.min(255, Math.round(s * 255));
-        data[o + 1] = Math.min(255, Math.round(sky[(row * SKY_COLS + col) * 3 + 1] * 255));
-        data[o + 2] = Math.min(255, Math.round(sky[(row * SKY_COLS + col) * 3 + 2] * 255));
-        data[o + 3] = 255;
+        data[o] = Math.min(65535, Math.round(s * 65535));
+        data[o + 1] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 1] * 65535));
+        data[o + 2] = Math.min(65535, Math.round(sky[(row * SKY_COLS + col) * 3 + 2] * 65535));
+        data[o + 3] = 65535;
       }
     }
-    (this.skyTexture.image as unknown as { data: Uint8Array }).data = data;
+    (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
     this.skyTexture.needsUpdate = true;
 
     // Sky material uniforms.
