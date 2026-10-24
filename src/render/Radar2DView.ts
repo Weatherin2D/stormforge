@@ -359,7 +359,9 @@ export class Radar2DView {
       const next = Math.max(1, Math.min(4, Number(detailInput.value) || 1));
       this.detail = next;
       if (this.detailVal) this.detailVal.textContent = `${next}×`;
+      this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
       this.layout();
+      this.draw();
       this.onDetailChange?.(next);
     });
 
