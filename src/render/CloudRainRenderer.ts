@@ -217,7 +217,10 @@ export class CloudRainRenderer {
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
-    this.renderer.setClearColor(0x0a1424, 1);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.setClearColor(0x9fb4c4, 1);
     const canvas = this.renderer.domElement;
     canvas.style.display = "block";
     canvas.style.width = "100%";
@@ -263,7 +266,7 @@ export class CloudRainRenderer {
     this.groundFlashMesh.position.y = -0.5;
     this.groundFlashMesh.frustumCulled = false;
     this.scene.add(this.groundFlashMesh);
-    this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.1);
+    this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.0001);
     this.renderer.setClearColor(0x9fb4c4, 1);
 
     const groundGeo = new THREE.PlaneGeometry(4, 4);
