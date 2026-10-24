@@ -16,7 +16,7 @@ import {
   VolumetricCloudMaterial,
 } from "./clouds/VolumetricCloudMaterial";
 import { computeSkyLighting } from "./clouds/sunLighting";
-import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SKY_ROWS } from "./sky";
+import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SKY_ROWS, adaptation, NOON_LIGHT } from "./sky";
 import { skyFragment, skyVertex } from "./clouds/skyShader";
 import { course, brightness, type LightningCourse, LightningView, type Flash } from "./lightning";
 import { SpriteView } from "./sprites";
@@ -638,18 +638,44 @@ export class CloudRainRenderer {
     (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
     this.skyTexture.needsUpdate = true;
 
-    // Sky material uniforms.
+    // Sky material uniforms - matching MeteoLAB's approach
     const mat = this.sky.material as THREE.ShaderMaterial;
     const sunEl = Math.sin(elDeg * Math.PI / 180);
-    const gain = 14 * (Math.max(0, sunEl) + 0.05);
+    
+    // Night floor colors from MeteoLAB
+    const NIGHT_SKY = [0.008, 0.012, 0.026];
+    const NIGHT_BOTTOM = [0.06, 0.07, 0.1];
+    const CITY_SKY = [0.06, 0.036, 0.016];
+    const CITY_BOTTOM = [0.09, 0.055, 0.025];
+    
+    // Eye adaptation
+    const totalLight = state.skyIrradiance[0] + state.skyIrradiance[1] + state.skyIrradiance[2];
+    const adapt = adaptation(totalLight);
+    
+    // Sky gain with adaptation
+    const SKY_GAIN = 14;
+    const day = Math.min(1, Math.max(0, (elDeg + 8) / 20));
+    const gain = SKY_GAIN * (Math.max(0, sunEl) + 0.05) * adapt;
+    
     (mat.uniforms.uSkyGain as { value: number }).value = gain;
     (mat.uniforms.uHaze as { value: number }).value = haze;
     (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
     (mat.uniforms.uStars as { value: number }).value = elDeg < -8 ? 1 : 0;
+    
+    // Night floor with city glow
+    const nightFloor = NIGHT_SKY.map((v, i) => v * adapt * adapt);
+    const cityGlow = CITY_SKY.map((v, i) => v * adapt * adapt * (1 - day));
+    (mat.uniforms.uSkyFloor as { value: THREE.Color }).value.setRGB(nightFloor[0], nightFloor[1], nightFloor[2]);
+    (mat.uniforms.uCityGlow as { value: THREE.Color }).value.setRGB(cityGlow[0], cityGlow[1], cityGlow[2]);
+    
+    // Ground light
     const irr = state.skyIrradiance;
-    (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(irr[0], irr[1], irr[2]);
-    const day = Math.min(1, Math.max(0, (elDeg + 8) / 20));
-    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setScalar(40 * day);
+    const groundLight = NIGHT_BOTTOM.map((v, i) => Math.max(v * adapt * adapt, irr[i] * adapt));
+    (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(groundLight[0], groundLight[1], groundLight[2]);
+    
+    // Sun disc
+    const SUN_DISC = 40;
+    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setScalar(SUN_DISC * day * adapt);
   }
 
   /** Environmental wind in m/s. East is +X, north is +Y in the sim and −Z in the view. */
