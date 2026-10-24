@@ -18,9 +18,10 @@ import {
 import { computeSkyLighting } from "./clouds/sunLighting";
 import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SKY_ROWS } from "./sky";
 import { skyFragment, skyVertex } from "./clouds/skyShader";
-import { course, brightness, type LightningCourse } from "./lightning";
+import { course, brightness, type LightningCourse, LightningView, type Flash } from "./lightning";
 import { SpriteView } from "./sprites";
 import { PrecipitationParticles } from "./precipitation";
+import { LightVolume, FlashVolume } from "./light";
 
 const blitVert = /* glsl */ `
 out vec2 vUv;
@@ -181,6 +182,14 @@ export class CloudRainRenderer {
   private lastVolumeMs = 0;
   private clearScratch = new THREE.Color();
   private spriteView: SpriteView | null = null;
+  /** GPU light volume for cloud lighting (MeteoLAB). */
+  private lightVolume: LightVolume | null = null;
+  /** GPU flash volume for lightning lighting (MeteoLAB). */
+  private flashVolume: FlashVolume | null = null;
+  /** Shader-based lightning view (MeteoLAB). */
+  private lightningView: LightningView | null = null;
+  /** Shared uniforms for MeteoLAB shaders. */
+  private sharedUniforms: Record<string, THREE.IUniform> = {};
   /** Renderer-side rain/snow particles spawned from the packed volume. */
   private precipitation: PrecipitationParticles;
   private timeSeconds = 0;
@@ -377,7 +386,9 @@ export class CloudRainRenderer {
     this.resolveMesh.frustumCulled = false;
     this.resolveScene.add(this.resolveMesh);
 
-    this.spriteView = new SpriteView(this.scene);
+    // SpriteView now uses shader-based rendering, needs shared uniforms and density texture
+    // Will initialize after cloud material is created
+    this.spriteView = null;
     this.precipitation = new PrecipitationParticles();
     this.scene.add(this.precipitation.points);
 
@@ -870,6 +881,31 @@ export class CloudRainRenderer {
     this.applyTune();
     this.historyValid = false;
 
+    // Initialize MeteoLAB components
+    this.sharedUniforms = {
+      uBoxMin: { value: boxMin },
+      uBoxMax: { value: boxMax },
+      uExtinction: { value: 0.035 },
+      uSunDir: { value: this.sunDir.clone() },
+    };
+
+    // Initialize LightVolume for GPU-based cloud lighting
+    this.lightVolume = new LightVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
+
+    // Initialize FlashVolume for GPU-based lightning lighting
+    this.flashVolume = new FlashVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
+
+    // Initialize SpriteView with shader-based rendering
+    this.spriteView = new SpriteView(this.sharedUniforms, this.volumeTex);
+    this.scene.add(this.spriteView.mesh);
+
+    // Initialize LightningView (will need toWorld and channelShape functions)
+    // For now, use placeholder functions - these need to be connected to the actual simulation
+    const toWorld = (x: number, y: number, z: number) => [x * sx / disp.nx - sx/2, y * height / disp.nz + this.groundY, z * sz / disp.ny - sz/2] as const;
+    const channelShape = (flash: Flash) => new Float64Array(flash.nodes.length * 3).fill(0); // Placeholder
+    this.lightningView = new LightningView(toWorld, channelShape, this.sharedUniforms, this.volumeTex);
+    this.scene.add(this.lightningView.mesh);
+
     // Radar composite plane (just above ground)
     this.radarNx = grid.nx;
     this.radarNy = grid.ny;
@@ -1102,6 +1138,17 @@ export class CloudRainRenderer {
     this.invViewProj.copy(this.currViewProj).invert();
     this.precipitation.update(performance.now());
 
+    // Update MeteoLAB components
+    if (this.lightVolume) {
+      this.lightVolume.update(this.renderer, this.timeSeconds, this.sunDir);
+    }
+    if (this.flashVolume) {
+      // FlashVolume needs flash points - for now pass empty arrays
+      const emptyPoints: (Float32Array | null)[] = Array(8).fill(null);
+      const emptyChanged = Array(8).fill(false);
+      this.flashVolume.update(this.renderer, emptyPoints, emptyChanged);
+    }
+
     if (this.cloudMat) {
       this.cloudMat.update(performance.now() * 0.001);
       if (this.lookdev) {
@@ -1173,6 +1220,21 @@ export class CloudRainRenderer {
       this.renderer.autoClear = false;
       this.renderer.render(this.boltScene, this.camera);
     }
+
+    // Render MeteoLAB components
+    if (this.lightningView) {
+      this.renderer.autoClear = false;
+      this.renderer.render(this.lightningView.mesh, this.camera);
+    }
+    if (this.spriteView) {
+      const dark = Math.max(0, 1 - this.sunFrac);
+      this.spriteView.update(this.timeSeconds, dark, this.cloudsOn);
+      if (this.spriteView.mesh.visible) {
+        this.renderer.autoClear = false;
+        this.renderer.render(this.spriteView.mesh, this.camera);
+      }
+    }
+
     this.renderer.autoClear = true;
     this.prevViewProj.copy(this.currViewProj);
   }
@@ -1236,7 +1298,17 @@ export class CloudRainRenderer {
     // Positive CG ~10% of the time; extent in km (domain scale, rough).
     const charge = Math.random() < 0.1 ? 1 : -1;
     const extentKm = 6;
-    const c = course(kind, charge, extentKm, rng);
+    // Create a Flash object for the new course function
+    const flash: Flash = {
+      kind: kind === 'cg' ? 'CG' : 'IC',
+      charge,
+      time: this.timeSeconds * 1000,
+      start: Math.floor(this.timeSeconds * 10),
+      nodes: [0, 1, 2, 3, 4], // Simplified node structure for compatibility
+      parent: [-1, 0, 1, 2, 3],
+      ground: 4,
+    };
+    const c = course(flash, rng, extentKm);
     const life = c.end / 1000;
     const isCg = kind === "cg";
     this.liveBolts.unshift({
@@ -1257,6 +1329,7 @@ export class CloudRainRenderer {
         hit.y,
         hit.z,
         this.timeSeconds + c.strokes[0].at / 1000,
+        0.9, // brightness
       );
     }
   }
@@ -1482,6 +1555,27 @@ export class CloudRainRenderer {
     this.disposeWinds();
     this.precipitation.dispose();
     this.scene.remove(this.precipitation.points);
+
+    // Dispose MeteoLAB components
+    if (this.lightVolume) {
+      this.lightVolume.dispose();
+      this.lightVolume = null;
+    }
+    if (this.flashVolume) {
+      this.flashVolume.dispose();
+      this.flashVolume = null;
+    }
+    if (this.lightningView) {
+      this.lightningView.dispose();
+      this.scene.remove(this.lightningView.mesh);
+      this.lightningView = null;
+    }
+    if (this.spriteView) {
+      this.spriteView.dispose();
+      this.scene.remove(this.spriteView.mesh);
+      this.spriteView = null;
+    }
+
     if (this.volumeMesh) {
       this.cloudScene.remove(this.volumeMesh);
       this.volumeMesh.geometry.dispose();
