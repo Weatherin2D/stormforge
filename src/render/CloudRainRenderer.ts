@@ -219,7 +219,7 @@ export class CloudRainRenderer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.setClearColor(0x9fb4c4, 1);
     const canvas = this.renderer.domElement;
     canvas.style.display = "block";
