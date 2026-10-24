@@ -323,7 +323,7 @@ export class CloudRainRenderer {
     });
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), skyMat);
     this.sky.frustumCulled = false;
-    this.sky.renderOrder = -10;
+    this.sky.renderOrder = -1;
     this.scene.add(this.sky);
 
     // Initial sky for the default sun direction.
@@ -1125,7 +1125,7 @@ export class CloudRainRenderer {
     this.syncSky();
 
     this.sky.position.copy(this.camera.position);
-    this.sky.scale.setScalar(this.camera.far * 0.9);
+    this.sky.scale.setScalar(this.camera.far);
     this.renderer.setRenderTarget(this.sceneTarget);
     this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
