@@ -382,7 +382,7 @@ vec3 sampleSigma(vec3 p, float detail) {
 // Hail-core extinction. A is packed separately so a dense core is not eroded like anvil ice.
 float hailSigma(vec3 p) {
   vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
-  return max(textureLod(uFields, uvw, 0.0).a, 0.0) * uFieldGain;
+  return max(textureLod(uFields, uvw, 0.0).a, 0.0) * uFieldGain.x;
 }
 
 // Optical depth from p toward the sun. Steps grow exponentially so the last sample is long
@@ -458,7 +458,7 @@ void main() {
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
     vec4 field = textureLod(uFields, uvw, 0.0);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
-    float hailHere = max(field.a * uFieldGain, 0.0);
+    float hailHere = max(field.a * uFieldGain.x, 0.0);
     if (probe.x + probe.y + probe.z + hailHere < 0.003) {
       t += dt * 2.0;
       continue;
