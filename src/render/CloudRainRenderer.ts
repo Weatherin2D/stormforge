@@ -168,6 +168,19 @@ export class CloudRainRenderer {
   private readonly fovWide = 80;
   private readonly fovTight = 18;
   private unbindLook: (() => void) | null = null;
+  /** WASD + arrow held state for walking/flying the view. */
+  private readonly moveKeys = {
+    forward: false,
+    back: false,
+    left: false,
+    right: false,
+  };
+  private moveLastMs = 0;
+  private readonly moveFwd = new THREE.Vector3();
+  private readonly moveRight = new THREE.Vector3();
+  /** Horizontal move speed, m/s. Shift triples it. */
+  private readonly walkSpeed = 55;
+  private moveFast = false;
   private domainBox: THREE.LineSegments;
   private windMesh: THREE.InstancedMesh | null = null;
   private windDummy = new THREE.Object3D();
@@ -668,6 +681,7 @@ if(abs(uSurface - 2.0) < 0.5){
   /**
    * Drag on the view to look. The cursor stays free so buttons and panels
    * still receive clicks. Scroll changes the field of view.
+   * WASD / arrow keys walk on the horizontal plane (Shift = faster).
    */
   private bindLook(canvas: HTMLCanvasElement): void {
     const down = (e: PointerEvent) => {
@@ -709,19 +723,109 @@ if(abs(uSurface - 2.0) < 0.5){
       );
       this.camera.updateProjectionMatrix();
     };
+    const typingTarget = (t: EventTarget | null): boolean => {
+      if (!(t instanceof HTMLElement)) return false;
+      const tag = t.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        t.isContentEditable
+      );
+    };
+    const setMoveKey = (code: string, downKey: boolean): boolean => {
+      switch (code) {
+        case "KeyW":
+        case "ArrowUp":
+          this.moveKeys.forward = downKey;
+          return true;
+        case "KeyS":
+        case "ArrowDown":
+          this.moveKeys.back = downKey;
+          return true;
+        case "KeyA":
+        case "ArrowLeft":
+          this.moveKeys.left = downKey;
+          return true;
+        case "KeyD":
+        case "ArrowRight":
+          this.moveKeys.right = downKey;
+          return true;
+        case "ShiftLeft":
+        case "ShiftRight":
+          this.moveFast = downKey;
+          return false;
+        default:
+          return false;
+      }
+    };
+    const keyDown = (e: KeyboardEvent) => {
+      if (typingTarget(e.target)) return;
+      if (setMoveKey(e.code, true)) e.preventDefault();
+    };
+    const keyUp = (e: KeyboardEvent) => {
+      setMoveKey(e.code, false);
+    };
+    const blur = () => {
+      this.moveKeys.forward = false;
+      this.moveKeys.back = false;
+      this.moveKeys.left = false;
+      this.moveKeys.right = false;
+      this.moveFast = false;
+    };
     canvas.style.cursor = "grab";
     canvas.addEventListener("pointerdown", down);
     canvas.addEventListener("pointermove", move);
     canvas.addEventListener("pointerup", up);
     canvas.addEventListener("pointercancel", up);
     canvas.addEventListener("wheel", wheel, { passive: false });
+    window.addEventListener("keydown", keyDown);
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", blur);
     this.unbindLook = () => {
       canvas.removeEventListener("pointerdown", down);
       canvas.removeEventListener("pointermove", move);
       canvas.removeEventListener("pointerup", up);
       canvas.removeEventListener("pointercancel", up);
       canvas.removeEventListener("wheel", wheel);
+      window.removeEventListener("keydown", keyDown);
+      window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("blur", blur);
     };
+  }
+
+  /** Apply WASD / arrow movement for this frame. */
+  private applyKeyboardMove(): void {
+    const now = performance.now();
+    const last = this.moveLastMs || now;
+    this.moveLastMs = now;
+    let dt = (now - last) / 1000;
+    if (!(dt > 0) || dt > 0.1) dt = 0.016;
+
+    const k = this.moveKeys;
+    let ax = 0;
+    let az = 0;
+    if (k.forward) az -= 1;
+    if (k.back) az += 1;
+    if (k.left) ax -= 1;
+    if (k.right) ax += 1;
+    if (ax === 0 && az === 0) return;
+
+    // Horizontal basis from yaw: look north (−Z) at yaw 0.
+    const sy = Math.sin(this.yaw);
+    const cy = Math.cos(this.yaw);
+    this.moveFwd.set(-sy, 0, -cy);
+    this.moveRight.set(cy, 0, -sy);
+    const len = Math.hypot(ax, az) || 1;
+    const speed = this.walkSpeed * (this.moveFast ? 3.2 : 1) * dt;
+    const dx = ((this.moveRight.x * ax + this.moveFwd.x * az) / len) * speed;
+    const dz = ((this.moveRight.z * ax + this.moveFwd.z * az) / len) * speed;
+
+    const halfX = this.spanX * 0.48;
+    const halfZ = this.spanZ * 0.48;
+    const p = this.camera.position;
+    p.x = Math.min(halfX, Math.max(-halfX, p.x + dx));
+    p.z = Math.min(halfZ, Math.max(-halfZ, p.z + dz));
   }
 
   setSunFrac(frac: number): void {
@@ -1655,6 +1759,7 @@ if(abs(uSurface - 2.0) < 0.5){
       return;
     }
 
+    this.applyKeyboardMove();
     this.camera.updateMatrixWorld();
     this.camera.updateProjectionMatrix();
     this.currViewProj.multiplyMatrices(
