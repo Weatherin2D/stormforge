@@ -5,9 +5,16 @@ export interface GridConfig {
   zTop: number; // meters (domain altitude)
   /**
    * Optional override for base horizontal cell size at reference resolution (64).
-   * Default 1000 m. Higher X/Y both grow the domain and shrink cells (more detail).
+   * Default 1000 m. Used only when xExtent/yExtent are omitted (legacy sandbox).
    */
   dxMeters?: number;
+  /**
+   * Explicit physical domain width/depth in metres. When set, dx = xExtent/nx
+   * (and likewise for Y) so resolution sliders change detail only and these
+   * control scale.
+   */
+  xExtent?: number;
+  yExtent?: number;
 }
 
 /** Reference grid count where dx ≈ base cell size. */
@@ -53,12 +60,25 @@ export class Grid3D {
     this.nz = Math.max(8, Math.floor(cfg.nz));
     this.zTop = Math.max(2000, cfg.zTop);
 
-    const base = Math.max(200, cfg.dxMeters ?? 1000);
-    // Higher X/Y → smaller cells (detail) and larger domain (distance)
-    this.dx = cellSizeForAxis(this.nx, base);
-    this.dy = cellSizeForAxis(this.ny, base);
-    this.xExtent = this.nx * this.dx;
-    this.yExtent = this.ny * this.dy;
+    if (
+      cfg.xExtent != null &&
+      cfg.yExtent != null &&
+      Number.isFinite(cfg.xExtent) &&
+      Number.isFinite(cfg.yExtent)
+    ) {
+      // Scale is explicit: resolution only changes cell size.
+      this.xExtent = Math.max(1000, cfg.xExtent);
+      this.yExtent = Math.max(1000, cfg.yExtent);
+      this.dx = this.xExtent / this.nx;
+      this.dy = this.yExtent / this.ny;
+    } else {
+      const base = Math.max(200, cfg.dxMeters ?? 1000);
+      // Legacy: higher X/Y → smaller cells and a somewhat larger domain.
+      this.dx = cellSizeForAxis(this.nx, base);
+      this.dy = cellSizeForAxis(this.ny, base);
+      this.xExtent = this.nx * this.dx;
+      this.yExtent = this.ny * this.dy;
+    }
     this.xyExtent = Math.max(this.xExtent, this.yExtent);
     // Z always refines with nz for fixed altitude
     this.dz = this.zTop / this.nz;
@@ -199,20 +219,42 @@ export interface DomainConfig {
   zTop: number;
 }
 
-/** Translate a DomainConfig into the legacy GridConfig (cell count driven). */
+/** Translate a DomainConfig into a GridConfig that preserves physical extent. */
 export function gridConfigFromDomain(domain: DomainConfig): GridConfig {
+  const nx = Math.max(8, Math.ceil(domain.extentX / Math.max(1e-3, domain.dx)));
+  const ny = Math.max(8, Math.ceil(domain.extentY / Math.max(1e-3, domain.dy)));
   return {
-    nx: Math.max(8, Math.ceil(domain.extentX / Math.max(1e-3, domain.dx))),
-    ny: Math.max(8, Math.ceil(domain.extentY / Math.max(1e-3, domain.dy))),
+    nx,
+    ny,
     nz: Math.max(8, Math.floor(domain.nz)),
     zTop: Math.max(2000, domain.zTop),
+    xExtent: domain.extentX,
+    yExtent: domain.extentY,
   };
 }
 
-/** Build a Grid3D from an extent + resolution request. The realized cell size
- *  follows Grid3D's cellSizeForAxis (clamped 250–2000 m), so extent = nx * dx. */
+/** Build a Grid3D from an extent + cell-size request (extent is the source of truth). */
 export function gridFromDomain(domain: DomainConfig): Grid3D {
   return new Grid3D(gridConfigFromDomain(domain));
+}
+
+/** Build a grid from cell counts and an explicit physical domain size (km→m upstream). */
+export function gridFromExtentAndResolution(
+  nx: number,
+  ny: number,
+  nz: number,
+  zTop: number,
+  extentX: number,
+  extentY: number,
+): Grid3D {
+  return new Grid3D({
+    nx,
+    ny,
+    nz,
+    zTop,
+    xExtent: extentX,
+    yExtent: extentY,
+  });
 }
 
 /** Report the realized extent/cell size of an existing grid as a DomainConfig

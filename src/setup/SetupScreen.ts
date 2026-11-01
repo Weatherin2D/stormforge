@@ -1,4 +1,8 @@
-import { Grid3D, GridConfig, perfWarning } from "../sim/Grid3D";
+import {
+  Grid3D,
+  gridFromExtentAndResolution,
+  perfWarning,
+} from "../sim/Grid3D";
 import {
   BATCH_MEMORY_CAP_BYTES,
   estimateBatchBytes,
@@ -11,7 +15,38 @@ import { SynopticEditor } from "./SynopticEditor";
 import { SynopticSetup } from "../sim/synoptic";
 
 export type RunMode = "live" | "batch";
-export type SimScale = "sandbox" | "continental" | "custom";
+export type SimScale = "sandbox" | "mesoscale" | "continental" | "custom";
+
+/** Preset physical domain sizes (km). Resolution (nx/ny) stays independent. */
+const SCALE_PRESETS: Record<
+  Exclude<SimScale, "custom">,
+  { extentKm: number; hydrostatic: boolean }
+> = {
+  sandbox: { extentKm: 64, hydrostatic: false },
+  mesoscale: { extentKm: 200, hydrostatic: false },
+  continental: { extentKm: 10000, hydrostatic: true },
+};
+
+/** Log-mapped extent slider: 0…1000 → 16…20000 km (fine control near sandbox sizes). */
+const EXTENT_KM_MIN = 16;
+const EXTENT_KM_MAX = 20000;
+const EXTENT_SLIDER_MAX = 1000;
+const EXTENT_LOG_SPAN = Math.log(EXTENT_KM_MAX / EXTENT_KM_MIN);
+
+function extentKmFromSlider(t: number): number {
+  const u = Math.min(EXTENT_SLIDER_MAX, Math.max(0, t)) / EXTENT_SLIDER_MAX;
+  const km = EXTENT_KM_MIN * Math.exp(EXTENT_LOG_SPAN * u);
+  if (km >= 1000) return Math.round(km / 50) * 50;
+  if (km >= 200) return Math.round(km / 10) * 10;
+  return Math.round(km);
+}
+
+function sliderFromExtentKm(km: number): number {
+  const clipped = Math.min(EXTENT_KM_MAX, Math.max(EXTENT_KM_MIN, km));
+  return Math.round(
+    (Math.log(clipped / EXTENT_KM_MIN) / EXTENT_LOG_SPAN) * EXTENT_SLIDER_MAX,
+  );
+}
 
 export interface SetupValues {
   name: string;
@@ -35,17 +70,17 @@ export interface SetupValues {
   sounding: SoundingLevel[];
   /** Fronts, highs, and lows drawn on the setup map. */
   synoptic: SynopticSetup;
-  /** Preset domain scale. "continental" derives nx/ny from extent + resolution. */
+  /** Preset domain scale label (sandbox / mesoscale / continental / custom). */
   scale?: SimScale;
-  /** Physical extent X (km) — source of truth when scale is continental/custom. */
+  /** Physical extent X (km) — source of truth for horizontal scale. */
   extentXKm?: number;
   /** Physical extent Y (km). */
   extentYKm?: number;
-  /** Target cell size X (km). */
+  /** Derived cell size X (km) = extentX / nx (kept for compatibility). */
   dxKm?: number;
-  /** Target cell size Y (km). */
+  /** Derived cell size Y (km) = extentY / ny. */
   dyKm?: number;
-  /** Use hydrostatic balance (recommended for continental dx > ~5 km). */
+  /** Use hydrostatic balance (recommended when Δx > ~5 km). */
   hydrostatic?: boolean;
 }
 
@@ -99,39 +134,30 @@ export class SetupScreen {
               <p class="setup-group-title">Domain</p>
               <div class="field-row">
                 <label>
-                  Scale
+                  Scale preset
                   <select id="sf-scale">
-                    <option value="sandbox">Sandbox</option>
+                    <option value="sandbox">Sandbox (64 km)</option>
+                    <option value="mesoscale">Mesoscale (200 km)</option>
                     <option value="continental">Continental (10,000 km)</option>
-                    <option value="custom">Custom extent + resolution</option>
+                    <option value="custom">Custom</option>
                   </select>
                 </label>
               </div>
-              <div id="sf-continental-fields" class="continental-fields hidden">
-                <div class="field-row">
-                  <label>
-                    Extent X (km)
-                    <input id="sf-extentx" type="number" min="100" max="50000" step="100" value="10000" />
-                  </label>
-                  <label>
-                    Extent Y (km)
-                    <input id="sf-extenty" type="number" min="100" max="50000" step="100" value="10000" />
-                  </label>
-                  <label>
-                    Resolution X (km)
-                    <input id="sf-dxkm" type="number" min="0.1" max="200" step="0.1" value="20" />
-                  </label>
-                  <label>
-                    Resolution Y (km)
-                    <input id="sf-dykm" type="number" min="0.1" max="200" step="0.1" value="20" />
-                  </label>
-                </div>
-                <label>
-                  Hydrostatic balance (recommended for dx &gt; 5 km)
-                  <input id="sf-hydrostatic" type="checkbox" />
-                </label>
-                <p class="hint" id="sf-continental-hint">Derives nx/ny from extent ÷ resolution.</p>
-              </div>
+              <label>
+                Domain size X (km)
+                <input id="sf-extentx" type="range" min="0" max="1000" step="1" value="194" />
+                <span class="hint"><span id="sf-extentx-val">64</span> km east–west</span>
+              </label>
+              <label>
+                Domain size Y (km)
+                <input id="sf-extenty" type="range" min="0" max="1000" step="1" value="194" />
+                <span class="hint"><span id="sf-extenty-val">64</span> km south–north</span>
+              </label>
+              <label class="check-inline">
+                <input id="sf-lock-square" type="checkbox" checked />
+                Lock square domain (X = Y)
+              </label>
+              <p class="hint" id="sf-scale-hint">Scale sets physical size. Resolution below sets how many cells fill it.</p>
 
               <div id="sf-batch-fields" class="batch-fields hidden">
                 <div class="field-row">
@@ -154,18 +180,18 @@ export class SetupScreen {
               <div class="field-row">
                 <label>
                   Resolution X
-                  <input id="sf-nx" type="number" min="16" max="256" step="8" value="64" />
+                  <input id="sf-nx" type="number" min="16" max="512" step="8" value="64" />
                 </label>
                 <label>
                   Resolution Y
-                  <input id="sf-ny" type="number" min="16" max="256" step="8" value="64" />
+                  <input id="sf-ny" type="number" min="16" max="512" step="8" value="64" />
                 </label>
                 <label>
                   Resolution Z
                   <input id="sf-nz" type="number" min="16" max="96" step="4" value="40" />
                 </label>
               </div>
-              <p class="hint" id="sf-domain-hint">Domain ~64×64×12 km</p>
+              <p class="hint" id="sf-domain-hint">Domain ~64×64×12 km · Δx≈1 km</p>
               <label>
                 Domain altitude (m)
                 <input id="sf-ztop" type="range" min="5000" max="24000" step="500" value="12000" />
@@ -175,6 +201,10 @@ export class SetupScreen {
                 Warm bubble (K)
                 <input id="sf-bubble" type="range" min="0" max="8" step="0.25" value="3" />
                 <span class="hint"><span id="sf-bubble-val">3.0</span> K at center</span>
+              </label>
+              <label class="check-inline">
+                <input id="sf-hydrostatic" type="checkbox" />
+                Hydrostatic balance (recommended when Δx &gt; 5 km)
               </label>
             </div>
 
@@ -243,7 +273,7 @@ export class SetupScreen {
     for (const id of [
       "sf-nx", "sf-ny", "sf-nz", "sf-ztop", "sf-bubble",
       "sf-lat", "sf-month", "sf-hour", "sf-duration", "sf-outint",
-      "sf-scale", "sf-extentx", "sf-extenty", "sf-dxkm", "sf-dykm",
+      "sf-scale", "sf-extentx", "sf-extenty",
     ]) {
       this.root.querySelector("#" + id)?.addEventListener("input", () => {
         if (id === "sf-ztop") {
@@ -277,11 +307,44 @@ export class SetupScreen {
             fmtHour(v);
         }
         if (id === "sf-scale") this.syncScaleUi();
+        if (id === "sf-extentx" || id === "sf-extenty") {
+          const lock = (
+            this.root.querySelector("#sf-lock-square") as HTMLInputElement
+          ).checked;
+          if (lock) {
+            const src = this.root.querySelector(
+              "#" + id,
+            ) as HTMLInputElement;
+            const other = this.root.querySelector(
+              id === "sf-extentx" ? "#sf-extenty" : "#sf-extentx",
+            ) as HTMLInputElement;
+            other.value = src.value;
+          }
+          this.syncExtentLabels();
+          this.markScaleCustom();
+          this.suggestHydrostatic();
+        }
         bind();
       });
     }
 
+    this.root.querySelector("#sf-lock-square")?.addEventListener("change", () => {
+      const lock = (
+        this.root.querySelector("#sf-lock-square") as HTMLInputElement
+      ).checked;
+      if (lock) {
+        const x = (this.root.querySelector("#sf-extentx") as HTMLInputElement)
+          .value;
+        (this.root.querySelector("#sf-extenty") as HTMLInputElement).value = x;
+        this.syncExtentLabels();
+        bind();
+      }
+    });
+
     this.root.querySelector("#sf-hydrostatic")?.addEventListener("change", () => {
+      (
+        this.root.querySelector("#sf-hydrostatic") as HTMLInputElement
+      ).dataset.userTouched = "1";
       bind();
     });
 
@@ -291,12 +354,7 @@ export class SetupScreen {
 
     this.root.querySelector("#sf-start")?.addEventListener("click", () => {
       const values = this.readValues();
-      const grid = new Grid3D({
-        nx: values.nx,
-        ny: values.ny,
-        nz: values.nz,
-        zTop: values.zTop,
-      });
+      const grid = this.gridFromValues(values);
       const stateBytes = grid.estimateBytes() * 4;
       const maxStateBytes = 2 * 1024 * 1024 * 1024;
       if (stateBytes > maxStateBytes) {
@@ -328,6 +386,7 @@ export class SetupScreen {
 
     this.syncRunModeUi();
     this.syncScaleUi();
+    this.syncExtentLabels();
     this.updateWarn();
 
     requestAnimationFrame(() => {
@@ -358,44 +417,37 @@ export class SetupScreen {
     ) as HTMLInputElement | null;
     const runMode = (modeRadio?.value === "batch" ? "batch" : "live") as RunMode;
     this.sounding = this.creator.getLevels();
-    const scale = (this.root.querySelector(
+    const scaleRaw = (this.root.querySelector(
       "#sf-scale",
-    ) as HTMLSelectElement).value as SimScale;
-    const extentXKm = Number(
-      (this.root.querySelector("#sf-extentx") as HTMLInputElement).value,
+    ) as HTMLSelectElement).value;
+    const scale = (
+      scaleRaw === "mesoscale" ||
+      scaleRaw === "continental" ||
+      scaleRaw === "custom"
+        ? scaleRaw
+        : "sandbox"
+    ) as SimScale;
+    const extentXKm = this.readExtentKm("sf-extentx");
+    const extentYKm = this.readExtentKm("sf-extenty");
+    const nx = Math.max(
+      8,
+      Math.min(
+        512,
+        Number((this.root.querySelector("#sf-nx") as HTMLInputElement).value),
+      ),
     );
-    const extentYKm = Number(
-      (this.root.querySelector("#sf-extenty") as HTMLInputElement).value,
+    const ny = Math.max(
+      8,
+      Math.min(
+        512,
+        Number((this.root.querySelector("#sf-ny") as HTMLInputElement).value),
+      ),
     );
-    const dxKm = Number(
-      (this.root.querySelector("#sf-dxkm") as HTMLInputElement).value,
-    );
-    const dyKm = Number(
-      (this.root.querySelector("#sf-dykm") as HTMLInputElement).value,
-    );
+    const dxKm = extentXKm / nx;
+    const dyKm = extentYKm / ny;
     const hydrostatic = (
       this.root.querySelector("#sf-hydrostatic") as HTMLInputElement
     ).checked;
-
-    let nx = Number((this.root.querySelector("#sf-nx") as HTMLInputElement).value);
-    let ny = Number((this.root.querySelector("#sf-ny") as HTMLInputElement).value);
-    if (scale === "continental" || scale === "custom") {
-      const maxCellsPerAxis = 2048;
-      nx = Math.max(
-        8,
-        Math.min(
-          maxCellsPerAxis,
-          Math.ceil((extentXKm * 1000) / Math.max(0.1, dxKm * 1000)),
-        ),
-      );
-      ny = Math.max(
-        8,
-        Math.min(
-          maxCellsPerAxis,
-          Math.ceil((extentYKm * 1000) / Math.max(0.1, dyKm * 1000)),
-        ),
-      );
-    }
 
     return {
       name:
@@ -437,6 +489,17 @@ export class SetupScreen {
     };
   }
 
+  private gridFromValues(v: SetupValues): Grid3D {
+    return gridFromExtentAndResolution(
+      v.nx,
+      v.ny,
+      v.nz,
+      v.zTop,
+      (v.extentXKm ?? 64) * 1000,
+      (v.extentYKm ?? 64) * 1000,
+    );
+  }
+
   private readSynoptic(): SynopticSetup {
     const synoptic = this.fronts.getSetup();
     synoptic.latitudeDeg = Number(
@@ -466,54 +529,86 @@ export class SetupScreen {
     this.updateWarn();
   }
 
+  private readExtentKm(id: string): number {
+    const el = this.root.querySelector("#" + id) as HTMLInputElement;
+    return extentKmFromSlider(Number(el.value));
+  }
+
+  private writeExtentKm(id: string, km: number): void {
+    const el = this.root.querySelector("#" + id) as HTMLInputElement;
+    el.value = String(sliderFromExtentKm(km));
+    const labelId = id === "sf-extentx" ? "#sf-extentx-val" : "#sf-extenty-val";
+    (this.root.querySelector(labelId) as HTMLElement).textContent = String(
+      extentKmFromSlider(Number(el.value)),
+    );
+  }
+
+  private syncExtentLabels(): void {
+    (this.root.querySelector("#sf-extentx-val") as HTMLElement).textContent =
+      String(this.readExtentKm("sf-extentx"));
+    (this.root.querySelector("#sf-extenty-val") as HTMLElement).textContent =
+      String(this.readExtentKm("sf-extenty"));
+  }
+
   private syncScaleUi(): void {
     const scale = (this.root.querySelector(
       "#sf-scale",
-    ) as HTMLSelectElement).value;
-    const continental = scale === "continental" || scale === "custom";
-    this.root
-      .querySelector("#sf-continental-fields")
-      ?.classList.toggle("hidden", !continental);
-    const nxIn = this.root.querySelector("#sf-nx") as HTMLInputElement | null;
-    const nyIn = this.root.querySelector("#sf-ny") as HTMLInputElement | null;
-    if (scale === "continental") {
-      (this.root.querySelector("#sf-extentx") as HTMLInputElement).value = "10000";
-      (this.root.querySelector("#sf-extenty") as HTMLInputElement).value = "10000";
-      (this.root.querySelector("#sf-dxkm") as HTMLInputElement).value = "20";
-      (this.root.querySelector("#sf-dykm") as HTMLInputElement).value = "20";
-      (this.root.querySelector("#sf-hydrostatic") as HTMLInputElement).checked =
+    ) as HTMLSelectElement).value as SimScale;
+    const preset = scale !== "custom" ? SCALE_PRESETS[scale] : null;
+    if (preset) {
+      this.writeExtentKm("sf-extentx", preset.extentKm);
+      this.writeExtentKm("sf-extenty", preset.extentKm);
+      (this.root.querySelector("#sf-lock-square") as HTMLInputElement).checked =
         true;
-      if (nxIn) nxIn.disabled = true;
-      if (nyIn) nyIn.disabled = true;
-    } else if (scale === "custom") {
-      if (nxIn) nxIn.disabled = true;
-      if (nyIn) nyIn.disabled = true;
-    } else {
-      if (nxIn) nxIn.disabled = false;
-      if (nyIn) nyIn.disabled = false;
+      const hydro = this.root.querySelector(
+        "#sf-hydrostatic",
+      ) as HTMLInputElement;
+      hydro.checked = preset.hydrostatic;
+      delete hydro.dataset.userTouched;
     }
+    this.suggestHydrostatic();
     this.updateWarn();
+  }
+
+  /** When the user drags extent away from a preset, flip the select to Custom. */
+  private markScaleCustom(): void {
+    const sel = this.root.querySelector("#sf-scale") as HTMLSelectElement;
+    const scale = sel.value as SimScale;
+    if (scale === "custom") return;
+    const preset = SCALE_PRESETS[scale];
+    const x = this.readExtentKm("sf-extentx");
+    const y = this.readExtentKm("sf-extenty");
+    if (x !== preset.extentKm || y !== preset.extentKm) sel.value = "custom";
+  }
+
+  private suggestHydrostatic(): void {
+    const v = this.readValues();
+    const dxKm = (v.extentXKm ?? 64) / v.nx;
+    const dyKm = (v.extentYKm ?? 64) / v.ny;
+    const box = this.root.querySelector(
+      "#sf-hydrostatic",
+    ) as HTMLInputElement | null;
+    if (!box || box.dataset.userTouched === "1") return;
+    box.checked = Math.max(dxKm, dyKm) > 5;
   }
 
   private updateWarn(): void {
     const v = this.readValues();
-    const cfg: GridConfig = {
-      nx: v.nx,
-      ny: v.ny,
-      nz: v.nz,
-      zTop: v.zTop,
-    };
-    const grid = new Grid3D(cfg);
+    const grid = this.gridFromValues(v);
     const hint = this.root.querySelector("#sf-domain-hint") as HTMLElement | null;
     if (hint) {
       const xKm = (grid.xExtent / 1000).toFixed(0);
       const yKm = (grid.yExtent / 1000).toFixed(0);
       const zKm = (grid.zTop / 1000).toFixed(1);
-      const dx = Math.round(grid.dx);
-      const dy = Math.round(grid.dy);
+      const dx = grid.dx >= 1000
+        ? `${(grid.dx / 1000).toFixed(grid.dx >= 10000 ? 0 : 1)} km`
+        : `${Math.round(grid.dx)} m`;
+      const dy = grid.dy >= 1000
+        ? `${(grid.dy / 1000).toFixed(grid.dy >= 10000 ? 0 : 1)} km`
+        : `${Math.round(grid.dy)} m`;
       const dz = Math.round(grid.dz);
       hint.textContent =
-        `Domain ~${xKm}×${yKm}×${zKm} km · Δx≈${dx} m · Δy≈${dy} m · Δz≈${dz} m · ${grid.cellCount().toLocaleString()} cells`;
+        `Domain ${xKm}×${yKm}×${zKm} km · Δx≈${dx} · Δy≈${dy} · Δz≈${dz} m · ${grid.cellCount().toLocaleString()} cells`;
     }
 
     const batchHint = this.root.querySelector(

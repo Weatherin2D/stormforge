@@ -1,11 +1,10 @@
-﻿import { SetupScreen, SetupValues } from "./setup/SetupScreen";
+import { SetupScreen, SetupValues } from "./setup/SetupScreen";
 import { SynopticSetup, defaultSynoptic, cloneSynoptic } from "./sim/synoptic";
 import type { DrawnFront, MapPoint } from "./sim/synoptic";
 import {
   copyFullVolumeToDisplay,
   Grid3D,
-  gridFromDomain,
-  type DomainConfig,
+  gridFromExtentAndResolution,
 } from "./sim/Grid3D";
 import { FluidSolver } from "./sim/FluidSolver";
 import type { LightningKind } from "./sim/FluidSolver";
@@ -142,7 +141,7 @@ export class App {
               <span class="brand">Stormforge</span>
               <button type="button" id="btn-sim-menu-close">Close</button>
             </div>
-            <span class="stats" id="sim-stats">—</span>
+            <span class="stats" id="sim-stats">�</span>
 
             <details class="menu-section" open>
               <summary>Sim</summary>
@@ -155,11 +154,11 @@ export class App {
                   Simulation speed
                   <select id="sim-speed">
                     <option value="1">Realtime</option>
-                    <option value="5">5×</option>
-                    <option value="15">15×</option>
-                    <option value="40" selected>40×</option>
-                    <option value="75">75×</option>
-                    <option value="100">100×</option>
+                    <option value="5">5�</option>
+                    <option value="15">15�</option>
+                    <option value="40" selected>40�</option>
+                    <option value="75">75�</option>
+                    <option value="100">100�</option>
                   </select>
                 </label>
                 <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
@@ -183,7 +182,7 @@ export class App {
                   <select id="sel-field">
                     <option value="off" selected>Off</option>
                     <option value="updraft">Updraft</option>
-                    <option value="theta">θ′</option>
+                    <option value="theta">?'</option>
                     <option value="moisture">RH</option>
                     <option value="vorticity">Vorticity</option>
                     <option value="coldpool">Cold pool 3D</option>
@@ -253,7 +252,7 @@ export class App {
             <details class="menu-section">
               <summary>Sun</summary>
               <div class="menu-section-body sun-controls">
-                <span id="sun-clock" class="sun-clock">12:00 · day</span>
+                <span id="sun-clock" class="sun-clock">12:00 � day</span>
                 <div id="sun-panel" class="sun-panel">
                   <label>
                     Hour
@@ -263,7 +262,7 @@ export class App {
                   <label>
                     Latitude
                     <input id="live-lat" type="range" min="-60" max="60" step="1" value="35" />
-                    <span id="live-lat-val">35°</span>
+                    <span id="live-lat-val">35�</span>
                   </label>
                   <label>
                     Month
@@ -284,8 +283,8 @@ export class App {
             </details>
           </div>
           <div class="viewport-hint" id="viewport-hint">
-            <span id="look-hint">Drag to look · scroll to zoom</span>
-            <span id="player-where">0.0 km E · 0.0 km N · 2 m</span>
+            <span id="look-hint">Drag to look � scroll to zoom</span>
+            <span id="player-where">0.0 km E � 0.0 km N � 2 m</span>
           </div>
           <div class="crosshair" id="view-crosshair" aria-hidden="true"></div>
           <div id="teleport-panel" class="teleport-panel hidden">
@@ -298,7 +297,7 @@ export class App {
                 <input id="teleport-alt" type="range" min="2" max="12000" step="10" value="2" />
                 <span id="teleport-alt-val">2 m</span>
               </label>
-              <p class="hint" id="teleport-where">Center · 2 m</p>
+              <p class="hint" id="teleport-where">Center � 2 m</p>
             </div>
           </div>
           <div id="radar-legend" class="radar-legend hidden" aria-hidden="true">
@@ -309,11 +308,11 @@ export class App {
           <div id="batch-overlay" class="batch-overlay hidden" aria-live="polite">
             <div class="batch-overlay-card">
               <h3>Batch run</h3>
-              <p id="batch-status">Preparing…</p>
+              <p id="batch-status">Preparing�</p>
               <div class="batch-progress-track">
                 <div id="batch-progress-bar" class="batch-progress-bar"></div>
               </div>
-              <p id="batch-progress-meta" class="hint">—</p>
+              <p id="batch-progress-meta" class="hint">�</p>
               <button type="button" id="btn-batch-cancel">Cancel</button>
             </div>
           </div>
@@ -321,10 +320,10 @@ export class App {
             <button type="button" id="btn-playback-play">Play</button>
             <input id="playback-scrub" type="range" min="0" max="0" step="1" value="0" />
             <select id="playback-speed" title="Playback speed">
-              <option value="0.5">0.5×</option>
-              <option value="1" selected>1×</option>
-              <option value="2">2×</option>
-              <option value="4">4×</option>
+              <option value="0.5">0.5�</option>
+              <option value="1" selected>1�</option>
+              <option value="2">2�</option>
+              <option value="4">4�</option>
             </select>
             <span id="playback-meta" class="playback-meta">frame 0/0</span>
           </div>
@@ -332,10 +331,10 @@ export class App {
         <aside class="side-panel sounding-drawer hidden" id="sounding-drawer">
           <div class="side-panel-head sounding-drawer-head">
             <h2 id="panel-title">Sounding &amp; fronts</h2>
-            <button id="btn-hide-panel" class="panel-close" title="Close">✕</button>
+            <button id="btn-hide-panel" class="panel-close" title="Close">?</button>
           </div>
           <div class="sounding-drawer-body">
-            <p class="panel-desc" id="panel-desc">Edit the sounding above, fronts below — apply to push into the live run.</p>
+            <p class="panel-desc" id="panel-desc">Edit the sounding above, fronts below � apply to push into the live run.</p>
             <div id="creator-host"></div>
             <div class="sounding-drawer-actions panel-actions">
               <button id="btn-apply" class="primary">Apply sounding</button>
@@ -423,7 +422,7 @@ export class App {
     const status = this.simScreen.querySelector("#fronts-status") as HTMLElement | null;
     if (status) {
       const fronts = merged.fronts.filter((f) => f.enabled).length;
-      status.textContent = `Applied · ${fronts} front${fronts === 1 ? "" : "s"} active`;
+      status.textContent = `Applied � ${fronts} front${fronts === 1 ? "" : "s"} active`;
     }
   }
 
@@ -450,7 +449,7 @@ export class App {
   /** Apply the edited pattern a moment after the user stops changing it. */
   private scheduleFrontsApply(setup: SynopticSetup): void {
     const status = this.simScreen.querySelector("#fronts-status") as HTMLElement | null;
-    if (status) status.textContent = "Pending…";
+    if (status) status.textContent = "Pending�";
     if (this.frontsApplyTimer) window.clearTimeout(this.frontsApplyTimer);
     this.frontsApplyTimer = window.setTimeout(() => {
       this.frontsApplyTimer = 0;
@@ -477,7 +476,7 @@ export class App {
       btn.textContent = "Pause";
       btn.classList.remove("active");
       btn.disabled = true;
-      btn.title = "Batch integrating…";
+      btn.title = "Batch integrating�";
     } else {
       btn.disabled = false;
       btn.textContent = this.paused ? "Resume" : "Pause";
@@ -521,7 +520,7 @@ export class App {
       }
     }
     this.radar2d?.setRecordedOnly(review);
-    // Winds need live fields — not stored in batch frames
+    // Winds need live fields � not stored in batch frames
     if (review && this.showSurfaceWinds) {
       this.showSurfaceWinds = false;
       this.renderer?.setWindsVisible(false);
@@ -549,11 +548,11 @@ export class App {
     const hint = this.simScreen.querySelector("#look-hint") as HTMLElement | null;
     if (hint) {
       if (review) {
-        hint.textContent = "Scrub the timeline · open Menu for clouds and maps";
+        hint.textContent = "Scrub the timeline � open Menu for clouds and maps";
       } else if (batching) {
-        hint.textContent = "Integrating batch run…";
+        hint.textContent = "Integrating batch run�";
       } else {
-        hint.textContent = "Drag to look · scroll to zoom";
+        hint.textContent = "Drag to look � scroll to zoom";
       }
     }
     this.syncPauseButton();
@@ -663,7 +662,7 @@ export class App {
         const status = this.simScreen.querySelector(
           "#batch-status",
         ) as HTMLElement | null;
-        if (status) status.textContent = "Cancelling…";
+        if (status) status.textContent = "Cancelling�";
         return;
       }
       this.returnToMenu();
@@ -849,7 +848,7 @@ export class App {
     const liveMonth = q("#live-month") as HTMLInputElement;
     const liveDaylen = q("#live-daylen") as HTMLInputElement;
 
-    /** Map wall-clock day length (minutes) → diurnalSpeed. */
+    /** Map wall-clock day length (minutes) ? diurnalSpeed. */
     const speedFromDayLen = (minutes: number) =>
       Math.max(2, Math.round(45 / Math.max(1, minutes)));
 
@@ -920,12 +919,12 @@ export class App {
       }
     });
 
-    // ── Save ──────────────────────────────────────────────────────────────────
+    // -- Save ------------------------------------------------------------------
     q("#btn-save").addEventListener("click", () => {
       this.saveToDisk();
     });
 
-    // ── Load ─────────────────────────────────────────────────────────────────
+    // -- Load -----------------------------------------------------------------
     const loadFileInput = this.simScreen.querySelector(
       "#load-file",
     ) as HTMLInputElement;
@@ -1033,7 +1032,7 @@ export class App {
     const north = p.northM / 1000;
     const fmt = (km: number, pos: string, neg: string) =>
       `${Math.abs(km).toFixed(1)} km ${km >= 0 ? pos : neg}`;
-    const place = `${fmt(east, "E", "W")} · ${fmt(north, "N", "S")} · ${Math.round(p.altitudeM)} m`;
+    const place = `${fmt(east, "E", "W")} � ${fmt(north, "N", "S")} � ${Math.round(p.altitudeM)} m`;
     const where = this.simScreen.querySelector("#player-where");
     if (where) where.textContent = place;
     const spot = this.simScreen.querySelector("#teleport-where");
@@ -1059,7 +1058,7 @@ export class App {
       this.solver.fields.v0[anvilK],
     );
     const clockEl = this.simScreen.querySelector("#sun-clock") as HTMLElement;
-    clockEl.textContent = `${st.clock} · ${st.label}`;
+    clockEl.textContent = `${st.clock} � ${st.label}`;
     clockEl.classList.toggle("night", !st.isDay);
 
     if (fromSolver && !this.scrubbingSolar) {
@@ -1080,7 +1079,7 @@ export class App {
       ).textContent = formatSolarClock(rad.solarHour);
       (
         this.simScreen.querySelector("#live-lat-val") as HTMLElement
-      ).textContent = `${Math.round(rad.latitudeDeg)}°`;
+      ).textContent = `${Math.round(rad.latitudeDeg)}�`;
       (
         this.simScreen.querySelector("#live-month-val") as HTMLElement
       ).textContent = MONTH_NAMES[rad.month - 1] ?? String(rad.month);
@@ -1090,7 +1089,7 @@ export class App {
       ).textContent = formatSolarClock(rad.solarHour);
       (
         this.simScreen.querySelector("#live-lat-val") as HTMLElement
-      ).textContent = `${Math.round(rad.latitudeDeg)}°`;
+      ).textContent = `${Math.round(rad.latitudeDeg)}�`;
       (
         this.simScreen.querySelector("#live-month-val") as HTMLElement
       ).textContent = MONTH_NAMES[rad.month - 1] ?? String(rad.month);
@@ -1106,26 +1105,14 @@ export class App {
     this.batchCancel = false;
     document.title = `Stormforge — ${this.runName}`;
 
-    let grid: Grid3D;
-    const scale = values.scale ?? "sandbox";
-    if (scale === "continental" || scale === "custom") {
-      const domain: DomainConfig = {
-        extentX: (values.extentXKm ?? 10000) * 1000,
-        extentY: (values.extentYKm ?? 10000) * 1000,
-        dx: (values.dxKm ?? 20) * 1000,
-        dy: (values.dyKm ?? 20) * 1000,
-        nz: values.nz,
-        zTop: values.zTop,
-      };
-      grid = gridFromDomain(domain);
-    } else {
-      grid = new Grid3D({
-        nx: values.nx,
-        ny: values.ny,
-        nz: values.nz,
-        zTop: values.zTop,
-      });
-    }
+    const grid = gridFromExtentAndResolution(
+      values.nx,
+      values.ny,
+      values.nz,
+      values.zTop,
+      (values.extentXKm ?? 64) * 1000,
+      (values.extentYKm ?? 64) * 1000,
+    );
 
     this.sounding =
       values.sounding?.length > 0
@@ -1215,7 +1202,7 @@ export class App {
     return new FluidSolver(grid);
   }
 
-  /** Height of the 0 °C level above ground from the current sounding, in metres. */
+  /** Height of the 0 �C level above ground from the current sounding, in metres. */
   private freezingHeightAgl(): number | null {
     const levels = this.sounding;
     if (!levels || levels.length < 2) return null;
@@ -1385,7 +1372,7 @@ export class App {
           if (status) status.textContent = p.message;
           if (bar) bar.style.width = `${(p.frac * 100).toFixed(1)}%`;
           if (meta) {
-            meta.textContent = `${p.frames} frames · t=${p.t.toFixed(0)}s`;
+            meta.textContent = `${p.frames} frames � t=${p.t.toFixed(0)}s`;
           }
         },
       });
@@ -1404,7 +1391,7 @@ export class App {
     }
   }
 
-  // ── Save / Load ─────────────────────────────────────────────────────────────
+  // -- Save / Load -------------------------------------------------------------
 
   /** Collect current state and trigger a .sfz download. */
   private saveToDisk(): void {
@@ -1476,7 +1463,7 @@ export class App {
       return;
     }
 
-    // Store the view preferences — applied after mountSimView() finishes.
+    // Store the view preferences � applied after mountSimView() finishes.
     this.pendingLoadSave = save;
 
     // Start a fresh run with the saved setup. startRun() will call mountSimView()
@@ -1496,19 +1483,19 @@ export class App {
     const v = save.view;
     const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
 
-    // ── Solar time ────────────────────────────────────────────────────────────
+    // -- Solar time ------------------------------------------------------------
     if (this.solver) {
       this.solver.setSolarHour(save.solarHour);
       this.live?.radiation({ solarHour: save.solarHour });
       this.syncSunUi(true);
     }
 
-    // ── Sim speed ─────────────────────────────────────────────────────────────
+    // -- Sim speed -------------------------------------------------------------
     this.simSpeed = v.simSpeed;
     const speedEl = this.simScreen.querySelector("#sim-speed") as HTMLSelectElement | null;
     if (speedEl) speedEl.value = String(v.simSpeed);
 
-    // ── Display toggles ───────────────────────────────────────────────────────
+    // -- Display toggles -------------------------------------------------------
     this.showClouds = v.showClouds;
     this.showRadar3d = v.showRadar3d;
     this.showRadar2d = v.showRadar2d;
@@ -1528,14 +1515,14 @@ export class App {
     this.radar2d?.setVisible(this.showRadar2d);
     if (this.showRadar2d) this.radar2d?.setProduct(v.mapProduct);
 
-    // ── Cloud look preset ─────────────────────────────────────────────────────
+    // -- Cloud look preset -----------------------------------------------------
     const lookEl = this.simScreen.querySelector("#cloud-look") as HTMLSelectElement | null;
     if (lookEl) {
       lookEl.value = v.cloudLookPreset;
       this.renderer?.setCloudLook(v.cloudLookPreset);
     }
 
-    // ── Cloud tune sliders ────────────────────────────────────────────────────
+    // -- Cloud tune sliders ----------------------------------------------------
     const ct = v.cloudTune;
     this.renderer?.setCloudTune(ct);
 
@@ -1557,7 +1544,7 @@ export class App {
     const lfVal = this.simScreen.querySelector("#lightning-freq-val") as HTMLElement | null;
     if (lfVal) lfVal.textContent = Math.round(lf * 100) + "%";
 
-    // ── Clock pause ───────────────────────────────────────────────────────────
+    // -- Clock pause -----------------------------------------------------------
     this.setClockPaused(v.clockPaused);
   }
 
@@ -1618,7 +1605,7 @@ export class App {
       "#playback-meta",
     ) as HTMLElement | null;
     if (meta) {
-      meta.textContent = `frame ${i + 1}/${n} · t=${frame.t.toFixed(0)}s`;
+      meta.textContent = `frame ${i + 1}/${n} � t=${frame.t.toFixed(0)}s`;
     }
 
     if (this.solver) {
@@ -1701,7 +1688,7 @@ export class App {
       this.solver.fields.v0[midK],
     );
     const sun = this.solver.getSolarStatus();
-    // Domain-mean surface θ anomaly vs sounding (radiation signal)
+    // Domain-mean surface ? anomaly vs sounding (radiation signal)
     let dThSfc = this.liveDth ?? 0;
     if (this.liveDth == null) {
       let dThSum = 0;
@@ -1734,22 +1721,22 @@ export class App {
     )
       .concat(this.showSurfaceWinds ? ["winds"] : [])
       .filter(Boolean)
-      .join("+") || "—";
+      .join("+") || "�";
     const t = tOverride ?? this.solver.time;
     const modeBit =
       this.sessionMode === "playback"
-        ? " · REVIEW"
+        ? " � REVIEW"
         : this.sessionMode === "batching"
-          ? " · BATCH"
+          ? " � BATCH"
           : "";
     this.statsEl.textContent =
-      `${this.runName} · ${g.nx}×${g.ny}×${g.nz} (${xKm}×${yKm}×${zKm}km) · t=${t.toFixed(0)}s · ` +
-      `${viewBit} · ${sunBit} · wind≈${windSpd.toFixed(1)}m/s · qc=${st.cloudMax.toExponential(2)} qr=${st.rainMax.toExponential(2)}` +
-      (this.sessionMode === "live" && this.paused ? " · PAUSED" : "") +
+      `${this.runName} � ${g.nx}�${g.ny}�${g.nz} (${xKm}�${yKm}�${zKm}km) � t=${t.toFixed(0)}s � ` +
+      `${viewBit} � ${sunBit} � wind�${windSpd.toFixed(1)}m/s � qc=${st.cloudMax.toExponential(2)} qr=${st.rainMax.toExponential(2)}` +
+      (this.sessionMode === "live" && this.paused ? " � PAUSED" : "") +
       (this.sessionMode === "playback" && !this.playbackPlaying
-        ? " · PAUSED"
+        ? " � PAUSED"
         : "") +
-      (this.clockPaused ? " · CLOCK" : "") +
+      (this.clockPaused ? " � CLOCK" : "") +
       modeBit;
     void fromPlayback;
   }
@@ -1902,7 +1889,7 @@ export class App {
       this.liveDebt += wall;
       const live = this.ensureLive();
       // Steps longer than about 2 s drop the cloud field, so the catch-up
-      // timestep stays inside that limit. A 50 ms step then still reaches 40×.
+      // timestep stays inside that limit. A 50 ms step then still reaches 40�.
       const simDt = Math.min(2, this.liveDebt * this.simSpeed);
       const now = performance.now();
       const wantVolume =
