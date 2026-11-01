@@ -323,6 +323,8 @@ export class CloudRainRenderer {
   private boltScene = new THREE.Scene();
   private boltGlows: THREE.Mesh[] = [];
   private boltCores: THREE.Mesh[] = [];
+  /** Empty volume so bolt shaders compile before the sim grid exists. */
+  private readonly boltFieldFallback = new THREE.Data3DTexture(new Uint8Array(4), 1, 1, 1);
   private readonly boltPointCount = 180;
   private readonly boltScratch: THREE.Vector3[] = Array.from(
     { length: 180 },
@@ -1510,6 +1512,7 @@ if(abs(uSurface - 2.0) < 0.5){
       uExtinction: { value: 0.0022 },
       uSunDir: { value: this.sunDir.clone() },
     };
+    this.bindBoltVolume();
 
     // Initialize LightVolume for GPU-based cloud lighting (volumetric / flash path).
     this.lightVolume = new LightVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
@@ -1942,6 +1945,19 @@ if(abs(uSurface - 2.0) < 0.5){
     return 0.88;
   }
 
+  /** Point bolt shaders at the live cloud/rain volume so thick media hides the channel. */
+  private bindBoltVolume(): void {
+    if (!this.volumeTex || !this.sharedUniforms) return;
+    const boxMin = this.sharedUniforms.uBoxMin.value as THREE.Vector3;
+    const boxMax = this.sharedUniforms.uBoxMax.value as THREE.Vector3;
+    for (const mesh of [...this.boltGlows, ...this.boltCores]) {
+      const mat = mesh.material as THREE.ShaderMaterial;
+      mat.uniforms.uFields.value = this.volumeTex;
+      (mat.uniforms.uBoxMin.value as THREE.Vector3).copy(boxMin);
+      (mat.uniforms.uBoxMax.value as THREE.Vector3).copy(boxMax);
+    }
+  }
+
   private makeBoltRibbon(): THREE.Mesh {
     const n = this.boltPointCount;
     const geo = new THREE.BufferGeometry();
@@ -1951,16 +1967,24 @@ if(abs(uSurface - 2.0) < 0.5){
     const index = new THREE.BufferAttribute(new Uint16Array((n - 1) * 6), 1);
     index.setUsage(THREE.DynamicDrawUsage);
     geo.setIndex(index);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xf4f7ff,
+    const mat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
       depthTest: false,
       depthWrite: false,
-      fog: false,
+      blending: THREE.AdditiveBlending,
       toneMapped: false,
       side: THREE.DoubleSide,
+      fog: false,
+      vertexShader: boltRibbonVertex,
+      fragmentShader: boltRibbonFragment,
+      uniforms: {
+        uFields: { value: this.volumeTex ?? this.boltFieldFallback },
+        uBoxMin: { value: new THREE.Vector3() },
+        uBoxMax: { value: new THREE.Vector3(1, 1, 1) },
+        uColor: { value: new THREE.Color(0xf4f7ff) },
+        uOpacity: { value: 0 },
+        uOcclude: { value: 0 },
+      },
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
@@ -2092,6 +2116,10 @@ if(abs(uSurface - 2.0) < 0.5){
 
   private syncBoltVisuals(): void {
     this.camera.updateMatrixWorld();
+    const occlude = this.cloudsOn && this.volumeTex ? 1 : 0;
+    for (const mesh of [...this.boltGlows, ...this.boltCores]) {
+      (mesh.material as THREE.ShaderMaterial).uniforms.uOcclude.value = occlude;
+    }
     for (let n = 0; n < 6; n++) {
       const bolt = this.liveBolts[n];
       const light = this.flashLights[n];
@@ -2268,9 +2296,9 @@ if(abs(uSurface - 2.0) < 0.5){
     }
     idx.needsUpdate = true;
     mesh.geometry.setDrawRange(0, q);
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    mat.color.copy(color);
-    mat.opacity = opacity;
+    const mat = mesh.material as THREE.ShaderMaterial;
+    (mat.uniforms.uColor.value as THREE.Color).copy(color);
+    mat.uniforms.uOpacity.value = opacity;
     return q > 0;
   }
 
@@ -2336,6 +2364,7 @@ if(abs(uSurface - 2.0) < 0.5){
     this.ro = null;
     this.disposeRadar();
     this.disposeWinds();
+    this.boltFieldFallback.dispose();
     this.precipitation.dispose();
     this.scene.remove(this.precipitation.points);
 
@@ -2452,3 +2481,64 @@ function makeWindArrowGeometry(): THREE.BufferGeometry {
   head.dispose();
   return geo;
 }
+
+/** Hide a channel where the view ray crosses really thick cloud or rain. */
+const boltRibbonVertex = /* glsl */ `
+uniform sampler3D uFields;
+uniform vec3 uBoxMin;
+uniform vec3 uBoxMax;
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uOcclude;
+varying vec3 vColor;
+varying float vSeen;
+
+float boltSeen(vec3 p) {
+  if (uOcclude < 0.5) return 1.0;
+  vec3 rd = cameraPosition - p;
+  float far = length(rd);
+  if (far < 2.0) return 1.0;
+  rd /= far;
+  vec3 inv = 1.0 / rd;
+  vec3 t0 = (uBoxMin - p) * inv;
+  vec3 t1 = (uBoxMax - p) * inv;
+  vec3 lo = min(t0, t1);
+  vec3 hi = max(t0, t1);
+  float a = max(max(max(lo.x, lo.y), lo.z), 0.0);
+  float b = min(min(min(hi.x, hi.y), hi.z), far);
+  if (b <= a + 1.0) return 1.0;
+  float span = b - a;
+  float steps = clamp(ceil(span / 350.0), 6.0, 40.0);
+  float ds = span / steps;
+  float od = 0.0;
+  for (int i = 0; i < 40; i++) {
+    if (float(i) < steps) {
+      vec3 q = p + rd * (a + ds * (float(i) + 0.5));
+      vec3 uvw = clamp((q - uBoxMin) / max(uBoxMax - uBoxMin, vec3(1.0)), 0.0, 1.0);
+      vec3 f = textureLod(uFields, uvw, 0.0).rgb;
+      float cloud = max(f.r, f.g);
+      float rain = f.b;
+      float block = smoothstep(0.32, 0.72, cloud) + smoothstep(0.45, 0.85, rain);
+      od += block * ds;
+    }
+  }
+  return exp(-od * 0.006);
+}
+
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vSeen = boltSeen(wp.xyz);
+  vColor = uColor * uOpacity * vSeen;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
+const boltRibbonFragment = /* glsl */ `
+varying vec3 vColor;
+varying float vSeen;
+
+void main() {
+  if (vSeen < 0.02) discard;
+  gl_FragColor = vec4(vColor, 1.0);
+}
+`;
