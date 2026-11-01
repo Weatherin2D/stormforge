@@ -24,6 +24,8 @@ import { sampleSurfaceWinds } from "./sim/surfaceWinds";
 import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
 import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
+import { unpackVortexLevels } from "./sim/fieldPack";
+import type { OverlayField } from "./render/fields";
 
 type PanelView = "skewt" | "hodograph" | "fronts";
 type SessionMode = "live" | "batching" | "playback";
@@ -93,6 +95,16 @@ export class App {
   private showSurfaceWinds = false;
   /** Rain/snow particles in the 3D view. */
   private showDroplets = true;
+  /** Accumulated precip swath on the ground. */
+  private showSwath = false;
+  /** Cold-pool shade on the ground. */
+  private showColdPool = false;
+  /** Synoptic front lines in the 3D view. */
+  private showFronts3d = true;
+  /** Mesocyclone vortex rings. */
+  private showVortex = false;
+  /** 3D scalar field overlay mode. */
+  private fieldMode: OverlayField = "off";
   private mapProduct: MapProductId = "refl";
   /** Last sim-time bucket written into the live 2D map / radar plane. */
   private mapBucket = -1;
@@ -147,6 +159,20 @@ export class App {
               <button id="btn-menu">Main menu</button>
               <button id="btn-clouds" class="active" title="3D cloud volume (turn off to reduce lag)">Clouds</button>
               <button id="btn-droplets" class="active" title="Rain and snow particles in the 3D view">Droplets</button>
+              <button id="btn-swath" title="Accumulated precipitation swath on the ground">Swath</button>
+              <button id="btn-coldpool" title="Cold-pool shade on the ground">Cold pool</button>
+              <button id="btn-vortex" title="Mesocyclone vortex rings">Vortex</button>
+              <label class="sim-speed" title="3D scalar field overlay">
+                Field
+                <select id="sel-field">
+                  <option value="off" selected>Off</option>
+                  <option value="updraft">Updraft</option>
+                  <option value="theta">θ′</option>
+                  <option value="moisture">RH</option>
+                  <option value="vorticity">Vorticity</option>
+                  <option value="coldpool">Cold pool 3D</option>
+                </select>
+              </label>
               <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
               <button id="btn-radar2d" title="2D maps: Reflectivity, CAPE, shear, clouds, precipitation, and more">Maps 2D</button>
               <button id="btn-winds" title="Surface wind direction arrows (overlay on 3D or Maps 2D)">Winds</button>
@@ -740,6 +766,9 @@ export class App {
     const syncViewToggles = () => {
       q("#btn-clouds").classList.toggle("active", this.showClouds);
       q("#btn-droplets").classList.toggle("active", this.showDroplets);
+      q("#btn-swath").classList.toggle("active", this.showSwath);
+      q("#btn-coldpool").classList.toggle("active", this.showColdPool);
+      q("#btn-vortex").classList.toggle("active", this.showVortex);
       q("#btn-radar3d").classList.toggle("active", this.showRadar3d);
       q("#btn-radar2d").classList.toggle("active", this.showRadar2d);
       q("#btn-winds").classList.toggle("active", this.showSurfaceWinds);
@@ -756,6 +785,13 @@ export class App {
         this.showSurfaceWinds && this.showRadar2d,
       );
       this.renderer?.setDropletsVisible(this.showDroplets && !this.showRadar2d);
+      this.renderer?.setShowSwath(this.showSwath && !this.showRadar2d);
+      this.renderer?.setShowColdPool(this.showColdPool && !this.showRadar2d);
+      this.renderer?.setShowVortex(this.showVortex && !this.showRadar2d);
+      this.renderer?.setShowFronts(this.showFronts3d && !this.showRadar2d);
+      this.renderer?.setFieldMode(
+        this.showRadar2d ? "off" : this.fieldMode,
+      );
     };
 
     q("#btn-clouds").addEventListener("click", () => {
@@ -802,6 +838,24 @@ export class App {
       if (this.sessionMode === "playback") {
         this.showPlaybackFrame(this.playbackIndex);
       }
+    });
+
+    q("#btn-swath").addEventListener("click", () => {
+      this.showSwath = !this.showSwath;
+      syncViewToggles();
+    });
+    q("#btn-coldpool").addEventListener("click", () => {
+      this.showColdPool = !this.showColdPool;
+      syncViewToggles();
+    });
+    q("#btn-vortex").addEventListener("click", () => {
+      this.showVortex = !this.showVortex;
+      syncViewToggles();
+    });
+    q("#sel-field").addEventListener("change", () => {
+      const v = (q("#sel-field") as HTMLSelectElement).value;
+      this.fieldMode = (v || "off") as typeof this.fieldMode;
+      syncViewToggles();
     });
 
     this.bindTeleport();
@@ -1947,6 +2001,28 @@ export class App {
       // The fronts travel east in the simulation: follow them on the map.
       this.simFronts = st.fronts;
       if (this.showRadar2d && this.radar2d) this.radar2d.setFronts(st.fronts);
+      else this.renderer.updateFronts(st.fronts);
+    }
+    if (st.swath) {
+      const bytes = st.swath;
+      this.renderer.updateSwath((out) => {
+        if (out.length === bytes.length) out.set(bytes);
+      });
+    }
+    if (st.coldPool) {
+      const bytes = st.coldPool;
+      this.renderer.updateColdPool((out) => {
+        if (out.length === bytes.length) out.set(bytes);
+      });
+    }
+    if (st.field && st.fieldMode && st.fieldMode !== "off") {
+      const bytes = st.field;
+      this.renderer.updateField((out) => {
+        if (out.length === bytes.length) out.set(bytes);
+      });
+    }
+    if (st.vortex) {
+      this.renderer.updateVortex(unpackVortexLevels(st.vortex));
     }
     for (const hit of st.strikes) {
       if (this.lightningFreq >= 1 || Math.random() < this.lightningFreq) this.placeStrike(hit);
@@ -2022,6 +2098,13 @@ export class App {
           wantVolume,
           map,
           winds: this.showSurfaceWinds,
+          wantSwath: this.showSwath && !this.showRadar2d,
+          wantColdPool: this.showColdPool && !this.showRadar2d,
+          fieldMode:
+            !this.showRadar2d && this.fieldMode !== "off"
+              ? this.fieldMode
+              : "off",
+          wantVortex: this.showVortex && !this.showRadar2d,
         })
       ) {
         this.liveDebt = 0;

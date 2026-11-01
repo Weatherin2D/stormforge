@@ -23,6 +23,11 @@ import { PrecipitationParticles } from "./precipitation";
 import { LightVolume, FlashVolume } from "./light";
 import { groundSurfacePars, groundShadowPars } from "./groundShader";
 import { noiseTexture } from "./noise";
+import { FieldView } from "./FieldView";
+import { GroundOverlays } from "./GroundOverlays";
+import type { OverlayField } from "./fields";
+import type { DrawnFront } from "../sim/synoptic";
+import type { VortexLevel } from "../sim/fieldPack";
 
 /** Daylight gains matching MeteoLAB view.ts. */
 const SUN_GAIN = 3, SKY_GAIN = 14, SUN_DISC = 40;
@@ -211,6 +216,10 @@ export class CloudRainRenderer {
   private readonly noise = noiseTexture();
   /** Mean ground albedo colour (grass by default). */
   private readonly groundColor = new THREE.Color(0x596d45);
+  /** 3D scalar field overlay (updraft / θ / RH / vorticity / cold pool). */
+  private readonly fieldView = new FieldView();
+  /** Rain swath, cold-pool shade, fronts, vortex rings. */
+  private readonly groundOverlays = new GroundOverlays();
   /** Renderer-side rain/snow particles spawned from the packed volume. */
   private precipitation: PrecipitationParticles;
   private timeSeconds = 0;
@@ -482,6 +491,8 @@ if(abs(uSurface - 2.0) < 0.5){
     this.spriteView = null;
     this.precipitation = new PrecipitationParticles();
     this.scene.add(this.precipitation.points);
+    this.scene.add(this.fieldView.group);
+    this.scene.add(this.groundOverlays.group);
 
     this.syncSky();
 
@@ -1098,8 +1109,59 @@ if(abs(uSurface - 2.0) < 0.5){
     this.radarMesh.frustumCulled = false;
     this.scene.add(this.radarMesh);
 
+    this.fieldView.setGrid(grid.nx, grid.ny, grid.nz, sx, sz, this.groundY, height);
+    this.groundOverlays.setGrid(grid.nx, grid.ny, sx, sz, this.groundY, height);
+
     this.spawnPlayer();
     this.resize();
+  }
+
+  setFieldMode(mode: OverlayField): void {
+    this.fieldView.setMode(mode);
+  }
+
+  getFieldMode(): OverlayField {
+    return this.fieldView.getMode();
+  }
+
+  updateField(pack: (out: Uint8Array) => void): void {
+    this.fieldView.update(pack);
+  }
+
+  setShowSwath(on: boolean): void {
+    this.groundOverlays.showSwath = on;
+    this.groundOverlays.applyVisibility();
+  }
+
+  setShowColdPool(on: boolean): void {
+    this.groundOverlays.showColdPool = on;
+    this.groundOverlays.applyVisibility();
+  }
+
+  setShowFronts(on: boolean): void {
+    this.groundOverlays.showFronts = on;
+    this.groundOverlays.applyVisibility();
+  }
+
+  setShowVortex(on: boolean): void {
+    this.groundOverlays.showVortex = on;
+    this.groundOverlays.applyVisibility();
+  }
+
+  updateSwath(pack: (out: Uint8Array) => void): void {
+    this.groundOverlays.updateSwath(pack);
+  }
+
+  updateColdPool(pack: (out: Uint8Array) => void): void {
+    this.groundOverlays.updateColdPool(pack);
+  }
+
+  updateFronts(fronts: DrawnFront[]): void {
+    this.groundOverlays.updateFronts(fronts);
+  }
+
+  updateVortex(levels: VortexLevel[]): void {
+    this.groundOverlays.updateVortex(levels);
   }
 
   private rebuildKmGrid(sx: number, sz: number): void {
@@ -1796,6 +1858,8 @@ if(abs(uSurface - 2.0) < 0.5){
     this.skyTexture?.dispose();
     this.groundState?.dispose();
     this.windTexture?.dispose();
+    this.fieldView.dispose();
+    this.groundOverlays.dispose();
     this.blitMesh.geometry.dispose();
     (this.blitMesh.material as THREE.Material).dispose();
     this.sceneBlit.geometry.dispose();

@@ -8,6 +8,14 @@ import { MapProductId } from "./mapProducts";
 import { sampleSurfaceWinds, SurfaceWindSample } from "./surfaceWinds";
 import { DrawnFront, getActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
+import type { OverlayField } from "../render/fields";
+import {
+  packRainSwath,
+  packColdPoolMap,
+  packFieldVolume,
+  findVortexColumn,
+  packVortexLevels,
+} from "./fieldPack";
 
 let solver: SimBackend | null = null;
 
@@ -19,6 +27,10 @@ interface StepMsg {
   wantVolume: boolean;
   map: MapProductId | null;
   winds: boolean;
+  wantSwath?: boolean;
+  wantColdPool?: boolean;
+  fieldMode?: OverlayField;
+  wantVortex?: boolean;
 }
 
 function surfaceDth(s: SimBackend): number {
@@ -51,6 +63,11 @@ function publish(extra: {
   mapId: MapProductId | null;
   winds: SurfaceWindSample[] | null;
   strikes: LightningStrike[];
+  swath?: Uint8Array | null;
+  coldPool?: Uint8Array | null;
+  field?: Uint8Array | null;
+  fieldMode?: OverlayField | null;
+  vortex?: Float32Array | null;
 }): void {
   if (!solver) return;
   const sun = solver.getSolarStatus();
@@ -58,6 +75,10 @@ function publish(extra: {
   const transfers: Transferable[] = [];
   if (extra.volume) transfers.push(extra.volume.buffer);
   if (extra.map) transfers.push(extra.map.buffer);
+  if (extra.swath) transfers.push(extra.swath.buffer);
+  if (extra.coldPool) transfers.push(extra.coldPool.buffer);
+  if (extra.field) transfers.push(extra.field.buffer);
+  if (extra.vortex) transfers.push(extra.vortex.buffer);
   const payload = {
     type: "state" as const,
     time: solver.time,
@@ -76,6 +97,11 @@ function publish(extra: {
     mapId: extra.mapId,
     winds: extra.winds,
     fronts: frontPositions(),
+    swath: extra.swath ?? null,
+    coldPool: extra.coldPool ?? null,
+    field: extra.field ?? null,
+    fieldMode: extra.fieldMode ?? null,
+    vortex: extra.vortex ?? null,
   };
   (self as unknown as { postMessage(message: unknown, transfer: Transferable[]): void }).postMessage(
     payload,
@@ -148,5 +174,37 @@ self.onmessage = (ev: MessageEvent) => {
     solver.packMapProduct(msg.map, map);
   }
   const winds = msg.winds ? sampleSurfaceWinds(solver.grid, solver.fields) : null;
-  publish({ volume, map, mapId: msg.map, winds, strikes });
+  let swath: Uint8Array | null = null;
+  if (msg.wantSwath) {
+    swath = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
+    packRainSwath(solver.grid, solver.fields, swath);
+  }
+  let coldPool: Uint8Array | null = null;
+  if (msg.wantColdPool) {
+    coldPool = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
+    packColdPoolMap(solver.grid, solver.fields, coldPool);
+  }
+  let field: Uint8Array | null = null;
+  const fieldMode = msg.fieldMode && msg.fieldMode !== "off" ? msg.fieldMode : null;
+  if (fieldMode) {
+    const d = volumeDisplaySize(solver.grid.nx, solver.grid.ny, solver.grid.nz);
+    field = new Uint8Array(d.nx * d.ny * d.nz * 4);
+    packFieldVolume(fieldMode, solver.grid, solver.fields, field);
+  }
+  let vortex: Float32Array | null = null;
+  if (msg.wantVortex) {
+    vortex = packVortexLevels(findVortexColumn(solver.grid, solver.fields));
+  }
+  publish({
+    volume,
+    map,
+    mapId: msg.map,
+    winds,
+    strikes,
+    swath,
+    coldPool,
+    field,
+    fieldMode,
+    vortex,
+  });
 };

@@ -5,6 +5,7 @@ import { MapProductId } from "./mapProducts";
 import { SurfaceWindSample } from "./surfaceWinds";
 import type { LightningStrike } from "./FluidSolver";
 import type { DrawnFront, SynopticSetup } from "./synoptic";
+import type { OverlayField } from "../render/fields";
 
 export interface LiveState {
   type: "state";
@@ -25,6 +26,15 @@ export interface LiveState {
   winds: SurfaceWindSample[] | null;
   /** Where the fronts are now, so the map line follows the simulation. */
   fronts: DrawnFront[];
+  /** Accumulated precip swath (nx×ny RGBA), when requested. */
+  swath: Uint8Array | null;
+  /** Cold-pool ground shade (nx×ny RGBA), when requested. */
+  coldPool: Uint8Array | null;
+  /** 3D scalar field volume (display RGBA), when requested. */
+  field: Uint8Array | null;
+  fieldMode: OverlayField | null;
+  /** Flattened vortex rings [x,y,z,r,zeta,…], when requested. */
+  vortex: Float32Array | null;
 }
 
 /** Physics runs off the render thread so the camera stays smooth. */
@@ -88,6 +98,10 @@ export class LiveBridge {
     wantVolume: boolean;
     map: MapProductId | null;
     winds: boolean;
+    wantSwath?: boolean;
+    wantColdPool?: boolean;
+    fieldMode?: OverlayField;
+    wantVortex?: boolean;
   }): boolean {
     if (this.busy || !this.ready) return false;
     this.busy = true;
