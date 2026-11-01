@@ -31,8 +31,12 @@ import type { VortexLevel } from "../sim/fieldPack";
 
 /** Daylight gains matching MeteoLAB view.ts. */
 const SUN_GAIN = 3, SKY_GAIN = 14, SUN_DISC = 40;
+/** Sky dome / clear-color night floor (deep airglow). */
 const NIGHT_SKY = [0.008, 0.012, 0.026] as const;
 const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
+/** Cloud ambient night floors (MeteoLAB NIGHT_TOP / NIGHT_BOTTOM) — brighter than the sky dome so clouds stay above the noise floor. */
+const NIGHT_TOP = [0.1, 0.12, 0.2] as const;
+const NIGHT_BOTTOM = [0.06, 0.07, 0.1] as const;
 const CITY_SKY = [0.06, 0.036, 0.016] as const;
 const GROUND_WATER_MM = 16;
 
@@ -929,15 +933,15 @@ if(abs(uSurface - 2.0) < 0.5){
       .set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2])
       .multiplyScalar(SUN_GAIN * adapt);
     (cm.uSkyColor as { value: THREE.Vector3 }).value.set(
-      E[0] / Math.PI * skyGain + NIGHT_SKY[0] * night,
-      E[1] / Math.PI * skyGain + NIGHT_SKY[1] * night,
-      E[2] / Math.PI * skyGain + NIGHT_SKY[2] * night,
+      E[0] / Math.PI * skyGain + NIGHT_TOP[0] * night,
+      E[1] / Math.PI * skyGain + NIGHT_TOP[1] * night,
+      E[2] / Math.PI * skyGain + NIGHT_TOP[2] * night,
     );
     const g = this.groundColor;
     (cm.uGroundColor as { value: THREE.Vector3 }).value.set(
-      g.r * (E[0] / Math.PI * skyGain + NIGHT_GROUND[0] * night),
-      g.g * (E[1] / Math.PI * skyGain + NIGHT_GROUND[1] * night),
-      g.b * (E[2] / Math.PI * skyGain + NIGHT_GROUND[2] * night),
+      g.r * (E[0] / Math.PI * skyGain + NIGHT_BOTTOM[0] * night),
+      g.g * (E[1] / Math.PI * skyGain + NIGHT_BOTTOM[1] * night),
+      g.b * (E[2] / Math.PI * skyGain + NIGHT_BOTTOM[2] * night),
     );
   }
 

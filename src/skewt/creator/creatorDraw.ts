@@ -36,16 +36,16 @@ export function readCreatorCss(
   };
 }
 
-export const ST_W = 620;
-export const ST_H = 600;
-const x0 = 46;
-const x1 = ST_W - 14;
-const y0 = 14;
-const y1 = ST_H - 28;
+export const ST_W = 920;
+export const ST_H = 880;
+const x0 = 56;
+const x1 = ST_W - 18;
+const y0 = 18;
+const y1 = ST_H - 34;
 const kx = (x1 - x0) / 85;
 const sk = 0.55;
 
-export const HODO_SIZE = 340;
+export const HODO_SIZE = 560;
 
 function setup(
   c: HTMLCanvasElement,
@@ -116,7 +116,7 @@ export function drawSkewT(
   const gr = css.grid;
   const fg = css.fg;
   const mu = css.muted;
-  x.font = "11px system-ui, sans-serif";
+  x.font = "14px system-ui, sans-serif";
   x.save();
   x.beginPath();
   x.rect(x0, y0, x1 - x0, y1 - y0);
@@ -228,7 +228,7 @@ export function hodoPoint(
   hR: number,
   hc = HODO_SIZE / 2,
 ): [number, number] {
-  const sc = (hc - 24) / hR;
+  const sc = (hc - 28) / hR;
   return [hc + (l.u ?? 0) * sc, hc - (l.v ?? 0) * sc];
 }
 
@@ -244,8 +244,8 @@ export function drawHodograph(
   const x = setup(canvas, hs, hs);
   const gr = css.grid;
   const mu = css.muted;
-  const sc = (hc - 24) / hR;
-  x.font = "10px system-ui, sans-serif";
+  const sc = (hc - 28) / hR;
+  x.font = "13px system-ui, sans-serif";
   x.fillStyle = mu;
   x.strokeStyle = gr;
   x.lineWidth = 1;

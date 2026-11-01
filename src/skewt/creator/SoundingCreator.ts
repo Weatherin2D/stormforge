@@ -669,7 +669,7 @@ export class SoundingCreator {
     if (!this.drag || this.drag.c !== "ho") return;
     const [px, py] = this.pos(e, this.hoCanvas, HODO_SIZE, HODO_SIZE);
     const hc = HODO_SIZE / 2;
-    const sc = (hc - 24) / this.hR;
+    const sc = (hc - 28) / this.hR;
     const u = (px - hc) / sc;
     const v = (hc - py) / sc;
     const l = this.levels[this.drag.i];

@@ -484,11 +484,10 @@ void main() {
   float avgDist = distAcc / alpha;
   float haze = 1.0 - exp(-avgDist * uHazeDensity);
   straight = mix(straight, uHazeColor, haze) * uExposure;
-  // Subtle tone mapping improvement
+  // Soft compress before Three's ACES. Do not pivot around mid-gray —
+  // at night that drove near-black samples negative and speckled through TAA.
   straight = straight / (straight + vec3(1.0));
-  // Slight contrast boost
-  straight = (straight - 0.5) * 1.05 + 0.5;
-  straight = pow(straight, vec3(1.0));
+  straight = max(straight, vec3(0.0));
 
   gl_FragColor = vec4(straight, alpha);
   #include <tonemapping_fragment>
