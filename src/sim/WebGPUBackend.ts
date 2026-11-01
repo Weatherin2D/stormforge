@@ -985,20 +985,27 @@ export class WebGPUBackend implements SimBackend {
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
-    const cloudUnit = 0.002;
-    const coldUnit = 0.002;
+    const cloudOpacity = (c: number): number =>
+      c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
+    const coldOpacity = (id: number): number => {
+      const cold =
+        0.25 * f.qi[id] +
+        0.08 * f.qs[id] +
+        0.03 * (f.qg[id] + f.qh[id]);
+      return cloudOpacity(cold);
+    };
     const rainUnit = 0.0015;
-    const byte = (q: number, unit: number): number => {
-      if (q <= 0) return 0;
-      const v = (q / unit) * 255;
-      return v >= 255 ? 255 : v | 0;
+    const byte01 = (v: number): number => {
+      if (v <= 0) return 0;
+      const x = v * 255;
+      return x >= 255 ? 255 : x | 0;
     };
     const write = (id: number, _k: number, o: number): void => {
-      const cold =
-        f.qi[id] + 1.6 * f.qs[id] + 2.4 * f.qg[id] + 3.0 * f.qh[id];
-      const liq = byte(f.qc[id], cloudUnit);
-      const ice = byte(cold, coldUnit);
-      const rain = byte(f.qr[id], rainUnit);
+      const liq = byte01(cloudOpacity(f.qc[id]));
+      const ice = byte01(coldOpacity(id));
+      const rainQ = f.qr[id];
+      const rain =
+        rainQ <= 0 ? 0 : Math.min(255, ((rainQ / rainUnit) * 255) | 0);
       out[o] = liq;
       out[o + 1] = ice;
       out[o + 2] = rain;

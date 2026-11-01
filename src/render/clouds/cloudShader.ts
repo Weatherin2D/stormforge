@@ -196,12 +196,17 @@ float billow(vec3 x){
 }
 
 // The billows rise with the updraught (w): two copies half a period apart cross-fade,
-// so the towers never stretch (a flow map).
+// so the towers never stretch (a flow map). Positions are metres → km for MeteoLAB noise scale.
 const float BILLOW_PERIOD = 240.0;
 float risingBillow(vec3 p, float w){
-  float a = fract(uTime / BILLOW_PERIOD), b = fract(uTime / BILLOW_PERIOD + 0.5), rise = 0.5 * w * BILLOW_PERIOD;
-  vec3 q = p * 0.9;
-  return mix(billow(q - vec3(0.0, rise * a * 0.9, 0.0)), billow(q - vec3(0.0, rise * b * 0.9, 0.0) + vec3(5.2, 1.3, 7.9)), abs(2.0 * a - 1.0));
+  float a = fract(uTime / BILLOW_PERIOD), b = fract(uTime / BILLOW_PERIOD + 0.5);
+  float rise = 0.5 * w * BILLOW_PERIOD;
+  vec3 q = p * 0.0009;
+  return mix(
+    billow(q - vec3(0.0, rise * a * 0.0009, 0.0)),
+    billow(q - vec3(0.0, rise * b * 0.0009, 0.0) + vec3(5.2, 1.3, 7.9)),
+    abs(2.0 * a - 1.0)
+  );
 }
 
 // Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
@@ -222,12 +227,41 @@ float mammaDensity(vec3 p, float anvilBase, float anvilPresence){
   return smoothstep(0.0, 0.4, reach - h + 0.15) * 0.6;
 }
 
-// Precipitation shaft density: streaks stretched down the fall, drifting down with the rain.
+// Precipitation shaft extinction (1/m): MeteoLAB curtains, uShaftMax in 1/km.
 float shaftDensity(vec3 p, float rain){
   if(rain <= 0.0) return 0.0;
-  vec3 n = octaves(vec3(p.x * 2.4, p.y * 0.08 + uTime * 0.0009, p.z * 2.4) + vec3(5.3, 0.0, 2.9));
+  vec3 n = octaves(vec3(p.x * 0.0024, p.y * 0.00008 + uTime * 0.0009, p.z * 0.0024) + vec3(5.3, 0.0, 2.9));
   float streak = smoothstep(0.3, 0.75, n.g * 0.7 + n.b * 0.3);
-  return rain * uShaftMax * mix(0.15, 2.0, streak) * smoothstep(0.0, 0.5, rain * 12.0 + n.r - 0.5);
+  float km = rain * uShaftMax * mix(0.15, 2.0, streak) * smoothstep(0.0, 0.5, rain * 12.0 + n.r - 0.5);
+  return km * 0.001;
+}
+
+// Two-stream forward scatter through OD (MeteoLAB sunThrough, g≈0.85).
+float sunThrough(float od){
+  return max(exp(-od), 1.0 / (1.0 + 1.7 * od));
+}
+
+// MeteoLAB dual-lobe phase (relative to isotropic), k widens for MS octaves.
+float mlPhase(float c, float k){
+  return mix(hg(c, -0.15 * k), hg(c, 0.75 * k), 0.3);
+}
+
+// Wrenninge/Hillaire multi-scatter sunlight.
+float sunlight(float od, vec3 phases){
+  return phases.x * exp(-od) + phases.y * exp(-od * 0.5) + phases.z * exp(-od * 0.25);
+}
+
+// Rainbow / Alexander dark band (MeteoLAB rainPhase); angles in degrees from anti-solar.
+const vec3 BOW1 = vec3(42.3, 41.5, 40.7);
+const vec3 BOW2 = vec3(50.4, 51.6, 53.3);
+vec3 rainPhase(float c){
+  float a = degrees(acos(clamp(-c, -1.0, 1.0)));
+  vec3 d1 = (a - BOW1) / 0.6;
+  vec3 d2 = (a - BOW2) / 0.8;
+  vec3 bow = 0.9 * exp(-0.5 * d1 * d1) + 0.35 * exp(-0.5 * d2 * d2);
+  float back = mix(hg(c, 0.85), hg(c, -0.2), 0.15);
+  float dark = 1.0 - 0.5 * smoothstep(41.0, 43.0, a) * (1.0 - smoothstep(49.0, 51.0, a));
+  return vec3(back * dark) + bow;
 }
 
 // ---------------------------------------------------------------- medium
@@ -296,48 +330,47 @@ vec3 sampleSigma(vec3 p, float detail) {
       float thrI = (1.0 - fibre) * uErosionIce * detail;
       ice = clamp((ice - thrI) / max(1.0 - thrI, 1e-3), 0.0, 1.0);
       ice *= mix(0.8, 1.0, smoothstep(0.2, 0.6, fibre));
+      // Translucent anvil: MeteoLAB ice density * mix(1, 0.75, ice).
+      ice *= mix(1.0, 0.75, smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3)));
 
       // Mammatus: rounded pouches hanging under the anvil base.
       if (anvilPresence > 0.02) {
         float mamma = mammaDensity(p, anvilBase, anvilPresence);
-        liq += mamma * 0.5; // mammatus reads as liquid-like pouches below the anvil
+        liq += mamma * 0.5;
       }
     }
 
-    // Rain: physics-based extinction + scrolling sheared streaks.
+    // Rain: contrast + scrolling sheared streaks (shaft extinction added below).
     if (rain > 0.002) {
-      // Step 1: contrast curve â€” sharpen the core edge
       float rainCore = smoothstep(0.05, 0.55, rain);
-      float rainFringe = rain;
-      rain = mix(rainFringe, rainCore, 0.65);
+      rain = mix(rain, rainCore, 0.65);
 
-      // Step 2: streak noise â€” shear coords with height so curtains lean with wind
       vec3 sheared = rel + uRainWindShear * (p.y - uBoxMin.y);
-      // scroll downward at fall speed
       vec3 qr = vec3(sheared.x * uShapeFreq * 1.8,
                      (sheared.y - uTime * uRainFallSpeed) * uShapeFreq * 0.04,
                      sheared.z * uShapeFreq * 1.8);
       float streak = textureLod(uShapeNoise, qr, 0.0).g;
-      // apply streaks more at edges, less in dense core
       float edgeMask = 1.0 - rainCore;
       rain *= mix(1.0, mix(0.35, 1.4, streak), detail * (0.4 + 0.6 * edgeMask));
-      // Add smoother falloff at edges
-      float distFromCenter = length(sheared.xz * uShapeFreq * 1.8);
-      rain *= smoothstep(0.0, 1.2, 1.0 - distFromCenter * 0.3);
 
-      // Step 3: precipitation shafts below cloud base
-      float shaft = shaftDensity(p, rain);
-      rain += shaft;
-
-      // Step 4: mist foot â€” thicken rain near ground base
       float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
       rain += rainCore * groundFade * 0.4;
-      // Smoother transition
-      rain = smoothstep(0.0, 1.0, rain);
+      rain = clamp(rain, 0.0, 1.0);
     }
   }
 
-  return vec3(liq, ice, rain) * uSigma;
+  // Domain-edge fade (MeteoLAB: cloud fades over last ~1 km to the side wall).
+  vec2 side = min(p.xz - uBoxMin.xz, uBoxMax.xz - p.xz);
+  float toWall = min(side.x, side.y);
+  float cloudFade = smoothstep(250.0, 1250.0, toWall);
+  float shaftFade = smoothstep(500.0, 4000.0, toWall);
+  shaftFade *= shaftFade;
+
+  vec3 sigma = vec3(liq, ice, rain) * uSigma;
+  sigma.xy *= cloudFade;
+  float shaft = shaftDensity(p, rain) * shaftFade;
+  sigma.z += shaft;
+  return sigma;
 }
 
 // ---------------------------------------------------------------- lighting
@@ -391,20 +424,22 @@ void main() {
 
   // Angle between sun and view ray. +1 = looking straight at the sun (forward scattering).
   float cosT = dot(rd, uSunDir);
+  // MeteoLAB multi-scatter phase octaves + rainbow for liquid precip.
+  vec3 phases = vec3(mlPhase(cosT, 1.0), 0.5 * mlPhase(cosT, 0.5), 0.25 * mlPhase(cosT, 0.25));
+  vec3 rainPh = rainPhase(cosT);
 
   float pathLen = tFar - tNear;
   float baseStep = max(uStepSize, pathLen / float(MAX_STEPS));
   float t = tNear + baseStep * ign(gl_FragCoord.xy + uFrame * 5.588238);
 
-  // The powder (dark edge) effect is only visible looking away from the sun, so fade it out toward the sun.
-  float powderAmt = uPowder * (0.5 - 0.5 * cosT);
-
   vec3 col = vec3(0.0);
   float T = 1.0;
   float distAcc = 0.0;
+  float weightAcc = 0.0;
+  float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
 
   for (int i = 0; i < MAX_STEPS; i++) {
-    if (t >= tFar || T < 0.01) break;
+    if (t >= tFar || T < 0.02) break;
 
     float dt = baseStep * (1.0 + t / uLodDistance);
     vec3 p = ro + rd * t;
@@ -419,73 +454,73 @@ void main() {
 
     float detail = 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t);
     vec3 sig = sampleSigma(p, detail);
-    float sigT = sig.x + sig.y + sig.z;
+    float cloudSig = sig.x + sig.y;
+    float rainSig = sig.z;
+    float sigT = cloudSig + rainSig;
 
     if (sigT > 1e-5) {
-      // scattering coefficient (rain scatters less than cloud) and blended phase asymmetry
-      float sigS = sig.x + sig.y + 0.3 * sig.z;
-      vec2 g = (sig.x * uPhaseLiquid + sig.y * uPhaseIce + sig.z * uPhaseRain) / sigT;
-
-      // direct sun, with multiple scattering approximated by octaves that
-      // flatten the phase function and thin the extinction (Wrenninge)
       float odSun = sunOpticalDepth(p);
-      // Sub-grid shadow probes toward the sun: billow self-shadowing so the
-      // sunlit side of a tower is bright and its creases dark.
-      if (uShadowProbes > 0.5 && uSunDir.y > -0.1) {
-        const float SHADOW_PROBE = 0.15;
+      // Sub-grid shadow probes (MeteoLAB SHADOW_PROBE = 0.15 km → 150 m).
+      if (uShadowProbes > 0.5 && cloudSig > 1e-5 && uSunDir.y > -0.1) {
+        const float SHADOW_PROBE = 150.0;
         if (uShadowProbes > 1.5) {
           vec3 s1 = p + uSunDir * SHADOW_PROBE;
           vec3 s2 = p + uSunDir * (SHADOW_PROBE * 3.0);
-          odSun += (sampleSigma(s1, 0.0).x + sampleSigma(s2, 0.0).x * 2.0) * SHADOW_PROBE * uSigma.x;
+          odSun += (sampleSigma(s1, 0.0).x + sampleSigma(s2, 0.0).x * 2.0) * SHADOW_PROBE;
         } else {
           vec3 s1 = p + uSunDir * (SHADOW_PROBE * 2.0);
-          odSun += sampleSigma(s1, 0.0).x * 3.0 * SHADOW_PROBE * uSigma.x;
+          odSun += sampleSigma(s1, 0.0).x * 3.0 * SHADOW_PROBE;
         }
       }
-      float a = 1.0, b = 1.0, c = 1.0;
-      float sunTerm = 0.0;
-      for (int n = 0; n < MS_OCTAVES; n++) {
-        sunTerm += a * dualLobe(cosT, g, c) * exp(-odSun * b);
-        a *= uMultiScatter.x;
-        b *= uMultiScatter.y;
-        c *= uMultiScatter.z;
-      }
-      float powder = 1.0 - exp(-sigT * uPowderLength);
-      sunTerm *= mix(1.0, powder, powderAmt);
 
-      // ambient: sky from above, bounce from below, both dimmed by the cloud between
+      float powder = 1.0 - exp(-cloudSig * uPowderLength);
+      powder = mix(0.6, 1.0, powder);
+      float h = clamp((p.y - uBoxMin.y) / boxH * 1.3, 0.0, 1.0);
+
       float odUp, odDown;
       ambientDepth(p, odUp, odDown);
-      vec3 ambient = (uSkyColor * exp(-odUp * uAmbientAtten) +
-                      uGroundColor * exp(-odDown * uAmbientAtten)) * uAmbientStrength;
-      ambient *= mix(0.8, 1.2, 1.0 - odUp * 0.01);
+      // Sky visibility ≈ exp(-odUp); deep inside dim like MeteoLAB mix(0.18, 1, L.y).
+      float skyVis = exp(-odUp * uAmbientAtten);
+      vec3 ambientBottom = uGroundColor + uSunColor * sunThrough(odSun) * 0.15;
+      vec3 ambient = mix(ambientBottom, uSkyColor, h) * mix(0.18, 1.0, skyVis) * uAmbientStrength;
 
-      // Flash lights liquid, ice, and rain. Rain takes extra so shafts glow.
+      // Cloud colour: MeteoLAB cloudCol mix.
+      vec3 cloudCol = uSunColor * sunlight(odSun, phases) * powder * 0.55 + ambient * 0.9;
+
+      // Shafts: liquid rain (rainbow) below freezing, snow-like phase above.
+      float liquid = 1.0 - smoothstep(uFreezing - 300.0, uFreezing + 300.0, p.y - uBoxMin.y);
+      vec3 precipPh = mix(vec3(phases.x), rainPh, liquid);
+      vec3 rainCol = uSunColor * (exp(-odSun) * precipPh + sunThrough(odSun) - exp(-odSun)) * 0.55
+                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.5) * 0.8;
+
       vec3 flash = flashLight(p);
-      float flashSig = 1.8 * sig.x + 1.5 * sig.y + 3.2 * sig.z;
-      vec3 S = (uSunColor * sunTerm + ambient) * sigS + flash * flashSig;
+      cloudCol += flash;
+      rainCol += flash * 0.4;
 
-      // energy-conserving integration over the step
+      // Inside cloud, droplets dominate; shafts show through where cloud is thin.
+      vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
+
       float stepT = exp(-sigT * dt);
-      vec3 Sint = (S - S * stepT) / max(sigT, 1e-6);
-      col += T * Sint;
-      distAcc += T * (1.0 - stepT) * t;
+      float w = T * (1.0 - stepT);
+      col += S * w;
+      distAcc += t * w;
+      weightAcc += w;
       T *= stepT;
     }
 
     t += dt;
   }
 
+  // Kill residual transmittance so the sun disc does not glow through dense cores.
+  T *= smoothstep(0.02, 0.1, T);
   float alpha = 1.0 - T;
   if (alpha < 0.003) discard;
 
-  // Aerial perspective: distant cloud fades toward the haze colour.
-  vec3 straight = col / alpha;
-  float avgDist = distAcc / alpha;
+  vec3 straight = col / max(1.0 - T, 1e-4);
+  float avgDist = distAcc / max(weightAcc, 1e-4);
   float haze = 1.0 - exp(-avgDist * uHazeDensity);
   straight = mix(straight, uHazeColor, haze) * uExposure;
-  // Soft compress before Three's ACES. Do not pivot around mid-gray —
-  // at night that drove near-black samples negative and speckled through TAA.
+  // Soft compress before Three's ACES.
   straight = straight / (straight + vec3(1.0));
   straight = max(straight, vec3(0.0));
 

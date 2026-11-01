@@ -567,6 +567,11 @@ if(abs(uSurface - 2.0) < 0.5){
   /** Height of the 0 °C level above the ground, in metres. */
   setFreezingLevel(zAboveGround: number | null): void {
     this.precipitation.setFreezingLevel(zAboveGround);
+    const z = zAboveGround != null && Number.isFinite(zAboveGround)
+      ? Math.max(0, zAboveGround)
+      : DEFAULT_LOOK.freezing;
+    this.tune.freezing = z;
+    this.cloudMat?.setLook({ freezing: z });
   }
 
   setRadarVisible(on: boolean): void {
@@ -1067,7 +1072,7 @@ if(abs(uSurface - 2.0) < 0.5){
       uBoxMax: { value: boxMax },
       uGrid: { value: new THREE.Vector3(disp.nx, disp.ny, disp.nz) },
       uHeight: { value: height },
-      uExtinction: { value: 0.035 },
+      uExtinction: { value: 0.0022 },
       uSunDir: { value: this.sunDir.clone() },
     };
 
