@@ -208,18 +208,19 @@ export class SetupScreen {
         </div>
 
         <aside class="setup-card setup-sounding">
-          <h2>Sounding</h2>
+          <h2>Sounding &amp; fronts</h2>
           <p class="hint setup-sounding-desc">
-            Drag T/Td and hodograph tips, pick a preset, or import before you run.
+            Drag T/Td and hodograph tips, pick a preset, or import — fronts live below the charts.
           </p>
           <div id="sf-creator-host"></div>
+          <div id="sf-fronts-host" class="fronts-embedded-host"></div>
         </aside>
       </div>
     `;
 
     this.warnEl = this.root.querySelector("#sf-perf-warn") as HTMLElement;
-    this.fronts = new SynopticEditor();
-    this.root.querySelector(".setup-shell")!.append(this.fronts.root);
+    this.fronts = new SynopticEditor({ embedded: true });
+    this.root.querySelector("#sf-fronts-host")!.append(this.fronts.root);
 
     this.creator = new SoundingCreator();
     this.sounding = this.creator.getLevels();

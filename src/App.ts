@@ -26,7 +26,6 @@ import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 import { unpackVortexLevels } from "./sim/fieldPack";
 import type { OverlayField } from "./render/fields";
 
-type PanelView = "sounding" | "fronts";
 type SessionMode = "live" | "batching" | "playback";
 
 const MONTH_NAMES = [
@@ -69,7 +68,6 @@ export class App {
   private frontEditor: SynopticEditor | null = null;
   private frontsApplyTimer = 0;
   private sounding: SoundingLevel[] = defaultSounding(12000, 41);
-  private panelView: PanelView = "sounding";
   private bubbleStrength = 3;
   private paused = false;
   /** Freeze sun/clock only; simulation keeps running. */
@@ -333,27 +331,23 @@ export class App {
         </div>
         <aside class="side-panel sounding-drawer hidden" id="sounding-drawer">
           <div class="side-panel-head sounding-drawer-head">
-            <h2 id="panel-title">Sounding</h2>
+            <h2 id="panel-title">Sounding &amp; fronts</h2>
             <button id="btn-hide-panel" class="panel-close" title="Close">✕</button>
           </div>
           <div class="sounding-drawer-body">
-            <p class="panel-desc" id="panel-desc">Edit the sounding or fronts, then apply to the live run.</p>
-            <div class="panel-toggle">
-              <button id="view-sounding" class="active">Sounding</button>
-              <button id="view-fronts">Fronts</button>
-            </div>
+            <p class="panel-desc" id="panel-desc">Edit the sounding above, fronts below — apply to push into the live run.</p>
             <div id="creator-host"></div>
-            <div id="fronts-panel" class="fronts-panel hidden">
+            <div class="sounding-drawer-actions panel-actions">
+              <button id="btn-apply" class="primary">Apply sounding</button>
+              <button id="btn-export">Export</button>
+              <button id="btn-default">Default</button>
+            </div>
+            <div id="fronts-panel" class="fronts-panel fronts-below-sounding">
               <div id="fronts-editor-host"></div>
               <div class="fronts-apply-row">
                 <button id="btn-apply-fronts" class="primary">Apply fronts</button>
                 <span class="hint" id="fronts-status">Applies to the running simulation</span>
               </div>
-            </div>
-            <div class="sounding-drawer-actions panel-actions">
-              <button id="btn-apply" class="primary">Apply sounding</button>
-              <button id="btn-export">Export</button>
-              <button id="btn-default">Default</button>
             </div>
           </div>
         </aside>
@@ -380,7 +374,7 @@ export class App {
     return this.sounding;
   }
 
-  private openSoundingDrawer(view: PanelView = "sounding"): void {
+  private openSoundingDrawer(): void {
     const drawer = this.simScreen.querySelector(
       "#sounding-drawer",
     ) as HTMLElement;
@@ -389,7 +383,6 @@ export class App {
     ) as HTMLElement;
     drawer.classList.remove("hidden");
     reopen.classList.add("hidden");
-    this.setPanelView(view);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         this.creator?.resize();
@@ -408,49 +401,6 @@ export class App {
     drawer.classList.add("hidden");
     reopen.classList.remove("hidden");
     this.renderer?.resize();
-  }
-
-  private setPanelView(view: PanelView): void {
-    this.panelView = view;
-    const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
-    q("#view-sounding")?.classList.toggle("active", view === "sounding");
-    q("#view-fronts")?.classList.toggle("active", view === "fronts");
-
-    const creatorHost = this.simScreen.querySelector(
-      "#creator-host",
-    ) as HTMLElement | null;
-    const frontsPanel = this.simScreen.querySelector(
-      "#fronts-panel",
-    ) as HTMLElement | null;
-    const actions = this.simScreen.querySelector(
-      ".sounding-drawer-actions",
-    ) as HTMLElement | null;
-
-    if (view === "fronts") {
-      this.syncSoundingFromEditors();
-      creatorHost?.classList.add("hidden");
-      actions?.classList.add("hidden");
-      frontsPanel?.classList.remove("hidden");
-      if (this.panelTitle) this.panelTitle.textContent = "Fronts";
-      if (this.panelDesc) {
-        this.panelDesc.textContent =
-          "Draw a front: the air on the left of your stroke is the cold or dry side. Edits apply to the running simulation.";
-      }
-      requestAnimationFrame(() => this.frontEditor?.resize());
-      return;
-    }
-
-    frontsPanel?.classList.add("hidden");
-    creatorHost?.classList.remove("hidden");
-    actions?.classList.remove("hidden");
-    if (this.panelTitle) this.panelTitle.textContent = "Sounding";
-    if (this.panelDesc) {
-      this.panelDesc.textContent =
-        "Drag T/Td and hodograph tips, or import a sounding. Apply to push into the live run.";
-    }
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => this.creator?.resize());
-    });
   }
 
   private setPaused(paused: boolean): void {
@@ -626,10 +576,10 @@ export class App {
       this.closeSoundingDrawer();
     });
     q("#btn-show-panel").addEventListener("click", () => {
-      this.openSoundingDrawer(this.panelView);
+      this.openSoundingDrawer();
     });
     q("#btn-open-sounding")?.addEventListener("click", () => {
-      this.openSoundingDrawer("sounding");
+      this.openSoundingDrawer();
     });
     q("#btn-pause").addEventListener("click", () => {
       if (this.sessionMode === "batching") return;
@@ -933,11 +883,6 @@ export class App {
     liveLat.addEventListener("input", applyLiveSun);
     liveMonth.addEventListener("input", applyLiveSun);
     liveDaylen.addEventListener("input", applyLiveSun);
-
-    q("#view-sounding").addEventListener("click", () =>
-      this.setPanelView("sounding"),
-    );
-    q("#view-fronts").addEventListener("click", () => this.setPanelView("fronts"));
 
     const applyFrontsBtn = q("#btn-apply-fronts");
     applyFrontsBtn.addEventListener("click", () => {
@@ -1386,6 +1331,7 @@ export class App {
     this.frontEditor?.root.remove();
     this.frontEditor = new SynopticEditor({
       compact: true,
+      embedded: true,
       setup: this.synoptic,
     });
     this.frontEditor.onChange = (setup) => {
@@ -1394,7 +1340,6 @@ export class App {
     frontsHost?.appendChild(this.frontEditor.root);
     this.pushFrontsToMap();
 
-    this.setPanelView("sounding");
     this.closeSoundingDrawer();
     this.creator.resize();
     this.renderer.resize();

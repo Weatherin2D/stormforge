@@ -153,7 +153,7 @@ label {
 
 .setup-shell {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 2.4fr) minmax(220px, 300px);
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   align-items: stretch;
   gap: 0.85rem;
   width: min(1920px, 99vw);
@@ -245,6 +245,31 @@ label {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.fronts-embedded-host {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.fronts-embedded {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  max-height: none;
+}
+
+.fronts-embedded #sf-front-canvas {
+  max-width: min(100%, 720px);
+  margin: 0 auto;
+}
+
+.fronts-below-sounding {
+  margin-top: 0.75rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
 }
 
 @media (max-width: 1100px) {
@@ -1722,7 +1747,7 @@ label {
 .sounding-drawer-body #creator-host,
 .sounding-drawer-body .sc-root {
   flex: 1 1 auto;
-  min-height: min(78vh, 920px);
+  min-height: min(84vh, 1100px);
   display: flex;
   flex-direction: column;
 }
@@ -1983,8 +2008,8 @@ label {
 
 .sc-main {
   display: grid;
-  grid-template-columns: minmax(0, 1.85fr) minmax(300px, 0.95fr);
-  gap: 0.9rem;
+  grid-template-columns: minmax(0, 2fr) minmax(340px, 0.85fr);
+  gap: 1rem;
   flex: 1 1 auto;
   align-items: start;
 }
@@ -2010,13 +2035,12 @@ label {
 #sc-st {
   width: 100%;
   height: auto;
-  /* Keep the plot tall: ~88% of viewport height, capped by canvas aspect. */
-  max-height: min(88vh, 980px);
+  max-height: min(92vh, 1200px);
 }
 
 #sc-ho {
   width: 100%;
-  max-width: min(100%, 640px);
+  max-width: min(100%, 780px);
   height: auto;
   margin: 0 auto;
   display: block;
@@ -2032,7 +2056,7 @@ label {
 
 .setup-sounding .sc-main,
 .sounding-drawer-body .sc-main {
-  min-height: min(78vh, 900px);
+  min-height: min(82vh, 1100px);
 }
 
 .sc-hz h2 {

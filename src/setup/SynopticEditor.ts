@@ -23,6 +23,8 @@ const KIND_COLOR = FRONT_COLORS;
 export interface SynopticEditorOptions {
   /** Compact layout for the in-simulation panel. */
   compact?: boolean;
+  /** Nested under sounding (setup or drawer) — not a standalone column card. */
+  embedded?: boolean;
   /** Pattern to show when the editor opens. */
   setup?: SynopticSetup;
 }
@@ -62,10 +64,13 @@ export class SynopticEditor {
 
   constructor(opts: SynopticEditorOptions = {}) {
     const compact = opts.compact === true;
+    const embedded = opts.embedded === true;
     this.root = document.createElement("aside");
     this.root.className = compact
       ? "setup-fronts synoptic-compact"
-      : "setup-card setup-fronts";
+      : embedded
+        ? "setup-fronts fronts-embedded"
+        : "setup-card setup-fronts";
     this.root.tabIndex = 0;
     this.root.innerHTML = `
       ${compact ? "" : "<h2>Fronts</h2>"}
