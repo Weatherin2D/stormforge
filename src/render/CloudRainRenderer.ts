@@ -323,9 +323,9 @@ export class CloudRainRenderer {
   private boltScene = new THREE.Scene();
   private boltGlows: THREE.Mesh[] = [];
   private boltCores: THREE.Mesh[] = [];
-  private readonly boltPointCount = 140;
+  private readonly boltPointCount = 180;
   private readonly boltScratch: THREE.Vector3[] = Array.from(
-    { length: 140 },
+    { length: 180 },
     () => new THREE.Vector3(),
   );
   private readonly boltRight = new THREE.Vector3();
@@ -1103,8 +1103,8 @@ if(abs(uSurface - 2.0) < 0.5){
           : bolt.kind === "negcg"
             ? 7
             : bolt.kind === "spider"
-              ? 3.5
-              : 5.5) * night;
+              ? 7
+              : 8) * night;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number, amt = pulse * gain) => {
         if (flashes.length >= 4) return;
@@ -1120,7 +1120,13 @@ if(abs(uSurface - 2.0) < 0.5){
       };
       pushAt(bolt.x, bolt.y, bolt.z);
       if (bolt.kind === "ic" || bolt.kind === "spider") {
-        pushAt(bolt.endX, bolt.endY, bolt.endZ, pulse * gain * 0.7);
+        pushAt(
+          (bolt.x + bolt.endX) * 0.5,
+          (bolt.y + bolt.endY) * 0.5,
+          (bolt.z + bolt.endZ) * 0.5,
+          pulse * gain * 0.85,
+        );
+        pushAt(bolt.endX, bolt.endY, bolt.endZ, pulse * gain * 0.75);
       } else if (bolt.isCg && flashes.length < 4) {
         const midY = bolt.y * 0.55 + this.groundY * 0.45;
         pushAt(bolt.x, midY, bolt.z, pulse * gain * 0.45);
@@ -1993,9 +1999,9 @@ if(abs(uSurface - 2.0) < 0.5){
     const to =
       kind === "negcg" || kind === "poscg"
         ? {
-            x: endX + (rng() - 0.5) * 200,
+            x: endX + (rng() - 0.5) * (kind === "poscg" ? 1600 : 200),
             y: this.groundY + 2,
-            z: endZ + (rng() - 0.5) * 200,
+            z: endZ + (rng() - 0.5) * (kind === "poscg" ? 1600 : 200),
           }
         : { x: endX, y: endY, z: endZ };
     const channel =
@@ -2037,10 +2043,12 @@ if(abs(uSurface - 2.0) < 0.5){
       channel,
       brightness:
         kind === "poscg"
-          ? 0.95 + Math.random() * 0.35
-          : isCg
-            ? 0.7 + Math.random() * 0.5
-            : 0.8 + Math.random() * 0.4,
+          ? 1.05 + Math.random() * 0.35
+          : kind === "spider"
+            ? 1.0 + Math.random() * 0.3
+            : kind === "ic"
+              ? 1.05 + Math.random() * 0.35
+              : 0.7 + Math.random() * 0.5,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
     if (kind === "sprite" && this.spriteView) {
@@ -2112,12 +2120,12 @@ if(abs(uSurface - 2.0) < 0.5){
       const dayScale = Math.max(0.35, 1 - 0.55 * this.sunFrac);
       const energy =
         bolt.kind === "poscg"
-          ? 8e7
+          ? 9e7
           : bolt.kind === "negcg"
             ? 5.5e7
             : bolt.kind === "spider"
-              ? 2.2e7
-              : 3e7;
+              ? 5e7
+              : 5.5e7;
       light.intensity = energy * pulse * dayScale;
 
       const packed = this.clipChannel(
@@ -2172,10 +2180,10 @@ if(abs(uSurface - 2.0) < 0.5){
   }
 
   private kindWidths(kind: LightningKind): { core: number; glow: number } {
-    if (kind === "poscg") return { core: 18, glow: 110 };
+    if (kind === "poscg") return { core: 22, glow: 130 };
     if (kind === "negcg") return { core: 12, glow: 70 };
-    if (kind === "spider") return { core: 8, glow: 50 };
-    return { core: 7, glow: 45 };
+    if (kind === "spider") return { core: 14, glow: 90 };
+    return { core: 13, glow: 85 };
   }
 
   private applyKindTint(kind: LightningKind): void {

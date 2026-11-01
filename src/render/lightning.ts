@@ -32,7 +32,7 @@ export function course(flash: Flash, rng: () => number, extent = 0): Course {
     const n = 1 + Math.floor(rng() * 3)
     const strokes = Array.from({ length: n }, (_, k) => ({
       at: k ? leader + rng() * (end - leader) : leader,
-      peak: .18 + rng() * .22,
+      peak: .45 + rng() * .35,
       cc: 0,
       ccLength: 0,
       path: 0 as const,
@@ -43,7 +43,7 @@ export function course(flash: Flash, rng: () => number, extent = 0): Course {
     const leader = Math.max(60 + rng() * 90, crawl)
     const end = Math.max(200 + rng() * 300, leader + 150 + rng() * 300)
     const n = 3 + Math.floor(rng() * 8)
-    const strokes = Array.from({ length: n }, (_, k) => ({ at: k ? leader + rng() * (end - leader) : leader, peak: .15 + rng() * .2, cc: 0, ccLength: 0, path: 0 as const })).sort((a, b) => a.at - b.at)
+    const strokes = Array.from({ length: n }, (_, k) => ({ at: k ? leader + rng() * (end - leader) : leader, peak: .4 + rng() * .35, cc: 0, ccLength: 0, path: 0 as const })).sort((a, b) => a.at - b.at)
     return { leader, strokes, end: end + 120 }
   }
   const positive = flash.charge > 0
@@ -77,7 +77,7 @@ export function brightness(c: Course, cg: boolean, t: number, slow = false) {
     if (!cg) branch = main
     else if (k === 0) branch = Math.max(branch, .5 * Math.exp(-after / (slow ? 2 : 15)))
   }
-  if (!cg && t >= c.leader) main = branch = old = Math.max(main, .08)
+  if (!cg && t >= c.leader) main = branch = old = Math.max(main, .18)
   return { main, branch, reveal, old, fork }
 }
 
@@ -408,21 +408,46 @@ function forkPlan(
     ]
   }
   if (kind === 'poscg') {
-    const extra = rng() < 0.45 ? [{ along: 0.6, len: 350 + rng() * 180, drop: 180 + rng() * 160 }] : []
+    const extra = rng() < 0.55 ? [{ along: 0.55 + rng() * 0.1, len: 700 + rng() * 500, drop: 400 + rng() * 400 }] : []
     return [
-      { along: 0.35 + rng() * 0.1, len: 500 + rng() * 400, drop: 300 + rng() * 500 },
+      { along: 0.28 + rng() * 0.1, len: 900 + rng() * 700, drop: 500 + rng() * 700 },
       ...extra,
     ]
   }
   if (kind === 'spider') {
-    const n = 4 + Math.floor(rng() * 4)
+    const n = 6 + Math.floor(rng() * 5)
     return Array.from({ length: n }, (_, i) => ({
-      along: 0.15 + (i * 0.7) / n + rng() * 0.05,
-      len: 180 + rng() * 280,
-      drop: (rng() - 0.5) * 80,
+      along: 0.12 + (i * 0.75) / n + rng() * 0.04,
+      len: 600 + rng() * 1400,
+      drop: (rng() - 0.5) * 220,
     }))
   }
-  return [{ along: 0.45, len: 280 + rng() * 200, drop: (rng() - 0.4) * 120 }]
+  return [
+    { along: 0.22 + rng() * 0.06, len: 900 + rng() * 800, drop: (rng() - 0.35) * 400 },
+    { along: 0.42 + rng() * 0.06, len: 800 + rng() * 700, drop: (rng() - 0.45) * 350 },
+    { along: 0.62 + rng() * 0.08, len: 700 + rng() * 600, drop: (rng() - 0.4) * 300 },
+    { along: 0.78 + rng() * 0.06, len: 500 + rng() * 400, drop: (rng() - 0.5) * 220 },
+  ]
+}
+
+function stretchEnd(
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+  minLen: number,
+  rng: () => number,
+): { x: number; y: number; z: number } {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dz = to.z - from.z
+  const len = Math.hypot(dx, dy, dz)
+  if (len >= minLen) return to
+  const ang = rng() * Math.PI * 2
+  const need = minLen - len
+  return {
+    x: to.x + Math.cos(ang) * need,
+    y: to.y,
+    z: to.z + Math.sin(ang) * need,
+  }
 }
 
 /** Metre-scale branched channel with per-point growth order. */
@@ -436,7 +461,10 @@ export function buildChannel(
 ): LightningChannel {
   const points: ChannelPoint[] = []
   const spans: ChannelSpan[] = []
-  const mainBudget = kind === 'spider' ? Math.min(70, cap - 20) : Math.min(36, cap - 16)
+  const minLen = kind === 'spider' ? 8000 : kind === 'ic' ? 4500 : kind === 'poscg' ? 2500 : 0
+  to = stretchEnd(from, to, minLen, rng)
+  const mainBudget =
+    kind === 'spider' ? Math.min(90, cap - 24) : kind === 'ic' ? Math.min(56, cap - 20) : Math.min(36, cap - 16)
   const raw = refineM([from.x, from.y, from.z], [to.x, to.y, to.z], rng, groundY)
   const main = decimate(raw, Math.max(8, mainBudget))
   const start = points.length

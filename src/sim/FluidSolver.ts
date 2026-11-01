@@ -1878,7 +1878,17 @@ export class FluidSolver implements SimBackend {
         let k = kNeg;
         let endI = i;
         let endJ = j;
-        let endK = kPosU;
+        let endK = Math.max(kNeg + 4, kPosU, Math.min(nz - 2, topK));
+        const clampI = (v: number) => Math.max(0, Math.min(nx - 1, v));
+        const clampJ = (v: number) => Math.max(0, Math.min(ny - 1, v));
+        const stepAway = (minCells: number, extra: number) => {
+          const cells = minCells + Math.floor(Math.random() * extra);
+          const ang = Math.random() * Math.PI * 2;
+          return {
+            i: clampI(i + Math.round(Math.cos(ang) * cells)),
+            j: clampJ(j + Math.round(Math.sin(ang) * cells)),
+          };
+        };
         r -= wIc;
         if (r > 0) {
           r -= wNeg;
@@ -1892,28 +1902,35 @@ export class FluidSolver implements SimBackend {
             if (r <= 0) {
               kind = "poscg";
               polarity = 1;
-              const isolated = maxQl > 3 && minQ > -2;
-              k = isolated ? kPosL : kPosU;
+              k = Math.max(kPosU, Math.min(nz - 2, topK), kNeg + 5);
               endK = 1;
+              const ground = stepAway(2, 4);
+              endI = ground.i;
+              endJ = ground.j;
             } else {
               kind = "spider";
               polarity = 1;
-              k = kPosU;
-              endK = kPosU;
+              k = Math.max(kPosU, Math.min(nz - 2, topK));
+              endK = k;
+              const crawl = stepAway(8, 10);
               let ci = i;
               let cj = j;
-              const steps = 3 + Math.floor(Math.random() * 5);
+              const di = Math.sign(crawl.i - i) || (Math.random() < 0.5 ? -1 : 1);
+              const dj = Math.sign(crawl.j - j) || (Math.random() < 0.5 ? -1 : 1);
+              const steps = Math.max(
+                8,
+                Math.abs(crawl.i - i) + Math.abs(crawl.j - j),
+              );
               for (let s = 0; s < steps; s++) {
-                let bestI = ci;
-                let bestJ = cj;
+                let bestI = clampI(ci + di);
+                let bestJ = clampJ(cj + dj);
                 let bestC = -1e9;
-                for (let dj = -1; dj <= 1; dj++) {
-                  for (let di = -1; di <= 1; di++) {
-                    if (!di && !dj) continue;
-                    const ni = ci + di;
-                    const nj = cj + dj;
-                    if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
-                    const cq = q[ni + nx * (nj + ny * kPosU)];
+                for (let oj = -1; oj <= 1; oj++) {
+                  for (let oi = -1; oi <= 1; oi++) {
+                    const ni = clampI(ci + di + oi);
+                    const nj = clampJ(cj + dj + oj);
+                    if (ni === ci && nj === cj) continue;
+                    const cq = q[ni + nx * (nj + ny * k)];
                     if (cq > bestC) {
                       bestC = cq;
                       bestI = ni;
@@ -1921,7 +1938,6 @@ export class FluidSolver implements SimBackend {
                     }
                   }
                 }
-                if (bestI === ci && bestJ === cj) break;
                 ci = bestI;
                 cj = bestJ;
               }
@@ -1930,12 +1946,9 @@ export class FluidSolver implements SimBackend {
             }
           }
         } else {
-          const ni = Math.max(0, Math.min(nx - 1, i + (Math.random() < 0.5 ? -1 : 1)));
-          const nj = Math.max(0, Math.min(ny - 1, j + (Math.random() < 0.5 ? -1 : 1)));
-          if (Math.random() < 0.45) {
-            endI = ni;
-            endJ = nj;
-          }
+          const icEnd = stepAway(3, 5);
+          endI = icEnd.i;
+          endJ = icEnd.j;
         }
 
         hits.push({
