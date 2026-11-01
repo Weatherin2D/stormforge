@@ -1410,6 +1410,7 @@ if(abs(uSurface - 2.0) < 0.5){
     );
     this.invViewProj.copy(this.currViewProj).invert();
     if (this.precipitation.points.visible) {
+      this.precipitation.setPixelScale(this.renderer.domElement.height);
       this.precipitation.update(performance.now());
     }
 

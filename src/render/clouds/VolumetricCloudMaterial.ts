@@ -153,7 +153,7 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
         uFlashColor: { value: [new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1), new THREE.Vector3(1, 1, 1)] },
         uFlashAmt: { value: [0, 0, 0, 0] },
         uTime: { value: 0 },
-        uRainFallSpeed: { value: 7.0 },
+        uRainFallSpeed: { value: 14.0 },
         uRainWindShear: { value: new THREE.Vector3(0, 0, 0) },
         uMammatusDepth: { value: 0 },
         uMammatusCell: { value: 0 },

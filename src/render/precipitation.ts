@@ -9,18 +9,26 @@ import * as THREE from "three";
  * `SimFields`: rain cells give drops, cold cells give snowflakes that melt as
  * they fall through the 0 °C level.
  *
- * Adapted from MeteoLAB's `precipVertex` / `precipFragment` and `updatePrecip`.
+ * Look and motion follow MeteoLAB (`precipVertex` / `precipFragment`,
+ * `SNOW_FALL`, `MELT_DEPTH`, rain terminal ~ Kessler fallSpeed).
  */
 
 const PARTICLE_CAPACITY = 8000;
 /** Spawn attempts per second. Each attempt targets one random column. */
-const SPAWN_RATE = 1400;
+const SPAWN_RATE = 2200;
 /** Packed byte value below which a cell is considered empty. */
-const PACK_EMPTY = 5;
-/** Vertical distance over which snow melts, in metres. */
-const MELT_DEPTH = 900;
+const PACK_EMPTY = 4;
+/** Vertical distance over which snow melts, metres (MeteoLAB MELT_DEPTH). */
+const MELT_DEPTH = 600;
+/** Snowflake fall speed, m/s (MeteoLAB SNOW_FALL). */
+const SNOW_FALL = 2.0;
+/**
+ * Rain terminal fall speed at melt=1, m/s.
+ * Kessler-class rain is ~6–8; bumped for clearer streaks and “faster” feel.
+ */
+const RAIN_FALL = 12.0;
 /** How strongly particles follow the environmental wind (0–1). */
-const WIND_DRAG = 0.55;
+const WIND_DRAG = 0.7;
 
 const vertexShader = /* glsl */ `
 attribute float aMelt;
@@ -31,7 +39,8 @@ void main(){
   if(aMelt < 0.0){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = clamp(mix(0.7, 0.5, aMelt) * uScale / -mv.z, 3.0, 26.0);
+  // Rain reads smaller / sharper; snow a bit larger (MeteoLAB).
+  gl_PointSize = clamp(mix(0.75, 0.48, aMelt) * uScale / -mv.z, 2.5, 28.0);
 }
 `;
 
@@ -40,12 +49,16 @@ varying float vMelt;
 void main(){
   vec2 c = gl_PointCoord * 2.0 - 1.0;
   float r = length(c);
+  // Snowflake: six soft arms + bright core (MeteoLAB).
   float arms = pow(abs(cos(3.0 * atan(c.y, c.x))), 8.0);
   float snow = clamp(smoothstep(1.0, 0.3, r) * arms + smoothstep(0.4, 0.1, r), 0.0, 1.0);
-  float rain = smoothstep(1.0, 0.5, length(vec2(c.x * 3.5, c.y)));
+  // Rain: vertically stretched streak (taller when fully melted).
+  float stretch = mix(3.5, 5.2, vMelt);
+  float rain = smoothstep(1.0, 0.45, length(vec2(c.x * stretch, c.y)));
   float alpha = mix(snow, rain, vMelt);
   if(alpha < 0.05) discard;
-  gl_FragColor = vec4(mix(vec3(0.97, 0.98, 1.0), vec3(0.45, 0.64, 0.92), vMelt), alpha * 0.9);
+  vec3 col = mix(vec3(0.97, 0.98, 1.0), vec3(0.42, 0.62, 0.92), vMelt);
+  gl_FragColor = vec4(col, alpha * mix(0.85, 0.95, vMelt));
   #include <colorspace_fragment>
 }
 `;
@@ -139,6 +152,14 @@ export class PrecipitationParticles {
     this.windNorth = north;
   }
 
+  /** MeteoLAB: `drawingBufferHeight * 0.5` so point size tracks the viewport. */
+  setPixelScale(drawingBufferHeight: number): void {
+    (this.material.uniforms.uScale as { value: number }).value = Math.max(
+      120,
+      drawingBufferHeight * 0.5,
+    );
+  }
+
   setVisible(on: boolean): void {
     this.points.visible = on;
   }
@@ -184,7 +205,7 @@ export class PrecipitationParticles {
     if (dnx < 1 || dny < 1 || dnz < 1) return;
 
     this.spawnDebt += dt * SPAWN_RATE;
-    let attempts = Math.min(120, this.spawnDebt | 0);
+    let attempts = Math.min(180, this.spawnDebt | 0);
     this.spawnDebt -= attempts;
 
     const nxny = dnx * dny;
@@ -192,6 +213,8 @@ export class PrecipitationParticles {
       const i = (Math.random() * dnx) | 0;
       const j = (Math.random() * dny) | 0;
       let k = (Math.random() * dnz) | 0;
+      // Prefer lower half of the column for shafts (more visible curtains).
+      if (Math.random() < 0.55) k = (Math.random() * (dnz * 0.55)) | 0;
       // Find a precipitating cell in this column, searching up then down.
       let found = this.cellHasPrecip(data, i, j, k, nxny);
       if (!found) {
@@ -225,9 +248,12 @@ export class PrecipitationParticles {
       this.positions[o + 1] = y;
       this.positions[o + 2] = z;
       this.age[p] = 0;
-      this.life[p] = 10 + Math.random() * 26;
+      // Shorter life → faster turnover, denser curtains (MeteoLAB ages out at 2400 model-s;
+      // renderer clock is wall time, so keep visual life short).
+      const melt0 = this.meltAt(y);
+      this.life[p] = melt0 > 0.5 ? 4 + Math.random() * 8 : 8 + Math.random() * 16;
       this.alive[p] = 1;
-      this.melt[p] = this.meltAt(y);
+      this.melt[p] = melt0;
     }
   }
 
@@ -255,7 +281,8 @@ export class PrecipitationParticles {
       const o = p * 3;
       const y = pos[o + 1];
       const melt = this.meltAt(y);
-      const fall = 1.1 + 7.6 * melt;
+      // MeteoLAB: lerp(SNOW_FALL, max(2, rainFallSpeed), melt).
+      const fall = SNOW_FALL + (RAIN_FALL - SNOW_FALL) * melt;
       const age = (this.age[p] += dt);
       let ny = y - fall * dt;
       let nx = pos[o] + driftX;
