@@ -66,11 +66,13 @@ export class SynopticEditor {
     const compact = opts.compact === true;
     const embedded = opts.embedded === true;
     this.root = document.createElement("aside");
-    this.root.className = compact
-      ? "setup-fronts synoptic-compact"
-      : embedded
-        ? "setup-fronts fronts-embedded"
-        : "setup-card setup-fronts";
+    this.root.className = [
+      "setup-fronts",
+      compact ? "synoptic-compact" : "",
+      embedded || compact ? "fronts-embedded" : "setup-card",
+    ]
+      .filter(Boolean)
+      .join(" ");
     this.root.tabIndex = 0;
     this.root.innerHTML = `
       ${compact ? "" : "<h2>Fronts</h2>"}

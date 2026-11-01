@@ -89,20 +89,33 @@ function path(
   pts.forEach((q, i) => x[i ? "lineTo" : "moveTo"](X(q[0], q[1]), Y(q[1])));
   x.strokeStyle = col;
   x.lineWidth = w;
+  x.lineJoin = "round";
+  x.lineCap = "round";
   x.setLineDash(dash);
   x.stroke();
 }
+
+/** Profile stroke / handle sizes for the large canvas. */
+const PROFILE_W = 5;
+const PARCEL_W = 2.75;
+const HANDLE_R = 7;
+const HODO_W = 5.5;
+const HODO_R = 7.5;
 
 const dot = (
   x: CanvasRenderingContext2D,
   px: number,
   py: number,
   c: string,
+  r = HANDLE_R,
 ): void => {
   x.beginPath();
-  x.arc(px, py, 3.5, 0, 7);
+  x.arc(px, py, r, 0, 7);
   x.fillStyle = c;
   x.fill();
+  x.lineWidth = 1.5;
+  x.strokeStyle = "rgba(0,0,0,0.35)";
+  x.stroke();
 };
 
 export function drawSkewT(
@@ -166,25 +179,27 @@ export function drawSkewT(
     for (let p = 1050; p >= 600; p -= 50) q.push([Tdw(p, w), p]);
     path(x, q, "rgba(90,160,90,.55)", 1, [2, 3]);
   });
+  x.lineJoin = "round";
+  x.lineCap = "round";
   path(
     x,
     L.map((l) => [l.T, l.p]),
     "#e5383b",
-    2.5,
+    PROFILE_W,
   );
   path(
     x,
     L.map((l) => [l.Td, l.p]),
     "#2fa84f",
-    2.5,
+    PROFILE_W,
   );
   const pc = D.P[sel];
   path(
     x,
     pc.pts.map((q) => [q[1] - K, q[0]]),
     fg,
-    1.5,
-    [6, 4],
+    PARCEL_W,
+    [8, 5],
   );
   L.forEach((l) => {
     dot(x, X(l.T, l.p), Y(l.p), "#e5383b");
@@ -194,15 +209,18 @@ export function drawSkewT(
   x.fillStyle = mu;
   x.strokeStyle = mu;
   x.setLineDash([]);
-  x.lineWidth = 1;
+  x.lineWidth = 1.25;
   x.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  for (let p = 100; p <= 1000; p += 100) x.fillText(String(p), 6, Y(p) + 4);
+  x.font = "17px system-ui, sans-serif";
+  for (let p = 100; p <= 1000; p += 100) x.fillText(String(p), 6, Y(p) + 5);
   for (let T = -30; T <= 50; T += 10) {
-    x.fillText(String(T), X(T, 1050) - 8, ST_H - 12);
+    x.fillText(String(T), X(T, 1050) - 10, ST_H - 12);
   }
   x.fillStyle = fg;
   x.strokeStyle = fg;
-  x.setLineDash([2, 3]);
+  x.setLineDash([3, 4]);
+  x.lineWidth = 1.5;
+  x.font = "15px system-ui, sans-serif";
   (
     [
       ["LCL", pc.pl],
@@ -212,13 +230,13 @@ export function drawSkewT(
   ).forEach(([n, p]) => {
     if (p == null) return;
     x.beginPath();
-    x.moveTo(x1 - 90, Y(p));
+    x.moveTo(x1 - 110, Y(p));
     x.lineTo(x1, Y(p));
     x.stroke();
     x.fillText(
       `${sel} ${n} ${Math.round(Zat(L, p))} m`,
-      x1 - 88,
-      Y(p) - 3,
+      x1 - 108,
+      Y(p) - 4,
     );
   });
 }
@@ -245,15 +263,15 @@ export function drawHodograph(
   const gr = css.grid;
   const mu = css.muted;
   const sc = (hc - 32) / hR;
-  x.font = "15px system-ui, sans-serif";
+  x.font = "16px system-ui, sans-serif";
   x.fillStyle = mu;
   x.strokeStyle = gr;
-  x.lineWidth = 1;
+  x.lineWidth = 1.25;
   for (let r = 10; r <= hR; r += 10) {
     x.beginPath();
     x.arc(hc, hc, r * sc, 0, 7);
     x.stroke();
-    if (r % 20 === 0) x.fillText(String(r), hc + 3, hc - r * sc - 2);
+    if (r % 20 === 0) x.fillText(String(r), hc + 4, hc - r * sc - 3);
   }
   x.beginPath();
   x.moveTo(8, hc);
@@ -272,6 +290,8 @@ export function drawHodograph(
             ? "#17a2b8"
             : "#7b6cff";
   const H1 = L.filter((l) => (l.z ?? 0) <= 12e3);
+  x.lineJoin = "round";
+  x.lineCap = "round";
   for (let i = 1; i < H1.length; i++) {
     const a = hodoPoint(H1[i - 1], hR, hc);
     const b = hodoPoint(H1[i], hR, hc);
@@ -279,17 +299,17 @@ export function drawHodograph(
     x.moveTo(a[0], a[1]);
     x.lineTo(b[0], b[1]);
     x.strokeStyle = col(((H1[i].z ?? 0) + (H1[i - 1].z ?? 0)) / 2);
-    x.lineWidth = 3;
+    x.lineWidth = HODO_W;
     x.stroke();
   }
   H1.forEach((l) => {
     const [px, py] = hodoPoint(l, hR, hc);
     x.beginPath();
-    x.arc(px, py, 3.5, 0, 7);
+    x.arc(px, py, HODO_R, 0, 7);
     x.fillStyle = css.card;
     x.fill();
     x.strokeStyle = col(l.z ?? 0);
-    x.lineWidth = 1.5;
+    x.lineWidth = 2.75;
     x.stroke();
   });
   (
@@ -302,7 +322,7 @@ export function drawHodograph(
     const px = hc + v[0] * sc;
     const py = hc - v[1] * sc;
     x.fillStyle = c;
-    x.fillRect(px - 3, py - 3, 6, 6);
-    x.fillText(n, px + 5, py - 4);
+    x.fillRect(px - 5, py - 5, 10, 10);
+    x.fillText(n, px + 7, py - 5);
   });
 }
