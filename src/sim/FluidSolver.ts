@@ -1567,8 +1567,10 @@ export class FluidSolver implements SimBackend {
    * Axes match the world box: X = east, Y = up, Z = south (north is −Z,
    * so grid j = ny−1 is texture Z = 0).
    * R = cloud liquid opacity (MeteoLAB cloudOpacity of qc),
-   * G = cold opacity (0.25·ice + 0.08·snow + 0.03·(graupel+hail)),
-   * B = rain ((qr/0.0015)^0.65 → 1.0 so drizzle still curtains). A = max channel.
+   * G = cold opacity (0.25·ice + 0.08·snow + 0.03·graupel),
+   * B = rain ((qr/0.0015)^0.65 → 1.0 so drizzle still curtains).
+   * A = hail core (qh / 2 g kg⁻¹, compressed). Particles and the cloud shader
+   * read A on its own so hail is not smeared into the ice anvil.
    */
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
@@ -1579,9 +1581,7 @@ export class FluidSolver implements SimBackend {
     // Ice/snow/graupel/hail extinction weights vs liquid (MeteoLAB ICE/SNOW/RIMER).
     const coldOpacity = (id: number): number => {
       const cold =
-        0.25 * f.qi[id] +
-        0.08 * f.qs[id] +
-        0.03 * (f.qg[id] + f.qh[id]);
+        0.25 * f.qi[id] + 0.08 * f.qs[id] + 0.03 * f.qg[id];
       return cloudOpacity(cold);
     };
     // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
@@ -1597,15 +1597,17 @@ export class FluidSolver implements SimBackend {
       const x = Math.pow(qr / rainUnit, 0.65) * 255;
       return x >= 255 ? 255 : x | 0;
     };
+    // Hail core. 2 g/kg reads as a solid core; lighter hail stays translucent.
+    const hailByte = (qh: number): number => {
+      if (qh <= 1e-7) return 0;
+      const x = Math.pow(qh / 0.002, 0.72) * 255;
+      return x >= 255 ? 255 : x | 0;
+    };
     const write = (id: number, _k: number, o: number): void => {
-      const liq = byte01(cloudOpacity(f.qc[id]));
-      const ice = byte01(coldOpacity(id));
-      const rain = rainByte(f.qr[id]);
-      out[o] = liq;
-      out[o + 1] = ice;
-      out[o + 2] = rain;
-      const m = liq > ice ? liq : ice;
-      out[o + 3] = m > rain ? m : rain;
+      out[o] = byte01(cloudOpacity(f.qc[id]));
+      out[o + 1] = byte01(coldOpacity(id));
+      out[o + 2] = rainByte(f.qr[id]);
+      out[o + 3] = hailByte(f.qh[id]);
     };
     if (out.length >= n * 4) {
       for (let k = 0; k < nz; k++) {

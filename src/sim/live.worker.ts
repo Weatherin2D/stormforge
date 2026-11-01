@@ -13,6 +13,7 @@ import {
   packRainSwath,
   packColdPoolMap,
   packFieldVolume,
+  packGroundCover,
   findVortexColumn,
   packVortexLevels,
 } from "./fieldPack";
@@ -68,6 +69,7 @@ function publish(extra: {
   field?: Uint8Array | null;
   fieldMode?: OverlayField | null;
   vortex?: Float32Array | null;
+  ground?: Uint8Array | null;
 }): void {
   if (!solver) return;
   const sun = solver.getSolarStatus();
@@ -79,6 +81,7 @@ function publish(extra: {
   if (extra.coldPool) transfers.push(extra.coldPool.buffer);
   if (extra.field) transfers.push(extra.field.buffer);
   if (extra.vortex) transfers.push(extra.vortex.buffer);
+  if (extra.ground) transfers.push(extra.ground.buffer);
   const fo = solver.frameOffset();
   const payload = {
     type: "state" as const,
@@ -103,6 +106,7 @@ function publish(extra: {
     field: extra.field ?? null,
     fieldMode: extra.fieldMode ?? null,
     vortex: extra.vortex ?? null,
+    ground: extra.ground ?? null,
     frameEast: fo.east,
     frameNorth: fo.north,
     followStorm: solver.getFollowStorm(),
@@ -204,6 +208,8 @@ self.onmessage = (ev: MessageEvent) => {
   if (msg.wantVortex) {
     vortex = packVortexLevels(findVortexColumn(solver.grid, solver.fields));
   }
+  const ground = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
+  packGroundCover(solver.grid, solver.fields, ground);
   publish({
     volume,
     map,
@@ -215,5 +221,6 @@ self.onmessage = (ev: MessageEvent) => {
     field,
     fieldMode,
     vortex,
+    ground,
   });
 };

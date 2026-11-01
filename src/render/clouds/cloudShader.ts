@@ -6,7 +6,7 @@
  * raymarches from the camera through the box in world space.
  *
  * Inputs
- *   uFields       sim volume, spanning exactly [uBoxMin, uBoxMax]. R = cloud liquid, G = cloud ice, B = rain.
+ *   uFields       sim volume, spanning exactly [uBoxMin, uBoxMax]. R = cloud liquid, G = cloud ice/snow, B = rain, A = hail core.
  *                 uFieldGain scales each channel so that "very dense" is about 1.0.
  *   uShapeNoise   64^3 tileable Perlin-Worley (R) + Worley billows (GBA)
  *   uDetailNoise  32^3 tileable Worley billows (RGB)
@@ -379,6 +379,12 @@ vec3 sampleSigma(vec3 p, float detail) {
 
 // ---------------------------------------------------------------- lighting
 
+// Hail-core extinction. A is packed separately so a dense core is not eroded like anvil ice.
+float hailSigma(vec3 p) {
+  vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
+  return max(textureLod(uFields, uvw, 0.0).a, 0.0) * uFieldGain;
+}
+
 // Optical depth from p toward the sun. Steps grow exponentially so the last sample is long
 // enough to see an anvil far above the tower and let it shadow what is below.
 float sunOpticalDepth(vec3 p) {
@@ -389,7 +395,7 @@ float sunOpticalDepth(vec3 p) {
     vec3 sp = p + uSunDir * (t + 0.5 * len);
     if (!insideBox(sp)) break;
     vec3 s = sampleSigma(sp, i < 2 ? 1.0 : 0.0);
-    od += (s.x + s.y + s.z) * len;
+    od += (s.x + s.y + s.z + hailSigma(sp) * 1.8) * len;
     t += len;
     len *= uLightGrowth;
   }
@@ -406,11 +412,11 @@ void ambientDepth(vec3 p, out float odUp, out float odDown) {
     vec3 dn = p - vec3(0.0, h, 0.0);
     if (up.y < uBoxMax.y) {
       vec3 s = sampleSigma(up, 0.0);
-      odUp += (s.x + s.y + s.z) * uAmbientStep;
+      odUp += (s.x + s.y + s.z + hailSigma(up) * 1.4) * uAmbientStep;
     }
     if (dn.y > uBoxMin.y) {
       vec3 s = sampleSigma(dn, 0.0);
-      odDown += (s.x + s.y + s.z) * uAmbientStep;
+      odDown += (s.x + s.y + s.z + hailSigma(dn) * 1.4) * uAmbientStep;
     }
   }
 }
@@ -450,8 +456,10 @@ void main() {
 
     // cheap empty-space probe: one fetch of the raw field, no noise
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
-    vec3 probe = textureLod(uFields, uvw, 0.0).rgb * uFieldGain;
-    if (probe.x + probe.y + probe.z < 0.003) {
+    vec4 field = textureLod(uFields, uvw, 0.0);
+    vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
+    float hailHere = max(field.a * uFieldGain, 0.0);
+    if (probe.x + probe.y + probe.z + hailHere < 0.003) {
       t += dt * 2.0;
       continue;
     }
@@ -460,7 +468,9 @@ void main() {
     vec3 sig = sampleSigma(p, detail);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
-    float sigT = cloudSig + rainSig;
+    // Square the hail signal so only the dense core, not a thin veil, goes opaque.
+    float hSig = hailHere * hailHere * 3.2;
+    float sigT = cloudSig + rainSig + hSig;
 
     if (sigT > 1e-5) {
       float odSun = sunOpticalDepth(p);
@@ -507,6 +517,13 @@ void main() {
 
       // Inside cloud, droplets dominate; shafts show through where cloud is thin.
       vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
+      if (hSig > 1e-4) {
+        vec3 hailCol =
+          uSunColor * (exp(-odSun) * 0.55 + sunThrough(odSun) * 0.38) * vec3(0.80, 0.84, 0.90)
+          + ambient * vec3(0.70, 0.75, 0.82)
+          + vec3(0.04);
+        S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
+      }
 
       float stepT = exp(-sigT * dt);
       float w = T * (1.0 - stepT);

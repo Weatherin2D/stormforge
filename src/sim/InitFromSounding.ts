@@ -29,8 +29,16 @@ export interface SimFields {
   ni: Float32Array;
   /** Surface rain accumulation, mm liquid equivalent (nx·ny). */
   rainAccum: Float32Array;
-  /** Surface snow/graupel/hail accumulation, mm liquid equivalent (nx·ny). */
+  /** Surface snow and graupel accumulation, mm liquid equivalent (nx·ny). */
   snowAccum: Float32Array;
+  /** Physical snow depth from snow sedimentation, metres (nx·ny). */
+  snowDepth: Float32Array;
+  /** Surface hail accumulation, mm liquid equivalent (nx·ny). */
+  hailAccum: Float32Array;
+  /** Hailstones that have reached the ground, per square metre (nx·ny). */
+  hailCount: Float32Array;
+  /** Largest hailstone diameter that has reached the ground, mm (nx·ny). */
+  hailDiam: Float32Array;
   /** Instantaneous surface precipitation rate, mm/h liquid equivalent (nx·ny). */
   precipRate: Float32Array;
   /** Anelastic pressure / π' at cell centers. */
@@ -68,6 +76,10 @@ export function createFields(grid: Grid3D): SimFields {
     ni: new Float32Array(n),
     rainAccum: new Float32Array(grid.nx * grid.ny),
     snowAccum: new Float32Array(grid.nx * grid.ny),
+    snowDepth: new Float32Array(grid.nx * grid.ny),
+    hailAccum: new Float32Array(grid.nx * grid.ny),
+    hailCount: new Float32Array(grid.nx * grid.ny),
+    hailDiam: new Float32Array(grid.nx * grid.ny),
     precipRate: new Float32Array(grid.nx * grid.ny),
     p: new Float32Array(n),
     theta0: new Float32Array(nz),
@@ -226,6 +238,10 @@ export function initFromSounding(
   applySynopticFeatures(grid, fields, opts.synoptic);
   fields.rainAccum.fill(0);
   fields.snowAccum.fill(0);
+  fields.snowDepth.fill(0);
+  fields.hailAccum.fill(0);
+  fields.hailCount.fill(0);
+  fields.hailDiam.fill(0);
   fields.precipRate.fill(0);
 
   if (opts.bubbleStrength > 0) {

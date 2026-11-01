@@ -20,9 +20,31 @@ uniform vec3 uBoxMin;
 uniform vec3 uBoxMax;
 uniform vec3 uGrid;
 const float GROUND_WATER = 16.0, WIND_SCALE = 40.0;
-float gWater, gHail, gSpec;
+float gWater, gSnow, gHailDots, gSpec;
 
 float hash2(vec2 k){ return fract(sin(dot(k, vec2(127.1, 311.7))) * 43758.5453); }
+
+// One field of hail stones. radKm is the stone radius in kilometres; freq is the fraction of cells that hold a stone.
+float hailOctave(vec2 q, float scale, float freq, float radKm, float salt){
+  vec2 g = q * scale + salt;
+  vec2 cell = floor(g);
+  vec2 f = fract(g) - 0.5;
+  float show = step(hash2(cell), freq);
+  vec2 jitter = vec2(hash2(cell + 1.7), hash2(cell + 8.3)) - 0.5;
+  float rad = radKm * scale * (0.75 + 0.45 * hash2(cell + 3.1));
+  return show * smoothstep(rad, rad * 0.42, length(f - jitter * 0.7));
+}
+
+// freq (0–1) sets how many stones; size01 (0–1) sets how large each stone is.
+float hailStones(vec2 q, float freq, float size01){
+  if(freq < 0.004) return 0.0;
+  float scale = mix(5.0, 26.0, freq);
+  float blur = min(length(dFdx(q)), length(dFdy(q)));
+  float radKm = max(mix(0.015, 0.11, clamp(size01, 0.0, 1.0)), blur * 0.5);
+  float a = hailOctave(q, scale, freq, radKm, 0.0);
+  float b = hailOctave(q, scale * 1.85, freq * 0.72, radKm * 0.72, 4.7);
+  return clamp(a + b, 0.0, 1.0);
+}
 
 // Normalised ground UV (0..1 over the domain) plus sliding offset.
 vec2 groundAt(vec3 p){

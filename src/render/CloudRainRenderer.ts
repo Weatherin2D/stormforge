@@ -55,7 +55,6 @@ const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
 const NIGHT_TOP = [0.1, 0.12, 0.2] as const;
 const NIGHT_BOTTOM = [0.06, 0.07, 0.1] as const;
 const CITY_SKY = [0.06, 0.036, 0.016] as const;
-const GROUND_WATER_MM = 16;
 
 const blitVert = /* glsl */ `
 out vec2 vUv;
@@ -263,15 +262,12 @@ export class CloudRainRenderer {
   private lightningView: LightningView | null = null;
   /** Shared uniforms for MeteoLAB shaders. */
   private sharedUniforms: Record<string, THREE.IUniform> = {};
-  /** Ground state texture (water, hail per ground column). */
+  /** Ground state texture (rain wetness, snow depth, hail size, hail frequency). */
   private groundState: THREE.DataTexture | null = null;
   /** Wind texture over the ground. */
   private windTexture: THREE.DataTexture | null = null;
   /** Ground uniforms for surface shader. */
   private groundUniforms: Record<string, THREE.IUniform> = {};
-  /** Water and hail data per ground column. */
-  private water: Float32Array | null = null;
-  private hailCover: Float32Array | null = null;
   /** 2D cloud→ground shadow map (R = sun transmittance, G = sky visibility). */
   private cloudShadowData: Uint8Array | null = null;
   private cloudShadowTex: THREE.DataTexture | null = null;
@@ -435,22 +431,35 @@ export class CloudRainRenderer {
           "#include <map_fragment>",
           `#include <map_fragment>
 {
-  vec2 g = groundAt(vCloudWorld), q = g * uGroundSize;
-  vec4 st = texture(uGround, g);
-  gWater = st.r * GROUND_WATER; gHail = st.g;
+  // Land pattern scrolls with the earth. Snow and hail stay on the model columns.
+  vec2 gScroll = groundAt(vCloudWorld);
+  vec2 gDomain = gScroll - uGroundOffset;
+  vec2 q = gScroll * uGroundSize;
+  vec4 st = texture(uGround, gDomain);
+  gWater = st.r * GROUND_WATER;
+  gSnow = st.g;
+  gHailDots = 0.0;
   float blur = min(length(dFdx(q)), length(dFdy(q)));
   if(abs(uSurface - 2.0) < 0.5){
-    float U = texture(uWind, groundAt(vCloudWorld)).r * WIND_SCALE / 1.15;
+    float U = texture(uWind, gScroll).r * WIND_SCALE / 1.15;
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6), clamp(3.84e-6 * pow(U, 3.41), 0.0, 0.3));
     gSpec = 1.0;
   } else {
     diffuseColor.rgb *= landPattern(q, blur);
     float urban = step(2.5, uSurface), steppe = step(0.5, uSurface) * (1.0 - urban);
     float wet = mix(mix(0.88, 0.7, steppe), 0.55, urban), pond = mix(mix(10.0, 5.0, steppe), 1.5, urban);
-    diffuseColor.rgb *= mix(1.0, wet, smoothstep(0.0, 0.3, gWater));
-    gSpec = smoothstep(pond, pond * 2.0, gWater);
+    float snowCover = smoothstep(0.04, 0.82, gSnow);
+    diffuseColor.rgb *= mix(1.0, wet, smoothstep(0.0, 0.3, gWater) * (1.0 - snowCover));
+    gSpec = smoothstep(pond, pond * 2.0, gWater) * (1.0 - snowCover);
   }
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.72, 0.75, 0.78), gHail);
+  float dust = smoothstep(0.0, 0.1, gSnow);
+  float deep = smoothstep(0.06, 0.88, gSnow);
+  vec3 snowCol = vec3(0.94, 0.96, 0.98);
+  diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, dust * 0.42);
+  diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, deep);
+  gHailDots = hailStones(gDomain * uGroundSize, st.a, st.b);
+  vec3 hailCol = mix(vec3(0.78, 0.81, 0.84), vec3(0.98, 0.99, 1.0), smoothstep(0.15, 0.85, st.b));
+  diffuseColor.rgb = mix(diffuseColor.rgb, hailCol, gHailDots);
 }`,
         )
         .replace(
@@ -459,7 +468,10 @@ export class CloudRainRenderer {
 if(abs(uSurface - 2.0) < 0.5){
   float U = texture(uWind, groundAt(vCloudWorld)).r * WIND_SCALE / 1.15;
   roughnessFactor = sqrt(sqrt(0.003 + 0.00512 * U));
-} else roughnessFactor = mix(roughnessFactor, 0.15, gSpec);`,
+} else roughnessFactor = mix(roughnessFactor, 0.15, gSpec);
+float snowPack = smoothstep(0.08, 0.9, gSnow);
+roughnessFactor = mix(roughnessFactor, 0.96, snowPack);
+roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
         )
         .replace(
           "#include <lights_fragment_end>",
@@ -1419,12 +1431,11 @@ if(abs(uSurface - 2.0) < 0.5){
     const nx = grid.nx;
     const ny = grid.ny;
     
-    // Ground state texture (water, hail per ground column)
-    this.water = new Float32Array(nx * ny).fill(0);
-    this.hailCover = new Float32Array(nx * ny).fill(0);
+    // Ground cover: R rain wetness, G snow depth, B hail diameter, A hail frequency.
     this.groundState = new THREE.DataTexture(new Uint8Array(nx * ny * 4), nx, ny, THREE.RGBAFormat);
     this.groundState.magFilter = this.groundState.minFilter = THREE.LinearFilter;
-    this.groundState.wrapS = this.groundState.wrapT = THREE.RepeatWrapping;
+    this.groundState.wrapS = this.groundState.wrapT = THREE.ClampToEdgeWrapping;
+    this.groundState.colorSpace = THREE.NoColorSpace;
     this.groundState.needsUpdate = true;
     
     // Wind texture over the ground
@@ -1597,6 +1608,15 @@ if(abs(uSurface - 2.0) < 0.5){
     this.groundOverlays.applyVisibility();
   }
 
+  /** Rain wetness, snow depth, hail size and hail frequency, one texel per column. */
+  updateGroundCover(bytes: Uint8Array): void {
+    const image = this.groundState?.image as { data?: Uint8Array } | undefined;
+    const data = image?.data;
+    if (!data || bytes.length !== data.length) return;
+    data.set(bytes);
+    this.groundState!.needsUpdate = true;
+  }
+
   updateSwath(pack: (out: Uint8Array) => void): void {
     this.groundOverlays.updateSwath(pack);
   }
@@ -1653,29 +1673,16 @@ if(abs(uSurface - 2.0) < 0.5){
     }
     this.volumeTex.needsUpdate = true;
     this.volumeRevision++;
-    // Wet ground via MeteoLAB ground-state texture (water mm in R, hail cover in G).
-    if (this.water && this.groundState && this.groundState.image) {
-      const wetMm = Math.min(GROUND_WATER_MM, (rainMax / 0.002) * GROUND_WATER_MM);
-      const data = this.groundState.image.data as Uint8Array;
-      const n = this.water.length;
-      for (let i = 0; i < n; i++) {
-        // Soft temporal blend toward current rain so wetness persists briefly.
-        this.water[i] = this.water[i] * 0.92 + wetMm * 0.08;
-        data[i * 4] = Math.min(255, (this.water[i] / GROUND_WATER_MM) * 255) | 0;
-        data[i * 4 + 1] = Math.min(255, this.hailCover![i] * 255) | 0;
-        data[i * 4 + 2] = 0;
-        data[i * 4 + 3] = 255;
-      }
-      this.groundState.needsUpdate = true;
-    }
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     groundMat.color.copy(this.groundColor);
     groundMat.roughness = 0.96;
 
     if (!this.warnedEmpty && !empty) {
       let maxA = 0;
-      for (let i = 3; i < this.volumeData.length; i += 4) {
-        if (this.volumeData[i] > maxA) maxA = this.volumeData[i];
+      const vol = this.volumeData;
+      for (let i = 0; i < vol.length; i += 4) {
+        const m = Math.max(vol[i], vol[i + 1], vol[i + 2], vol[i + 3]);
+        if (m > maxA) maxA = m;
       }
       if (maxA === 0) {
         console.warn(
@@ -2515,8 +2522,8 @@ float boltSeen(vec3 p) {
     if (float(i) < steps) {
       vec3 q = p + rd * (a + ds * (float(i) + 0.5));
       vec3 uvw = clamp((q - uBoxMin) / max(uBoxMax - uBoxMin, vec3(1.0)), 0.0, 1.0);
-      vec3 f = textureLod(uFields, uvw, 0.0).rgb;
-      float cloud = max(f.r, f.g);
+      vec4 f = textureLod(uFields, uvw, 0.0);
+      float cloud = max(max(f.r, f.g), f.a);
       float rain = f.b;
       float block = smoothstep(0.32, 0.72, cloud) + smoothstep(0.45, 0.85, rain);
       od += block * ds;

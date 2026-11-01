@@ -1045,9 +1045,7 @@ export class WebGPUBackend implements SimBackend {
       c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
     const coldOpacity = (id: number): number => {
       const cold =
-        0.25 * f.qi[id] +
-        0.08 * f.qs[id] +
-        0.03 * (f.qg[id] + f.qh[id]);
+        0.25 * f.qi[id] + 0.08 * f.qs[id] + 0.03 * f.qg[id];
       return cloudOpacity(cold);
     };
     // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
@@ -1063,15 +1061,16 @@ export class WebGPUBackend implements SimBackend {
       const x = Math.pow(qr / rainUnit, 0.65) * 255;
       return x >= 255 ? 255 : x | 0;
     };
+    const hailByte = (qh: number): number => {
+      if (qh <= 1e-7) return 0;
+      const x = Math.pow(qh / 0.002, 0.72) * 255;
+      return x >= 255 ? 255 : x | 0;
+    };
     const write = (id: number, _k: number, o: number): void => {
-      const liq = byte01(cloudOpacity(f.qc[id]));
-      const ice = byte01(coldOpacity(id));
-      const rain = rainByte(f.qr[id]);
-      out[o] = liq;
-      out[o + 1] = ice;
-      out[o + 2] = rain;
-      const m = liq > ice ? liq : ice;
-      out[o + 3] = m > rain ? m : rain;
+      out[o] = byte01(cloudOpacity(f.qc[id]));
+      out[o + 1] = byte01(coldOpacity(id));
+      out[o + 2] = rainByte(f.qr[id]);
+      out[o + 3] = hailByte(f.qh[id]);
     };
     const d = volumeDisplaySize(nx, ny, nz);
     const need = d.nx * d.ny * d.nz * 4;

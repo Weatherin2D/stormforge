@@ -69,6 +69,21 @@ const CI = 2106;
 const HAIL_CONVERSION_TIME = 60;
 const HAIL_SAMPLE_VOLUME = 10;
 
+/**
+ * Favour hail growth in the classic −10 to −30 °C layer.
+ * Near melting and below −40 °C the factor stays small, so stones
+ * build a core aloft instead of a uniform smear.
+ */
+function hailGrowthZone(tc: number): number {
+  if (tc >= -2) return 0.05;
+  if (tc <= -40) return 0.12;
+  const peak = -18;
+  const span =
+    tc > peak ? (tc + 2) / (peak + 2) : (tc + 40) / (peak + 40);
+  const x = span < 0 ? 0 : span > 1 ? 1 : span;
+  return 0.2 + 0.8 * x;
+}
+
 /** Saturation mixing ratio over ice. `tc` in °C, `p` in Pa. */
 export function qsatIce(tc: number, p: number): number {
   if (tc >= 0) return qsatLiquid(tc, p);
@@ -518,13 +533,18 @@ function hailProcesses(
   p: number,
   rho: number,
   dt: number,
+  wUp: number,
 ): number {
   const tk = theta[i] * exner;
   const tc = tk - T0;
   const heat = 1 / (CP * exner);
   let cooling = 0;
+  const zone = hailGrowthZone(tc);
+  const updraft = 0.5 + 0.5 * Math.min(1, Math.max(0, wUp) / 16);
+  const grow = zone * updraft;
 
   if (
+    zone > 0.15 &&
     wetGrowing(
       graupel[i],
       N0G,
@@ -539,7 +559,9 @@ function hailProcesses(
       snow[i],
     )
   ) {
-    const turned = graupel[i] * (1 - Math.exp(-dt / HAIL_CONVERSION_TIME));
+    const turned =
+      graupel[i] *
+      (1 - Math.exp((-dt * (0.4 + 1.6 * grow)) / HAIL_CONVERSION_TIME));
     graupel[i] -= turned;
     hail[i] += turned;
   }
@@ -549,13 +571,14 @@ function hailProcesses(
   const { sweep, vent } = rimerKernels(qh, rho, N0H, RHO_H);
 
   if (tc < 0) {
-    const hacw = Math.min(cloud[i], sweep * cloud[i] * dt);
-    const hacr = Math.min(rain[i], sweep * rain[i] * dt);
+    const dtGrow = dt * grow;
+    const hacw = Math.min(cloud[i], sweep * cloud[i] * dtGrow);
+    const hacr = Math.min(rain[i], sweep * rain[i] * dtGrow);
     const liquid = hacw + hacr;
-    let haci = Math.min(ice[i], sweep * 0.1 * ice[i] * dt);
+    let haci = Math.min(ice[i], sweep * 0.1 * ice[i] * dtGrow);
     let hacs = Math.min(
       snow[i],
-      sweep * Math.exp(0.09 * tc) * snow[i] * dt,
+      sweep * Math.exp(0.09 * tc) * snow[i] * dtGrow,
     );
     const heatCapacity = KA * -tc + LV * PSI * rho * (qsatLiquid(0, p) - qv[i]);
     const freezeCapacity = Math.max(
@@ -569,8 +592,8 @@ function hailProcesses(
       dt;
     let frozen = liquid;
     if (liquid + haci + hacs > wet) {
-      haci = Math.min(ice[i], sweep * ice[i] * dt);
-      hacs = Math.min(snow[i], sweep * snow[i] * dt);
+      haci = Math.min(ice[i], sweep * ice[i] * dtGrow);
+      hacs = Math.min(snow[i], sweep * snow[i] * dtGrow);
       frozen = Math.min(liquid, Math.max(0, wet - haci - hacs));
     }
     cloud[i] -= hacw;
@@ -670,7 +693,8 @@ function sediment(
   scratch: Float32Array,
   dt: number,
   accum: Float32Array | null,
-  speed: (value: number, rho: number) => number,
+  speed: (value: number, rho: number, i: number, j: number, k: number) => number,
+  onGround?: (ij: number, q: number, rho: number, mm: number) => void,
 ): void {
   const { nx, ny, nz, dz } = grid;
   const nxny = nx * ny;
@@ -684,7 +708,10 @@ function sediment(
         const id = jBase + i;
         const remain = field[id];
         if (remain <= 0) continue;
-        const cells = Math.min(2, (speed(remain, rho) * dt) / Math.max(dz, 1));
+        const cells = Math.min(
+          2,
+          (speed(remain, rho, i, j, k) * dt) / Math.max(dz, 1),
+        );
         if (cells <= 0) {
           scratch[id] += remain;
           continue;
@@ -696,6 +723,7 @@ function sediment(
             const ij = i + j * nx;
             accum[ij] += mm;
             if (dt > 0) f.precipRate[ij] += (mm / dt) * 3600;
+            onGround?.(ij, remain, rho, mm);
           }
           continue;
         }
@@ -839,6 +867,7 @@ export function stepColdMicrophysics(
           p,
           rho,
           dt,
+          grid.wCenter(f.w, i, j, k),
         );
         if (iceBefore > 0) f.ni[id] *= f.qi[id] / iceBefore;
         secondaryIce(
@@ -875,15 +904,42 @@ export function stepColdMicrophysics(
   }
 
   // Sedimentation: ice crystals are slow, snow about 1 m/s, graupel ~8 m/s,
-  // hail ~12 m/s. Surface loss becomes accumulation.
+  // hail ~12 m/s. Hail is held in the updraft until its fall speed exceeds w,
+  // so a core can grow aloft and then fall out. Surface loss is accumulation.
   sediment(grid, f, f.qi, scratch, dt, null, () => ICE_FALL_SPEED);
-  sediment(grid, f, f.qs, scratch, dt, f.snowAccum, (q, rho) =>
-    snowFallSpeed(q, rho, rhoGround),
+  sediment(
+    grid,
+    f,
+    f.qs,
+    scratch,
+    dt,
+    f.snowAccum,
+    (q, rho) => snowFallSpeed(q, rho, rhoGround),
+    (ij, _q, _rho, mm) => {
+      // Fresh snow, 100 kg/m³: 1 mm liquid → 1 cm of depth.
+      f.snowDepth[ij] += mm / RHO_S;
+    },
   );
   sediment(grid, f, f.qg, scratch, dt, f.snowAccum, (q, rho) =>
     graupelFallSpeed(q, rho),
   );
-  sediment(grid, f, f.qh, scratch, dt, f.snowAccum, (q, rho) =>
-    hailFallSpeed(q, rho),
+  sediment(
+    grid,
+    f,
+    f.qh,
+    scratch,
+    dt,
+    f.hailAccum,
+    (q, rho, i, j, k) => {
+      const vt = hailFallSpeed(q, rho);
+      const w = grid.wCenter(f.w, i, j, k);
+      return Math.max(0, vt - w);
+    },
+    (ij, q, rho) => {
+      const dMm = hailMaxDiameter(q, rho) * 1000;
+      if (dMm > f.hailDiam[ij]) f.hailDiam[ij] = Math.min(150, dMm);
+      const stones = hailConcentration(q, rho) * grid.dz;
+      if (stones > 0) f.hailCount[ij] += stones;
+    },
   );
 }

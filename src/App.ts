@@ -1809,6 +1809,7 @@ export class App {
       rainMax: st.rainMax,
       cloudMass: st.cloudMass,
     };
+    if (st.ground) this.renderer.updateGroundCover(st.ground);
     if (st.volume && this.showClouds && !this.showRadar2d) {
       const vol = st.volume;
       this.renderer.updateVolume(

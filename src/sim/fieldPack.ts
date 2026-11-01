@@ -20,7 +20,9 @@ export function packRainSwath(
   if (out.length < n * 4) return;
   for (let i = 0; i < n; i++) {
     const mm =
-      Math.max(0, f.rainAccum[i] || 0) + Math.max(0, f.snowAccum[i] || 0);
+      Math.max(0, f.rainAccum[i] || 0) +
+      Math.max(0, f.snowAccum[i] || 0) +
+      Math.max(0, f.hailAccum[i] || 0);
     const rgb =
       SWATH_COLORS.find(([limit]) => mm < limit)?.[1] ??
       SWATH_COLORS[SWATH_COLORS.length - 1][1];
@@ -29,6 +31,42 @@ export function packRainSwath(
     out[o + 1] = rgb[1];
     out[o + 2] = rgb[2];
     out[o + 3] = mm < 0.5 ? 0 : Math.min(230, 120 + mm * 10);
+  }
+}
+
+const SNOW_FULL_M = 0.35;
+const HAIL_DIAM_FULL_MM = 80;
+const RAIN_FULL_MM = 16;
+/** Stones/m² that fill the ground with hail dots. Logarithmic so light and heavy swaths both show. */
+const HAIL_COUNT_FULL = 2e5;
+
+function coverByte(x: number): number {
+  if (!(x > 0)) return 0;
+  if (x >= 1) return 255;
+  return (x * 255) | 0;
+}
+
+/**
+ * Per-column ground cover for the 3D surface.
+ * Layout matches the ground shader: index i + j·nx is south-to-north (j = 0 at V = 0).
+ * R = rain wetness, G = snow depth, B = hail diameter, A = hail frequency.
+ */
+export function packGroundCover(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+): void {
+  const n = grid.nx * grid.ny;
+  if (out.length < n * 4) return;
+  for (let s = 0; s < n; s++) {
+    const o = s * 4;
+    const count = Math.max(0, f.hailCount[s] || 0);
+    const freq =
+      count > 0 ? Math.log10(1 + count) / Math.log10(1 + HAIL_COUNT_FULL) : 0;
+    out[o] = coverByte(Math.max(0, f.rainAccum[s] || 0) / RAIN_FULL_MM);
+    out[o + 1] = coverByte(Math.max(0, f.snowDepth[s] || 0) / SNOW_FULL_M);
+    out[o + 2] = coverByte(Math.max(0, f.hailDiam[s] || 0) / HAIL_DIAM_FULL_MM);
+    out[o + 3] = coverByte(freq);
   }
 }
 

@@ -71,6 +71,8 @@ export type MapProductId =
   | "vil"
   | "precip"
   | "paccum"
+  | "snowaccum"
+  | "hailaccum"
   | "preciptype"
   // ── Cold species ──────────────────────────────────────────────────────────
   | "graupel"
@@ -442,6 +444,26 @@ const ACCUM_STOPS: RgbaStop[] = [
   [40, 226, 123, 18],
   [65, 220, 65, 16],
   [100, 148, 15, 73],
+];
+
+/** Snow depth — pale blue into white, centimetres of fresh snow. */
+const SNOW_DEPTH_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [1, 70, 96, 128],
+  [4, 132, 164, 190],
+  [10, 186, 208, 222],
+  [20, 224, 234, 240],
+  [40, 248, 250, 252],
+];
+
+/** Hail on the ground — cool gray into bright white, mm liquid equivalent. */
+const HAIL_ACCUM_STOPS: RgbaStop[] = [
+  [0, 22, 32, 48],
+  [0.5, 88, 104, 132],
+  [2, 150, 162, 178],
+  [6, 196, 198, 204],
+  [15, 228, 226, 220],
+  [40, 255, 250, 240],
 ];
 
 /** Graupel mixing ratio — Pivotal precip-family. */
@@ -943,6 +965,22 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     ticks: ["0", "2", "8", "20", "40", "65", "100"],
     scale: { min: 0, max: 100, values: [0, 2, 8, 20, 40, 65, 100] },
   },
+  snowaccum: {
+    id: "snowaccum",
+    title: "Snow accumulation",
+    units: "cm",
+    legendCss: legendFromStops(SNOW_DEPTH_STOPS, 0, 40),
+    ticks: ["0", "1", "4", "10", "20", "40"],
+    scale: { min: 0, max: 40, values: [0, 1, 4, 10, 20, 40] },
+  },
+  hailaccum: {
+    id: "hailaccum",
+    title: "Hail accumulation",
+    units: "mm",
+    legendCss: legendFromStops(HAIL_ACCUM_STOPS, 0, 40),
+    ticks: ["0", "0.5", "2", "6", "15", "40"],
+    scale: { min: 0, max: 40, values: [0, 0.5, 2, 6, 15, 40] },
+  },
   preciptype: {
     id: "preciptype",
     title: "Precipitation type at the surface",
@@ -1223,6 +1261,12 @@ export function packMapProduct(
       break;
     case "paccum":
       packPaccum(grid, fields, out);
+      break;
+    case "snowaccum":
+      packSnowAccum(grid, fields, out);
+      break;
+    case "hailaccum":
+      packHailAccum(grid, fields, out);
       break;
     case "preciptype":
       packPrecipType(grid, fields, out);
@@ -2430,11 +2474,52 @@ function packPaccum(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const s = i + j * nx;
-      const mm =
-        Math.max(0, f.rainAccum[s] || 0) + Math.max(0, f.snowAccum[s] || 0);
+      const mm = surfacePrecipMm(f, s);
       lerpStops(clamp(mm, 0, 100), ACCUM_STOPS, out, mapPix(i, j, nx, ny), 255);
     }
   }
+}
+
+/** Fresh-snow depth on the ground (cm). 10:1 at 100 kg/m³. */
+function packSnowAccum(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const cm = Math.max(0, f.snowDepth[i + j * nx] || 0) * 100;
+      lerpStops(
+        clamp(cm, 0, 40),
+        SNOW_DEPTH_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+/** Hail water that has reached the ground (mm liquid equivalent). */
+function packHailAccum(grid: Grid3D, f: SimFields, out: Uint8Array): void {
+  const { nx, ny } = grid;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const mm = Math.max(0, f.hailAccum[i + j * nx] || 0);
+      lerpStops(
+        clamp(mm, 0, 40),
+        HAIL_ACCUM_STOPS,
+        out,
+        mapPix(i, j, nx, ny),
+        255,
+      );
+    }
+  }
+}
+
+function surfacePrecipMm(f: SimFields, s: number): number {
+  return (
+    Math.max(0, f.rainAccum[s] || 0) +
+    Math.max(0, f.snowAccum[s] || 0) +
+    Math.max(0, f.hailAccum[s] || 0)
+  );
 }
 
 /** Column-max graupel mixing ratio (g/kg). */
@@ -2541,8 +2626,7 @@ function packPrecipType(grid: Grid3D, f: SimFields, out: Uint8Array): void {
     for (let i = 0; i < nx; i++) {
       const s = i + j * nx;
       const rate = Math.max(0, f.precipRate[s] || 0);
-      const accum =
-        Math.max(0, f.rainAccum[s] || 0) + Math.max(0, f.snowAccum[s] || 0);
+      const accum = surfacePrecipMm(f, s);
       const code = precipTypeCode(grid, f, i, j, nz, rate, accum);
       lerpStops(code * 26, PRECIP_TYPE_STOPS, out, mapPix(i, j, nx, ny), 255);
     }

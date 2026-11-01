@@ -35,6 +35,11 @@ export interface LiveState {
   fieldMode: OverlayField | null;
   /** Flattened vortex rings [x,y,z,r,zeta,…], when requested. */
   vortex: Float32Array | null;
+  /**
+   * Ground cover, nx·ny RGBA.
+   * R rain wetness, G snow depth, B hail diameter, A hail frequency.
+   */
+  ground: Uint8Array | null;
   /** Domain travel over the ground while follow-storm is on (metres). */
   frameEast: number;
   frameNorth: number;

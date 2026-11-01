@@ -157,6 +157,8 @@ export class Radar2DView {
     "vil",
     "precip",
     "paccum",
+    "snowaccum",
+    "hailaccum",
     "preciptype",
     "graupel",
     "snowice",
