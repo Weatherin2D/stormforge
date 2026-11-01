@@ -1244,7 +1244,6 @@ export class Radar2DView {
         ctx.lineWidth = 1.5;
         ctx.stroke();
       } else if (m.kind === "ic") {
-        // In-cloud flash: a small pale-blue spark, no ground contact.
         ctx.beginPath();
         for (let n = 0; n < 8; n++) {
           const r = n % 2 === 0 ? 8 : 3.2;
@@ -1258,6 +1257,38 @@ export class Radar2DView {
         ctx.fillStyle = `rgba(212, 236, 255, ${a * 0.9})`;
         ctx.strokeStyle = `rgba(60, 96, 140, ${a * 0.8})`;
         ctx.lineWidth = 1.1;
+        ctx.fill();
+        ctx.stroke();
+      } else if (m.kind === "spider") {
+        ctx.beginPath();
+        ctx.moveTo(-8, -1);
+        ctx.lineTo(-4, 2);
+        ctx.lineTo(-1, -2);
+        ctx.lineTo(3, 1.5);
+        ctx.lineTo(8, -1);
+        ctx.strokeStyle = `rgba(210, 226, 255, ${a})`;
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-3, 2);
+        ctx.lineTo(-4.5, 5);
+        ctx.moveTo(2, 1.5);
+        ctx.lineTo(4, 5);
+        ctx.strokeStyle = `rgba(180, 200, 240, ${a * 0.85})`;
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+      } else if (m.kind === "poscg") {
+        ctx.beginPath();
+        ctx.moveTo(0, -9);
+        ctx.lineTo(-5, -1);
+        ctx.lineTo(0.8, -1.4);
+        ctx.lineTo(-1.8, 9);
+        ctx.lineTo(5.2, 0.2);
+        ctx.lineTo(-0.6, 0.6);
+        ctx.closePath();
+        ctx.fillStyle = `rgba(255, 150, 72, ${a})`;
+        ctx.strokeStyle = `rgba(90, 24, 8, ${a * 0.85})`;
+        ctx.lineWidth = 1.4;
         ctx.fill();
         ctx.stroke();
       } else {

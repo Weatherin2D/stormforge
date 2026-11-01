@@ -4,7 +4,7 @@
  * Every product here is computed from fields the solver actually carries.
  * The matching catalog entry in `viewCatalog.ts` documents the formula and
  * assumptions.  Nothing in this file invents a field the model does not have:
- * terrain, soil, radiation, electric charge, and object-tracking products stay
+ * terrain, soil, radiation, and object-tracking products stay
  * "planned" until their inputs exist.
  */
 import { Grid3D } from "./Grid3D";

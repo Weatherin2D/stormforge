@@ -3,7 +3,7 @@ import { lightningVertex, lightningFragment } from './shaders_meteolab'
 import { FLASH_POINTS } from './light'
 
 export interface Flash {
-  kind: 'CG' | 'IC'
+  kind: 'CG' | 'IC' | 'SPIDER'
   charge: number
   time: number
   start: number
@@ -26,6 +26,19 @@ const CRAWL_MS_PER_KM = 10, CRAWL_MAX = 600
 
 export function course(flash: Flash, rng: () => number, extent = 0): Course {
   const crawl = Math.min(CRAWL_MAX, extent * CRAWL_MS_PER_KM)
+  if (flash.kind === 'SPIDER') {
+    const leader = Math.max(220 + rng() * 380, Math.min(CRAWL_MAX, Math.max(180, extent * 22)))
+    const end = leader + 80 + rng() * 220
+    const n = 1 + Math.floor(rng() * 3)
+    const strokes = Array.from({ length: n }, (_, k) => ({
+      at: k ? leader + rng() * (end - leader) : leader,
+      peak: .18 + rng() * .22,
+      cc: 0,
+      ccLength: 0,
+      path: 0 as const,
+    })).sort((a, b) => a.at - b.at)
+    return { leader, strokes, end: end + 80 }
+  }
   if (flash.kind === 'IC') {
     const leader = Math.max(60 + rng() * 90, crawl)
     const end = Math.max(200 + rng() * 300, leader + 150 + rng() * 300)
@@ -273,4 +286,205 @@ function across(d: readonly number[], rng: () => number) {
     const c = [r[0] - along * d[0], r[1] - along * d[1], r[2] - along * d[2]], cl = Math.hypot(c[0], c[1], c[2])
     if (cl > 1e-3) return [c[0] / cl, c[1] / cl, c[2] / cl]
   }
+}
+
+export type ChannelKind = 'negcg' | 'poscg' | 'spider' | 'ic'
+
+export interface ChannelSpan {
+  start: number
+  count: number
+  branch: boolean
+}
+
+export interface ChannelPoint {
+  x: number
+  y: number
+  z: number
+  order: number
+  branch: boolean
+}
+
+export interface LightningChannel {
+  points: ChannelPoint[]
+  spans: ChannelSpan[]
+  extentKm: number
+}
+
+const STEP_M = 100
+const ROUGH_M = 0.14
+const SPREAD_M = 0.28
+
+function tortuousM(
+  from: readonly number[],
+  to: readonly number[],
+  rng: () => number,
+  groundY: number,
+  step = STEP_M,
+): number[][] {
+  const out: number[][] = [[from[0], from[1], from[2]]]
+  const total = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2])
+  const n = Math.max(1, Math.round(total / step))
+  let p = [from[0], from[1], from[2]]
+  let dirX = 0
+  let dirY = 0
+  let dirZ = 0
+  let hasDir = false
+  for (let k = 0; k < n - 1; k++) {
+    const remX = to[0] - p[0]
+    const remY = to[1] - p[1]
+    const remZ = to[2] - p[2]
+    const rl = Math.hypot(remX, remY, remZ)
+    if (rl < 1e-6) break
+    const wantX = remX / rl
+    const wantY = remY / rl
+    const wantZ = remZ / rl
+    const base: number[] = hasDir ? [dirX, dirY, dirZ] : [wantX, wantY, wantZ]
+    const axis = across(base, rng)
+    const a = normal(rng) * SPREAD_M
+    const ca = Math.cos(a)
+    const sa = Math.sin(a)
+    let nextX = base[0] * ca + axis[0] * sa
+    let nextY = base[1] * ca + axis[1] * sa
+    let nextZ = base[2] * ca + axis[2] * sa
+    nextX = nextX * 0.75 + wantX * 0.25
+    nextY = nextY * 0.75 + wantY * 0.25
+    nextZ = nextZ * 0.75 + wantZ * 0.25
+    const nl = Math.hypot(nextX, nextY, nextZ) || 1
+    dirX = nextX / nl
+    dirY = nextY / nl
+    dirZ = nextZ / nl
+    hasDir = true
+    const s = (rl / (n - k)) * (0.6 + 0.8 * rng())
+    p = [
+      p[0] + dirX * s,
+      Math.max(groundY + 2, p[1] + dirY * s),
+      p[2] + dirZ * s,
+    ]
+    out.push(p)
+  }
+  out.push([to[0], Math.max(groundY + 2, to[1]), to[2]])
+  return out
+}
+
+function refineM(
+  from: readonly number[],
+  to: readonly number[],
+  rng: () => number,
+  groundY: number,
+): number[][] {
+  const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
+  const len = Math.hypot(d[0], d[1], d[2])
+  const side = across(d, rng)
+  const amount = len * ROUGH_M * (rng() * 2 - 1)
+  const mid = [
+    (from[0] + to[0]) / 2 + side[0] * amount,
+    Math.max(groundY + 2, (from[1] + to[1]) / 2 + side[1] * amount),
+    (from[2] + to[2]) / 2 + side[2] * amount,
+  ]
+  return [...tortuousM(from, mid, rng, groundY), ...tortuousM(mid, to, rng, groundY).slice(1)]
+}
+
+function decimate(pts: number[][], maxPts: number): number[][] {
+  if (pts.length <= maxPts) return pts
+  const out: number[][] = []
+  const last = pts.length - 1
+  for (let i = 0; i < maxPts; i++) {
+    out.push(pts[Math.round((i * last) / (maxPts - 1))])
+  }
+  return out
+}
+
+function forkPlan(
+  kind: ChannelKind,
+  rng: () => number,
+): { along: number; len: number; drop: number }[] {
+  if (kind === 'negcg') {
+    const extra = rng() < 0.5 ? [{ along: 0.72, len: 220 + rng() * 120, drop: 60 + rng() * 80 }] : []
+    return [
+      { along: 0.25 + rng() * 0.08, len: 400 + rng() * 350, drop: 200 + rng() * 400 },
+      { along: 0.42 + rng() * 0.08, len: 350 + rng() * 300, drop: 150 + rng() * 300 },
+      { along: 0.58 + rng() * 0.1, len: 280 + rng() * 250, drop: 80 + rng() * 220 },
+      ...extra,
+    ]
+  }
+  if (kind === 'poscg') {
+    const extra = rng() < 0.45 ? [{ along: 0.6, len: 350 + rng() * 180, drop: 180 + rng() * 160 }] : []
+    return [
+      { along: 0.35 + rng() * 0.1, len: 500 + rng() * 400, drop: 300 + rng() * 500 },
+      ...extra,
+    ]
+  }
+  if (kind === 'spider') {
+    const n = 4 + Math.floor(rng() * 4)
+    return Array.from({ length: n }, (_, i) => ({
+      along: 0.15 + (i * 0.7) / n + rng() * 0.05,
+      len: 180 + rng() * 280,
+      drop: (rng() - 0.5) * 80,
+    }))
+  }
+  return [{ along: 0.45, len: 280 + rng() * 200, drop: (rng() - 0.4) * 120 }]
+}
+
+/** Metre-scale branched channel with per-point growth order. */
+export function buildChannel(
+  kind: ChannelKind,
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+  groundY: number,
+  rng: () => number,
+  cap: number,
+): LightningChannel {
+  const points: ChannelPoint[] = []
+  const spans: ChannelSpan[] = []
+  const mainBudget = kind === 'spider' ? Math.min(70, cap - 20) : Math.min(36, cap - 16)
+  const raw = refineM([from.x, from.y, from.z], [to.x, to.y, to.z], rng, groundY)
+  const main = decimate(raw, Math.max(8, mainBudget))
+  const start = points.length
+  for (let i = 0; i < main.length; i++) {
+    points.push({
+      x: main[i][0],
+      y: main[i][1],
+      z: main[i][2],
+      order: i / Math.max(1, main.length - 1),
+      branch: false,
+    })
+  }
+  spans.push({ start, count: main.length, branch: false })
+
+  for (const fork of forkPlan(kind, rng)) {
+    if (points.length + 6 > cap) break
+    const along = Math.max(1, Math.min(main.length - 2, Math.floor((main.length - 1) * fork.along)))
+    const origin = main[along]
+    const heading = rng() * Math.PI * 2
+    const dest = [
+      origin[0] + Math.cos(heading) * fork.len,
+      Math.max(groundY + 4, origin[1] - fork.drop),
+      origin[2] + Math.sin(heading) * fork.len,
+    ]
+    const br = refineM(origin, dest, rng, groundY)
+    const n = Math.min(br.length, cap - points.length)
+    if (n < 2) break
+    const bstart = points.length
+    const order0 = along / Math.max(1, main.length - 1)
+    for (let i = 0; i < n; i++) {
+      points.push({
+        x: br[i][0],
+        y: br[i][1],
+        z: br[i][2],
+        order: order0 + (1 - order0) * (i / Math.max(1, n - 1)) * 0.55,
+        branch: true,
+      })
+    }
+    spans.push({ start: bstart, count: n, branch: true })
+  }
+
+  let extent = 0
+  for (let i = 1; i < main.length; i++) {
+    extent += Math.hypot(
+      main[i][0] - main[i - 1][0],
+      main[i][1] - main[i - 1][1],
+      main[i][2] - main[i - 1][2],
+    )
+  }
+  return { points, spans, extentKm: Math.max(0.4, extent / 1000) }
 }

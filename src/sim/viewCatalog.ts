@@ -1140,7 +1140,7 @@ export const VIEW_CATALOG: CatalogView[] = [
   V(S8, "lightning", "charge-density", "Charge density", "derived", "column", "column", "nC/m³", {
     core: true,
     definition: "Net electrical charge per unit volume.",
-    assumptions: "Not implemented: the solver tracks a flash-rate proxy, not resolved charge.",
+    assumptions: "Resolved in the CPU solver for flash typing; not yet packed as a map product.",
   }),
   V(S8, "lightning", "positive-charge", "Positive-charge distribution", "derived", "column", "column", "nC/m³", {
     definition: "Positive charge density by height.",
@@ -1170,27 +1170,27 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "ltg",
     core: true,
     definition: "Recent lightning flash rate per grid column.",
-    formula: "Updraft/rain-driven flash proxy with a ~5 minute decay",
-    assumptions: "Statistical proxy, not a放电 simulation; no charge transport is resolved.",
+    formula: "Discharge increment with a ~5 minute decay",
+    assumptions: "Diagnostic of recent flashes from the charge-field model; not a Poisson electrostatic solve.",
     aliases: "lightning density strikes",
   }),
   V(S8, "lightning", "strike-locations", "Lightning strike locations", "visual", "surface", "surface", "—", {
     definition: "Instantaneous strike markers drawn over the map.",
-    assumptions: "Visual overlay generated from the flash-rate proxy; not observed strikes.",
+    assumptions: "Visual overlay of live flashes typed from the charge field (neg-CG, pos-CG, spider, IC).",
   }),
   V(S8, "lightning", "flash-rate", "Lightning flash rate", "derived", "column", "column", "flashes/min", {
     productId: "ltg",
     definition: "Same flash-rate field as lightning flash density.",
-    formula: "Updraft/rain-driven flash proxy with a ~5 minute decay",
-    assumptions: "Proxy field with a decay timescale of about 5 minutes.",
+    formula: "Discharge increment with a ~5 minute decay",
+    assumptions: "Incremented when a flash fires; decays over about 5 minutes.",
   }),
   V(S8, "lightning", "cg", "Cloud-to-ground (CG) lightning", "derived", "column", "column", "flashes/min", {
     definition: "Cloud-to-ground flash rate.",
-    assumptions: "Rendered flashes are classified as CG, IC, or sprite; the map field sums all kinds.",
+    assumptions: "Rendered as negative or positive CG from mid-level or anvil charge; the map field sums all kinds.",
   }),
   V(S8, "lightning", "ic", "Intracloud (IC) lightning", "derived", "column", "column", "flashes/min", {
     definition: "Intracloud flash rate.",
-    assumptions: "About two thirds of rendered flashes are intracloud, spawned near cloud top.",
+    assumptions: "Most flashes are IC/strobe discharges between mid-level negative and upper positive charge.",
   }),
   V(S8, "lightning", "cloud-cloud", "Cloud-to-cloud lightning", "derived", "column", "column", "flashes/min", {
     definition: "Cloud-to-cloud flash rate.",
@@ -1198,19 +1198,19 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S8, "lightning", "pos-cg", "Positive-polarity CG lightning", "derived", "column", "column", "flashes/min", {
     definition: "Fraction of CG flashes with positive polarity.",
-    assumptions: "Not implemented.",
+    assumptions: "Spawned from upper-anvil or isolated lower-positive charge; rarer than negative CG. Map product still sums all kinds.",
   }),
   V(S8, "lightning", "neg-cg", "Negative-polarity CG lightning", "derived", "column", "column", "flashes/min", {
     definition: "Fraction of CG flashes with negative polarity.",
-    assumptions: "Not implemented.",
+    assumptions: "Spawned from the main mid-level negative charge when a precipitation shaft exists. Map product still sums all kinds.",
   }),
   V(S8, "lightning", "channel-paths", "Lightning-channel paths", "visual", "3D", "profile", "—", {
     definition: "Rendered lightning channel geometry.",
-    assumptions: "Visual-only; channels do not feed back on the simulated electric field.",
+    assumptions: "Tortuous branched ribbons grown with the stepped leader; neutralization reduces charge along the path, but there is no Poisson E-field.",
   }),
   V(S8, "lightning", "channel-length", "Lightning-channel length", "derived", "3D", "profile", "km", {
     definition: "Total length of a rendered channel.",
-    assumptions: "Not implemented; the renderer uses stylised bolts.",
+    assumptions: "Used internally for leader crawl time; not plotted as a map product.",
   }),
   V(S8, "lightning", "lightning-age", "Lightning age", "visual", "time", "time", "s", {
     definition: "Time since a flash was rendered.",

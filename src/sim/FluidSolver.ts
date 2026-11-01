@@ -17,8 +17,6 @@ import {
   MapProductId,
   packLightning,
   packMapProduct as packMapProductRGBA,
-  reflectivityDbz,
-  coldReflectivityMass,
 } from "./mapProducts";
 import { volumeDisplaySize } from "./Grid3D";
 import {
@@ -37,15 +35,23 @@ import {
   stepSynopticOmega,
   stepMarineStratus,
 } from "./stepDynamics";
-import { stepColdMicrophysics } from "./coldMicrophysics";
+import { graupelFallSpeed, stepColdMicrophysics } from "./coldMicrophysics";
 
-export type LightningKind = "cg" | "ic" | "sprite";
+export type LightningKind = "negcg" | "poscg" | "spider" | "ic" | "sprite";
 
 export interface LightningStrike {
   i: number;
   j: number;
   k: number;
   kind: LightningKind;
+  polarity: 1 | -1;
+  endI: number;
+  endJ: number;
+  endK: number;
+}
+
+export function isCgKind(kind: LightningKind): boolean {
+  return kind === "negcg" || kind === "poscg";
 }
 
 /** One xy-coarsened level of the anelastic pressure V-cycle. */
@@ -92,6 +98,11 @@ export class FluidSolver implements SimBackend {
   private plumeCooldown: Float32Array;
   /** Recent flash rate, flashes per minute, decaying over ~5 minutes. */
   private flash: Float32Array;
+  /** Persistent net charge density (nC/m³), cell-centred. */
+  private charge: Float32Array;
+  private tmpCharge: Float32Array;
+  /** Column-max |charge|, used to skip empty columns when rolling flashes. */
+  private chargeCol: Float32Array;
   readonly kind: SolverKind = "cpu";
   /** Vorticity confinement strength. 0 = off, ~1-5 = noticeable rotation enhancement. */
   vorticityStrength = 0;
@@ -131,6 +142,9 @@ export class FluidSolver implements SimBackend {
     this.landMask = this.tmp;
     this.plumeCooldown = this.tmp;
     this.flash = this.tmp;
+    this.charge = this.tmp;
+    this.tmpCharge = this.tmp;
+    this.chargeCol = this.tmp;
     this.allocWork();
   }
 
@@ -157,6 +171,9 @@ export class FluidSolver implements SimBackend {
     this.landMask = buildLandMask(g.nx, g.ny);
     this.plumeCooldown = new Float32Array(g.nx * g.ny);
     this.flash = new Float32Array(g.nx * g.ny);
+    this.charge = new Float32Array(n);
+    this.tmpCharge = new Float32Array(n);
+    this.chargeCol = new Float32Array(g.nx * g.ny);
     this.vortScratch = new Float32Array(g.n * 3);
     this.iceScratch = new Float32Array(g.n);
     this.buildMg();
@@ -202,6 +219,8 @@ export class FluidSolver implements SimBackend {
     this.refreshLandMask();
     this.plumeCooldown.fill(0);
     this.flash.fill(0);
+    this.charge.fill(0);
+    this.chargeCol.fill(0);
     this.refreshExner();
     if (this.followStorm) this.applyFrameToWinds(true);
   }
@@ -316,6 +335,11 @@ export class FluidSolver implements SimBackend {
     const hMax = Math.max(1e-3, (0.85 * minDx) / maxSpd);
     let sub = Math.max(1, Math.ceil(dt / hMax));
     const h = dt / sub;
+    // Above the default sandbox (~64×64×40), run the slower column physics
+    // every other CFL substep so high-res stays interactive.
+    const nCells = this.grid.nx * this.grid.ny * this.grid.nz;
+    const splitSlow = nCells > 180_000 && sub > 1;
+    let slowDebt = 0;
     for (let s = 0; s < sub; s++) {
       const isHydrostatic =
         this.hydrostatic === "on" ||
@@ -325,30 +349,50 @@ export class FluidSolver implements SimBackend {
       if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
       this.project(h);
       this.advectScalars(h);
-      applySurfaceRadiation(
-        this.grid,
-        this.fields,
-        h,
-        this.radiation,
-        this.landMask,
-      );
-      stepShallowCu(
-        this.grid,
-        this.fields,
-        h,
-        this.landMask,
-        this.plumeCooldown,
-        this.exner,
-        this.radiation,
-      );
+      // Warm rain stays every substep — condensation feeds buoyancy.
       stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
-      stepColdMicrophysics(this.grid, this.fields, h, this.exner, this.iceScratch);
-      stepCloudTopCooling(this.grid, this.fields, h, this.exner);
-      stepBLMixing(this.grid, this.fields, h, this.exner);
-      stepSynopticOmega(this.grid, this.fields, h);
-      stepMarineStratus(this.grid, this.fields, h, this.exner, this.landMask);
-      advanceSynoptic(h, this.grid.xExtent);
-      this.updateLightning(h);
+      slowDebt += h;
+      const last = s === sub - 1;
+      const runSlow = !splitSlow || last || (s & 1) === 1;
+      if (runSlow) {
+        const slowDt = slowDebt;
+        slowDebt = 0;
+        applySurfaceRadiation(
+          this.grid,
+          this.fields,
+          slowDt,
+          this.radiation,
+          this.landMask,
+        );
+        stepShallowCu(
+          this.grid,
+          this.fields,
+          slowDt,
+          this.landMask,
+          this.plumeCooldown,
+          this.exner,
+          this.radiation,
+        );
+        stepColdMicrophysics(
+          this.grid,
+          this.fields,
+          slowDt,
+          this.exner,
+          this.iceScratch,
+        );
+        stepCloudTopCooling(this.grid, this.fields, slowDt, this.exner);
+        stepBLMixing(this.grid, this.fields, slowDt, this.exner);
+        stepSynopticOmega(this.grid, this.fields, slowDt);
+        stepMarineStratus(
+          this.grid,
+          this.fields,
+          slowDt,
+          this.exner,
+          this.landMask,
+        );
+        advanceSynoptic(slowDt, this.grid.xExtent);
+        this.updateCharge(slowDt);
+      }
       this.applySponge(h);
       if (!this.clockPaused) {
         this.radiation.solarHour = advanceSolarHour(
@@ -1589,113 +1633,427 @@ export class FluidSolver implements SimBackend {
   }
 
   /**
-   * Warm-rain lightning proxy. A column with a strong updraft and heavy rain
-   * approaches a flash rate; the rate eases off over about 5 minutes.
+   * Persistent charge: non-inductive graupel–ice charging, slow advection,
+   * graupel sedimentation, and weak recombination. The 2D flash field is
+   * only a recent-discharge diagnostic (updated when a flash fires).
    */
-  private updateLightning(dt: number): void {
-    const { nx, ny, nz } = this.grid;
+  private updateCharge(dt: number): void {
+    if (dt <= 0) return;
+    const { nx, ny, nz, dx, dy, dz } = this.grid;
     const f = this.fields;
-    const decay = Math.exp(-dt / 300);
     const nxny = nx * ny;
+    const q = this.charge;
+    const dest = this.tmpCharge;
+    const recomb = Math.exp(-dt / 600);
+    const T_REV = 258.15;
+    const T_MELT = 273.15;
+    const CAP = 40;
+
+    for (let k = 0; k < nz; k++) {
+      const p = f.p0[k];
+      const kBase = k * nxny;
+      for (let j = 0; j < ny; j++) {
+        const row = kBase + j * nx;
+        for (let i = 0; i < nx; i++) {
+          const id = row + i;
+          let c = q[id] * recomb;
+          const rimer = f.qg[id] + f.qh[id];
+          const ice = f.qi[id] + 0.7 * f.qs[id];
+          if (rimer > 1e-6 && ice > 5e-8) {
+            const T = TFromTheta(f.theta[id], p);
+            if (T < T_MELT) {
+              const rimerN = Math.min(1, rimer / 2e-3);
+              const iceN = Math.min(1, ice / 4e-4);
+              const lwcN = Math.min(1, f.qc[id] / 5e-4);
+              const mag = 1.1 * rimerN * iceN * (0.25 + 0.75 * lwcN) * dt;
+              if (T < T_REV) {
+                c -= mag * 0.58;
+                if (k + 1 < nz) q[id + nxny] += mag * 0.48;
+                else c += mag * 0.2;
+              } else {
+                c += mag * 0.58;
+                if (k + 1 < nz) q[id + nxny] -= mag * 0.48;
+              }
+            }
+          }
+          q[id] = c;
+        }
+      }
+    }
+
+    const u = f.u;
+    const v = f.v;
     const w = f.w;
+    const nu = nx + 1;
+    const nv = ny + 1;
+    const invDx = dt / dx;
+    const invDy = dt / dy;
+    const invDz = dt / dz;
+    const xMax = nx - 1;
+    const yMax = ny - 1;
+    for (let k = 0; k < nz; k++) {
+      const kBase = k * nxny;
+      const ku = k * nu * ny;
+      const kv = k * nx * nv;
+      for (let j = 0; j < ny; j++) {
+        const row = kBase + j * nx;
+        const ju = ku + j * nu;
+        const jv = kv + j * nx;
+        const jv1 = kv + (j + 1) * nx;
+        const jw = kBase + j * nx;
+        const jw1 = kBase + nxny + j * nx;
+        for (let i = 0; i < nx; i++) {
+          const uu = 0.5 * (u[ju + i] + u[ju + i + 1]);
+          const vv = 0.5 * (v[jv + i] + v[jv1 + i]);
+          const ww = 0.5 * (w[jw + i] + w[jw1 + i]);
+          const x = i - uu * invDx;
+          const y = j - vv * invDy;
+          const z = k - ww * invDz;
+          dest[row + i] =
+            x < 0 || x > xMax || y < 0 || y > yMax
+              ? 0
+              : this.sampleField(q, x, y, z);
+        }
+      }
+    }
+    q.set(dest);
+
+    dest.set(q);
+    for (let k = 1; k < nz; k++) {
+      const rho = f.rho0[k];
+      const kBase = k * nxny;
+      const kDown = (k - 1) * nxny;
+      for (let j = 0; j < ny; j++) {
+        const row = kBase + j * nx;
+        const down = kDown + j * nx;
+        for (let i = 0; i < nx; i++) {
+          const id = row + i;
+          const rimer = f.qg[id] + f.qh[id];
+          if (rimer < 1e-7) continue;
+          const vt = graupelFallSpeed(rimer, rho);
+          if (vt <= 0) continue;
+          const ice = f.qi[id] + f.qs[id];
+          const fracG = rimer / (rimer + ice + 1e-9);
+          const moved = q[id] * Math.min(0.9, (vt * dt) / dz) * fracG;
+          dest[id] -= moved;
+          dest[down + i] += moved;
+        }
+      }
+    }
+    q.set(dest);
+
+    const flashDecay = Math.exp(-dt / 300);
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
         const ij = i + j * nx;
-        let wMax = 0;
-        let dbz = -30;
-        let coldMax = 0;
+        let peak = 0;
         for (let k = 0; k < nz; k++) {
-          const id = ij + k * nxny;
-          const ww = 0.5 * (w[id] + w[id + nxny]);
-          if (ww > wMax) wMax = ww;
-          const cold = coldReflectivityMass(f, id);
-          if (cold > coldMax) coldMax = cold;
-          const qr = f.qr[id];
-          const qc = f.qc[id];
-          if (qr < 1e-5 && qc < 1e-5 && cold < 1e-6) continue;
-          const d = reflectivityDbz(qr, qc, 0, cold);
-          if (d > dbz) dbz = d;
+          const c = q[ij + k * nxny];
+          if (c > CAP) q[ij + k * nxny] = CAP;
+          else if (c < -CAP) q[ij + k * nxny] = -CAP;
+          const a = Math.abs(q[ij + k * nxny]);
+          if (a > peak) peak = a;
         }
-        let next = this.flash[ij] * decay;
-        if (wMax > 6 && dbz > 40) {
-          const excess = Math.min(1, (dbz - 40) / 30);
-          const wFac = Math.min(2, (wMax - 6) / 10);
-          // Cold-cloud charging: graupel/ice collisions make the strongest
-          // electrification, so an ice-rich updraft gets a boost.
-          const iceFac = 0.6 + 0.4 * Math.min(1, coldMax / 2e-3);
-          const inst = (4 + 16 * excess * wFac) * iceFac;
-          next += inst * (1 - decay);
-        }
-        this.flash[ij] = next;
+        this.chargeCol[ij] = peak;
+        this.flash[ij] *= flashDecay;
       }
     }
   }
 
   /**
-   * Discrete flashes from the lightning-hotspot field.
+   * Discrete flashes from the charge field.
    * `dt` is wall seconds, so bolts appear at every sim speed.
-   * At most four channels per call. A strong ground stroke can also
-   * carry a sprite, which does not count as its own roll.
+   * At most four channels per call. A strong +CG can also carry a sprite.
    */
   rollLightning(dt: number): LightningStrike[] {
     if (dt <= 0) return [];
-    const { nx, ny, nz } = this.grid;
+    const { nx, ny, nz, dz } = this.grid;
     const f = this.fields;
     const nxny = nx * ny;
+    const q = this.charge;
     const hits: {
       i: number;
       j: number;
       k: number;
-      topK: number;
-      rate: number;
+      endI: number;
+      endJ: number;
+      endK: number;
+      kind: LightningKind;
+      polarity: 1 | -1;
+      score: number;
     }[] = [];
+
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
-        const rate = this.flash[i + j * nx];
-        if (rate < 0.8) continue;
-        const p = 1 - Math.exp(-(rate / 60) * dt);
-        if (Math.random() > p) continue;
-        let bestK = Math.floor(nz * 0.45);
-        let best = -1e9;
-        let topK = bestK;
+        const ij = i + j * nx;
+        if (this.chargeCol[ij] < 0.45) continue;
+
+        let qLower = 0;
+        let qMid = 0;
+        let qUpper = 0;
+        let kNeg = 0;
+        let minQ = 0;
+        let kPosU = 0;
+        let maxQu = 0;
+        let kPosL = 0;
+        let maxQl = 0;
+        let topK = 1;
+        let wMax = 0;
+        let shaft = 0;
         for (let k = 1; k < nz - 1; k++) {
-          const id = i + nx * (j + ny * k);
-          const cold = coldReflectivityMass(f, id);
-          const score =
-            f.qr[id] * 4 +
-            f.qc[id] +
-            cold * 3 +
-            Math.max(0, f.w[id + nxny]) * 0.002;
-          if (score > best) {
-            best = score;
-            bestK = k;
-          }
-          if (
-            f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id] >
-            1e-4
-          ) {
-            topK = k;
+          const id = ij + k * nxny;
+          const T = TFromTheta(f.theta[id], f.p0[k]) - 273.15;
+          const c = q[id];
+          const cond =
+            f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
+          if (cond > 1e-4) topK = k;
+          const ww = 0.5 * (f.w[id] + f.w[id + nxny]);
+          if (ww > wMax) wMax = ww;
+          if (T > -8) {
+            qLower += c;
+            if (c > maxQl) {
+              maxQl = c;
+              kPosL = k;
+            }
+            shaft += f.qr[id] + f.qg[id] + f.qh[id];
+          } else if (T > -28) {
+            qMid += c;
+            if (c < minQ) {
+              minQ = c;
+              kNeg = k;
+            }
+          } else {
+            qUpper += c;
+            if (c > maxQu) {
+              maxQu = c;
+              kPosU = k;
+            }
           }
         }
-        hits.push({ i, j, k: bestK, topK, rate });
+        if (!kNeg) kNeg = Math.max(1, Math.floor(nz * 0.4));
+        if (!kPosU) kPosU = Math.max(kNeg + 1, Math.min(nz - 2, topK));
+        if (!kPosL) kPosL = Math.max(1, Math.floor(kNeg * 0.45));
+
+        let anvil = 0;
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            if (!di && !dj) continue;
+            const ni = i + di;
+            const nj = j + dj;
+            if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
+            if (this.chargeCol[ni + nj * nx] > 0.3) anvil++;
+          }
+        }
+
+        const H = Math.max(800, Math.abs(kPosU - kNeg) * dz);
+        const zMid = Math.max(800, (kNeg + 0.5) * dz);
+        const zAnvil = Math.max(1200, (kPosU + 0.5) * dz);
+        const eIc = (Math.abs(qUpper - qMid) / (H * H)) * 4e6;
+        const eNeg =
+          minQ < -1 && shaft > 2e-4
+            ? (Math.abs(qMid) / (zMid * zMid)) * 3e6
+            : 0;
+        let ePos = 0;
+        if (maxQu > 1.2 && (wMax < 14 || anvil >= 2 || maxQl > 2)) {
+          ePos = (Math.abs(qUpper) / (zAnvil * zAnvil)) * 2.2e6;
+        }
+        if (maxQl > 3 && minQ > -2) {
+          ePos = Math.max(ePos, (maxQl / (zMid * zMid)) * 2e6);
+        }
+        const eSpi =
+          qUpper > 2 && anvil >= 3 && wMax < 12 ? qUpper * anvil * 0.12 : 0;
+        const eBest = Math.max(eIc, eNeg, ePos, eSpi);
+        if (eBest < 0.6) continue;
+        const rate = Math.min(36, 2 + eBest * 3);
+        if (Math.random() > 1 - Math.exp(-(rate / 60) * dt)) continue;
+
+        const wIc = eIc * 1.6;
+        const wNeg = eNeg * 0.85;
+        const wPos = ePos * 0.28;
+        const wSpi = eSpi * 0.4;
+        const tot = wIc + wNeg + wPos + wSpi;
+        let r = Math.random() * Math.max(1e-6, tot);
+        let kind: LightningKind = "ic";
+        let polarity: 1 | -1 = qUpper >= -qMid ? 1 : -1;
+        let k = kNeg;
+        let endI = i;
+        let endJ = j;
+        let endK = kPosU;
+        r -= wIc;
+        if (r > 0) {
+          r -= wNeg;
+          if (r <= 0) {
+            kind = "negcg";
+            polarity = -1;
+            k = kNeg;
+            endK = 1;
+          } else {
+            r -= wPos;
+            if (r <= 0) {
+              kind = "poscg";
+              polarity = 1;
+              const isolated = maxQl > 3 && minQ > -2;
+              k = isolated ? kPosL : kPosU;
+              endK = 1;
+            } else {
+              kind = "spider";
+              polarity = 1;
+              k = kPosU;
+              endK = kPosU;
+              let ci = i;
+              let cj = j;
+              const steps = 3 + Math.floor(Math.random() * 5);
+              for (let s = 0; s < steps; s++) {
+                let bestI = ci;
+                let bestJ = cj;
+                let bestC = -1e9;
+                for (let dj = -1; dj <= 1; dj++) {
+                  for (let di = -1; di <= 1; di++) {
+                    if (!di && !dj) continue;
+                    const ni = ci + di;
+                    const nj = cj + dj;
+                    if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
+                    const cq = q[ni + nx * (nj + ny * kPosU)];
+                    if (cq > bestC) {
+                      bestC = cq;
+                      bestI = ni;
+                      bestJ = nj;
+                    }
+                  }
+                }
+                if (bestI === ci && bestJ === cj) break;
+                ci = bestI;
+                cj = bestJ;
+              }
+              endI = ci;
+              endJ = cj;
+            }
+          }
+        } else {
+          const ni = Math.max(0, Math.min(nx - 1, i + (Math.random() < 0.5 ? -1 : 1)));
+          const nj = Math.max(0, Math.min(ny - 1, j + (Math.random() < 0.5 ? -1 : 1)));
+          if (Math.random() < 0.45) {
+            endI = ni;
+            endJ = nj;
+          }
+        }
+
+        hits.push({
+          i,
+          j,
+          k,
+          endI,
+          endJ,
+          endK,
+          kind,
+          polarity,
+          score: eBest,
+        });
       }
     }
-    hits.sort((a, b) => b.rate - a.rate);
-    const picked = hits.slice(0, 4);
+
+    hits.sort((a, b) => b.score - a.score);
     const out: LightningStrike[] = [];
-    for (const hit of picked) {
+    for (const hit of hits) {
       if (out.length >= 4) break;
-      // Most flashes stay inside the cloud; roughly a third reach ground.
-      const ic = Math.random() < 0.65;
-      const k = ic
-        ? Math.max(hit.k, Math.min(nz - 2, hit.topK - 1))
-        : hit.k;
-      out.push({ i: hit.i, j: hit.j, k, kind: ic ? "ic" : "cg" });
-      if (!ic && hit.rate > 8 && out.length < 4 && Math.random() < 0.06) {
-        out.push({ i: hit.i, j: hit.j, k: hit.k, kind: "sprite" });
+      const frac =
+        hit.kind === "ic"
+          ? 0.45
+          : hit.kind === "negcg"
+            ? 0.55
+            : hit.kind === "poscg"
+              ? 0.5
+              : 0.4;
+      this.neutralizeCharge(
+        hit.i,
+        hit.j,
+        hit.k,
+        hit.endI,
+        hit.endJ,
+        hit.endK,
+        frac,
+      );
+      const ij = hit.i + hit.j * nx;
+      this.flash[ij] += Math.min(18, 5 + hit.score);
+      out.push({
+        i: hit.i,
+        j: hit.j,
+        k: hit.k,
+        kind: hit.kind,
+        polarity: hit.polarity,
+        endI: hit.endI,
+        endJ: hit.endJ,
+        endK: hit.endK,
+      });
+      if (
+        hit.kind === "poscg" &&
+        hit.score > 8 &&
+        out.length < 4 &&
+        Math.random() < 0.08
+      ) {
+        out.push({
+          i: hit.i,
+          j: hit.j,
+          k: hit.k,
+          kind: "sprite",
+          polarity: 1,
+          endI: hit.i,
+          endJ: hit.j,
+          endK: hit.k,
+        });
       }
     }
     return out;
+  }
+
+  /** Reduce |charge| in a Gaussian neighborhood along a channel path. */
+  private neutralizeCharge(
+    i0: number,
+    j0: number,
+    k0: number,
+    i1: number,
+    j1: number,
+    k1: number,
+    fraction: number,
+  ): void {
+    const { nx, ny, nz } = this.grid;
+    const nxny = nx * ny;
+    const steps = Math.max(
+      8,
+      Math.abs(k1 - k0) + Math.abs(i1 - i0) + Math.abs(j1 - j0),
+    );
+    const frac = Math.min(0.85, Math.max(0.1, fraction));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const ic = Math.round(i0 + (i1 - i0) * t);
+      const jc = Math.round(j0 + (j1 - j0) * t);
+      const kc = Math.round(k0 + (k1 - k0) * t);
+      for (let dk = -1; dk <= 1; dk++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            const i = ic + di;
+            const j = jc + dj;
+            const k = kc + dk;
+            if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) {
+              continue;
+            }
+            const w = Math.exp(-0.5 * (di * di + dj * dj + dk * dk));
+            this.charge[i + nx * (j + ny * k)] *= 1 - frac * w;
+          }
+        }
+      }
+    }
+    for (let j = Math.max(0, j0 - 1); j <= Math.min(ny - 1, j0 + 1); j++) {
+      for (let i = Math.max(0, i0 - 1); i <= Math.min(nx - 1, i0 + 1); i++) {
+        let peak = 0;
+        const ij = i + j * nx;
+        for (let k = 0; k < nz; k++) {
+          const a = Math.abs(this.charge[ij + k * nxny]);
+          if (a > peak) peak = a;
+        }
+        this.chargeCol[ij] = peak;
+      }
+    }
   }
 
   /** Column-max reflectivity (legacy name for 3D radar plane). */

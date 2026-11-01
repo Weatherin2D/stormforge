@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Grid3D, volumeDisplaySize } from "../sim/Grid3D";
 import type { LightningKind } from "../sim/FluidSolver";
+import { isCgKind } from "../sim/FluidSolver";
 import {
   SurfaceWindSample,
   windSpeedScale,
@@ -17,7 +18,16 @@ import {
 } from "./clouds/VolumetricCloudMaterial";
 import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SKY_COLS, SKY_ROWS, adaptation, ADAPT_MAX, luminance } from "./sky";
 import { skyFragment, skyVertex } from "./clouds/skyShader";
-import { course, brightness, type LightningCourse, LightningView, type Flash } from "./lightning";
+import {
+  course,
+  brightness,
+  buildChannel,
+  type LightningCourse,
+  type LightningChannel,
+  type ChannelKind,
+  LightningView,
+  type Flash,
+} from "./lightning";
 import { SpriteView } from "./sprites";
 import { PrecipitationParticles } from "./precipitation";
 import { LightVolume, FlashVolume } from "./light";
@@ -285,26 +295,37 @@ export class CloudRainRenderer {
     i: number;
     j: number;
     kind: LightningKind;
+    polarity: 1 | -1;
     x: number;
     y: number;
     z: number;
+    endX: number;
+    endY: number;
+    endZ: number;
     age: number;
     life: number;
     seed: number;
     brightness: number;
-    course: import("./lightning").LightningCourse;
+    course: LightningCourse;
     isCg: boolean;
+    channel: LightningChannel;
   }[] = [];
   private groundFlashMesh: THREE.Mesh | null = null;
   private flashTint = new THREE.Color(0.75, 0.86, 1);
   private flashFar = new THREE.Color(1, 0.92, 0.55);
+  private readonly boltCoreTint = new THREE.Color(1, 1, 1);
+  private readonly boltWhite = new THREE.Color(1, 1, 1);
+  private readonly kindTintPos = new THREE.Color(1, 0.96, 0.88);
+  private readonly kindTintSpider = new THREE.Color(0.92, 0.95, 1);
+  private readonly kindTintIc = new THREE.Color(0.7, 0.82, 1);
   private spriteTint = new THREE.Color(1, 0.28, 0.38);
   private flashLights: THREE.PointLight[] = [];
   private boltScene = new THREE.Scene();
-  private boltRibbons: THREE.Mesh[] = [];
-  private readonly boltPointCount = 80;
+  private boltGlows: THREE.Mesh[] = [];
+  private boltCores: THREE.Mesh[] = [];
+  private readonly boltPointCount = 140;
   private readonly boltScratch: THREE.Vector3[] = Array.from(
-    { length: 80 },
+    { length: 140 },
     () => new THREE.Vector3(),
   );
   private readonly boltRight = new THREE.Vector3();
@@ -345,9 +366,12 @@ export class CloudRainRenderer {
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
-      const ribbon = this.makeBoltRibbon();
-      this.boltRibbons.push(ribbon);
-      this.boltScene.add(ribbon);
+      const glow = this.makeBoltRibbon();
+      const core = this.makeBoltRibbon();
+      this.boltGlows.push(glow);
+      this.boltCores.push(core);
+      this.boltScene.add(glow);
+      this.boltScene.add(core);
     }
     // Ground flash plane — lit additively during CG strikes
     const gfGeo = new THREE.PlaneGeometry(1, 1);
@@ -1073,8 +1097,14 @@ if(abs(uSurface - 2.0) < 0.5){
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
       const pulse = b.main * bolt.brightness;
       if (pulse < 0.02) continue;
-      // Kept below MeteoLAB FLASH_GAIN-scale so clouds don't white-out.
-      const gain = (bolt.isCg ? 7 : 4.5) * night;
+      const gain =
+        (bolt.kind === "poscg"
+          ? 9
+          : bolt.kind === "negcg"
+            ? 7
+            : bolt.kind === "spider"
+              ? 3.5
+              : 5.5) * night;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number, amt = pulse * gain) => {
         if (flashes.length >= 4) return;
@@ -1089,10 +1119,11 @@ if(abs(uSurface - 2.0) < 0.5){
         });
       };
       pushAt(bolt.x, bolt.y, bolt.z);
-      if (bolt.isCg) {
+      if (bolt.kind === "ic" || bolt.kind === "spider") {
+        pushAt(bolt.endX, bolt.endY, bolt.endZ, pulse * gain * 0.7);
+      } else if (bolt.isCg && flashes.length < 4) {
         const midY = bolt.y * 0.55 + this.groundY * 0.45;
         pushAt(bolt.x, midY, bolt.z, pulse * gain * 0.45);
-        pushAt(bolt.x, this.groundY + 250, bolt.z, pulse * gain * 0.28);
       }
     }
     this.cloudMat.setFlashes(flashes);
@@ -1869,7 +1900,10 @@ if(abs(uSurface - 2.0) < 0.5){
       this.renderer.autoClear = false;
       this.renderer.render(this.overlay, this.overlayCam);
     }
-    if (this.boltRibbons.some((ribbon) => ribbon.visible)) {
+    if (
+      this.boltGlows.some((ribbon) => ribbon.visible) ||
+      this.boltCores.some((ribbon) => ribbon.visible)
+    ) {
       this.renderer.autoClear = false;
       this.renderer.render(this.boltScene, this.camera);
     }
@@ -1934,43 +1968,81 @@ if(abs(uSurface - 2.0) < 0.5){
     i: number;
     j: number;
     kind: LightningKind;
+    polarity?: 1 | -1;
     x: number;
     y: number;
     z: number;
+    endX?: number;
+    endY?: number;
+    endZ?: number;
   }): void {
     const kind = hit.kind;
+    const polarity = hit.polarity ?? (kind === "negcg" ? -1 : 1);
     let seed = Math.random() * 20;
     const rng = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return (seed >>> 0) / 0xffffffff;
     };
-    // Positive CG ~10% of the time; extent in km (domain scale, rough).
-    const charge = Math.random() < 0.1 ? 1 : -1;
-    const extentKm = 6;
-    // Create a Flash object for the new course function
+    const endX = hit.endX ?? hit.x;
+    const endY = hit.endY ?? (isCgKind(kind) ? this.groundY + 2 : hit.y);
+    const endZ = hit.endZ ?? hit.z;
+    const channelKind: ChannelKind =
+      kind === "negcg" || kind === "poscg" || kind === "spider" || kind === "ic"
+        ? kind
+        : "ic";
+    const to =
+      kind === "negcg" || kind === "poscg"
+        ? {
+            x: endX + (rng() - 0.5) * 200,
+            y: this.groundY + 2,
+            z: endZ + (rng() - 0.5) * 200,
+          }
+        : { x: endX, y: endY, z: endZ };
+    const channel =
+      kind === "sprite"
+        ? { points: [], spans: [], extentKm: 0.5 }
+        : buildChannel(
+            channelKind,
+            { x: hit.x, y: hit.y, z: hit.z },
+            to,
+            this.groundY,
+            rng,
+            this.boltPointCount,
+          );
+    const flashKind: Flash["kind"] =
+      kind === "spider" ? "SPIDER" : isCgKind(kind) ? "CG" : "IC";
     const flash: Flash = {
-      kind: kind === 'cg' ? 'CG' : 'IC',
-      charge,
+      kind: flashKind,
+      charge: polarity,
       time: this.timeSeconds * 1000,
       start: Math.floor(this.timeSeconds * 10),
-      nodes: [0, 1, 2, 3, 4], // Simplified node structure for compatibility
+      nodes: [0, 1, 2, 3, 4],
       parent: [-1, 0, 1, 2, 3],
       ground: 4,
     };
-    const c = course(flash, rng, extentKm);
+    const c = course(flash, rng, channel.extentKm);
     const life = c.end / 1000;
-    const isCg = kind === "cg";
+    const isCg = isCgKind(kind);
     this.liveBolts.unshift({
       ...hit,
+      polarity,
+      endX,
+      endY: to.y,
+      endZ,
       age: 0,
       life,
       seed,
       course: c,
       isCg,
-      brightness: isCg ? 0.7 + Math.random() * 0.5 : 0.8 + Math.random() * 0.4,
+      channel,
+      brightness:
+        kind === "poscg"
+          ? 0.95 + Math.random() * 0.35
+          : isCg
+            ? 0.7 + Math.random() * 0.5
+            : 0.8 + Math.random() * 0.4,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
-    // TLE sprites/halos are emitted by the solver alongside strong CGs.
     if (kind === "sprite" && this.spriteView) {
       this.spriteView.add(
         Math.random() < 0.25 ? "halo" : "sprite",
@@ -1978,7 +2050,7 @@ if(abs(uSurface - 2.0) < 0.5){
         hit.y,
         hit.z,
         this.timeSeconds + c.strokes[0].at / 1000,
-        0.9, // brightness
+        0.9,
       );
     }
   }
@@ -2015,162 +2087,183 @@ if(abs(uSurface - 2.0) < 0.5){
     for (let n = 0; n < 6; n++) {
       const bolt = this.liveBolts[n];
       const light = this.flashLights[n];
-      const ribbon = this.boltRibbons[n];
-      if (!bolt || !light || !ribbon) {
+      const glow = this.boltGlows[n];
+      const core = this.boltCores[n];
+      if (!bolt || !light || !glow || !core) {
         if (light) light.intensity = 0;
-        if (ribbon) ribbon.visible = false;
+        if (glow) glow.visible = false;
+        if (core) core.visible = false;
         continue;
       }
       const t = bolt.age * 1000;
       const b = brightness(bolt.course, bolt.isCg, t);
       const pulse = b.main * bolt.brightness;
-      const sprite = bolt.kind === "sprite";
-      if (sprite) {
+      if (bolt.kind === "sprite") {
         light.intensity = 0;
-        ribbon.visible = false; // sprites are volumetric-only, never draw through clouds
+        glow.visible = false;
+        core.visible = false;
         continue;
-      } else {
-        this.boltTint(bolt.x, bolt.y, bolt.z);
-        light.color.copy(this.flashTint);
-        const litY = bolt.kind === "cg" ? bolt.y * 0.4 + this.groundY * 0.6 : bolt.y;
-        light.position.set(bolt.x, litY, bolt.z);
-        const dayScale = Math.max(0.35, 1 - 0.55 * this.sunFrac);
-        light.intensity = (bolt.isCg ? 5.5e7 : 3.0e7) * pulse * dayScale;
       }
-      const packed = this.fillBoltPoints(bolt, this.boltScratch);
-      const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const idx = ribbon.geometry.getIndex() as THREE.BufferAttribute;
-      const half = 85;
-      const eye = this.camera.position;
-      for (let s = 0; s < packed.count; s++) {
-        const p = this.boltScratch[s];
-        const prev = this.boltScratch[Math.max(0, s - 1)];
-        const next = this.boltScratch[Math.min(packed.count - 1, s + 1)];
+      this.boltTint(bolt.x, bolt.y, bolt.z);
+      this.applyKindTint(bolt.kind);
+      light.color.copy(this.flashTint);
+      const litY = bolt.isCg ? bolt.y * 0.4 + this.groundY * 0.6 : bolt.y;
+      light.position.set(bolt.x, litY, bolt.z);
+      const dayScale = Math.max(0.35, 1 - 0.55 * this.sunFrac);
+      const energy =
+        bolt.kind === "poscg"
+          ? 8e7
+          : bolt.kind === "negcg"
+            ? 5.5e7
+            : bolt.kind === "spider"
+              ? 2.2e7
+              : 3e7;
+      light.intensity = energy * pulse * dayScale;
+
+      const packed = this.clipChannel(
+        bolt.channel,
+        b.reveal,
+        b.reveal < 1 ? b.reveal : 1,
+        b.main,
+        b.branch,
+      );
+      const widths = this.kindWidths(bolt.kind);
+      const glowOn = this.writeRibbon(
+        glow,
+        packed,
+        widths.glow,
+        Math.min(0.55, 0.16 + 0.42 * pulse),
+        this.flashTint,
+      );
+      const coreColor = this.boltCoreTint.copy(this.flashTint).lerp(this.boltWhite, 0.55);
+      const coreOn = this.writeRibbon(
+        core,
+        packed,
+        widths.core,
+        Math.min(1, 0.5 + 0.55 * pulse),
+        coreColor,
+      );
+      glow.visible = glowOn;
+      core.visible = coreOn;
+    }
+    let groundPulse = 0;
+    let groundX = 0;
+    let groundZ = 0;
+    for (const bolt of this.liveBolts) {
+      if (!bolt.isCg) continue;
+      const b = brightness(bolt.course, true, bolt.age * 1000);
+      const pulse = b.main * bolt.brightness;
+      if (pulse >= groundPulse) {
+        groundPulse = pulse;
+        groundX = bolt.endX;
+        groundZ = bolt.endZ;
+      }
+    }
+    const night = Math.max(0.35, 1 - 0.55 * this.sunFrac);
+    if (this.groundFlashMesh) {
+      const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = Math.min(0.28, groundPulse * 0.16 * night);
+      this.groundFlashMesh.position.x = groundX;
+      this.groundFlashMesh.position.z = groundZ;
+      this.groundFlashMesh.visible = groundPulse > 0.02;
+    }
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.06 * night);
+  }
+
+  private kindWidths(kind: LightningKind): { core: number; glow: number } {
+    if (kind === "poscg") return { core: 18, glow: 110 };
+    if (kind === "negcg") return { core: 12, glow: 70 };
+    if (kind === "spider") return { core: 8, glow: 50 };
+    return { core: 7, glow: 45 };
+  }
+
+  private applyKindTint(kind: LightningKind): void {
+    if (kind === "poscg") this.flashTint.lerp(this.kindTintPos, 0.35);
+    else if (kind === "spider") this.flashTint.lerp(this.kindTintSpider, 0.4);
+    else if (kind === "ic") this.flashTint.lerp(this.kindTintIc, 0.25);
+  }
+
+  private clipChannel(
+    channel: LightningChannel,
+    reveal: number,
+    branchReveal: number,
+    mainPulse: number,
+    branchPulse: number,
+  ): { count: number; spans: { start: number; count: number; branch: boolean }[] } {
+    const spans: { start: number; count: number; branch: boolean }[] = [];
+    let used = 0;
+    const cap = this.boltScratch.length;
+    for (const span of channel.spans) {
+      const pulse = span.branch ? branchPulse : mainPulse;
+      const clip = span.branch ? branchReveal : reveal;
+      if (pulse < 0.03) continue;
+      const start = used;
+      let n = 0;
+      for (let i = 0; i < span.count; i++) {
+        const p = channel.points[span.start + i];
+        if (!p || p.order > clip) continue;
+        if (used >= cap) break;
+        this.boltScratch[used++].set(p.x, p.y, p.z);
+        n++;
+      }
+      if (n >= 2) spans.push({ start, count: n, branch: span.branch });
+      else used = start;
+    }
+    return { count: used, spans };
+  }
+
+  private writeRibbon(
+    mesh: THREE.Mesh,
+    packed: { count: number; spans: { start: number; count: number; branch: boolean }[] },
+    half: number,
+    opacity: number,
+    color: THREE.Color,
+  ): boolean {
+    if (packed.count < 2) {
+      mesh.visible = false;
+      return false;
+    }
+    const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const idx = mesh.geometry.getIndex() as THREE.BufferAttribute;
+    const eye = this.camera.position;
+    for (const span of packed.spans) {
+      const w = span.branch ? half * 0.55 : half;
+      for (let s = 0; s < span.count; s++) {
+        const i = span.start + s;
+        const p = this.boltScratch[i];
+        const prev = this.boltScratch[span.start + Math.max(0, s - 1)];
+        const next = this.boltScratch[span.start + Math.min(span.count - 1, s + 1)];
         this.boltTangent.subVectors(next, prev);
         this.boltToCam.subVectors(eye, p);
         this.boltRight.crossVectors(this.boltTangent, this.boltToCam);
         if (this.boltRight.lengthSq() < 1) {
           this.boltRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
         }
-        this.boltRight.normalize().multiplyScalar(half);
-        pos.setXYZ(s * 2, p.x + this.boltRight.x, p.y + this.boltRight.y, p.z + this.boltRight.z);
-        pos.setXYZ(s * 2 + 1, p.x - this.boltRight.x, p.y - this.boltRight.y, p.z - this.boltRight.z);
-      }
-      pos.needsUpdate = true;
-      let q = 0;
-      for (const span of packed.spans) {
-        for (let s = 0; s < span.count - 1; s++) {
-          const a = (span.start + s) * 2;
-          idx.setX(q++, a);
-          idx.setX(q++, a + 1);
-          idx.setX(q++, a + 2);
-          idx.setX(q++, a + 1);
-          idx.setX(q++, a + 3);
-          idx.setX(q++, a + 2);
-        }
-      }
-      idx.needsUpdate = true;
-      ribbon.geometry.setDrawRange(0, q);
-      const mat = ribbon.material as THREE.MeshBasicMaterial;
-      mat.color.copy(this.flashTint);
-      mat.opacity = Math.min(1, 0.45 + 0.7 * pulse);
-      ribbon.visible = pulse > 0.03 && packed.count >= 2;
-    }
-    let groundPulse = 0;
-    let groundX = 0;
-    let groundZ = 0;
-    for (const bolt of this.liveBolts) {
-      if (bolt.kind !== "cg") continue;
-      const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
-      const pulse = b.main * bolt.brightness;
-      if (pulse >= groundPulse) {
-        groundPulse = pulse;
-        groundX = bolt.x;
-        groundZ = bolt.z;
+        this.boltRight.normalize().multiplyScalar(w);
+        pos.setXYZ(i * 2, p.x + this.boltRight.x, p.y + this.boltRight.y, p.z + this.boltRight.z);
+        pos.setXYZ(i * 2 + 1, p.x - this.boltRight.x, p.y - this.boltRight.y, p.z - this.boltRight.z);
       }
     }
-    const night = Math.max(0.35, 1 - 0.55 * this.sunFrac);
-    if (this.groundFlashMesh) {
-      const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = Math.min(0.22, groundPulse * 0.14 * night);
-      this.groundFlashMesh.position.x = groundX;
-      this.groundFlashMesh.position.z = groundZ;
-      this.groundFlashMesh.visible = groundPulse > 0.02;
-    }
-    // Soft global tint only — local brightness comes from the PointLight + flash patch.
-    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
-    groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.06 * night);
-  }
-
-  /** Jagged channel plus side branches. Writes packed world points and span list. */
-  private fillBoltPoints(
-    bolt: {
-      kind: LightningKind;
-      x: number;
-      y: number;
-      z: number;
-      seed: number;
-    },
-    out: THREE.Vector3[],
-  ): { count: number; spans: { start: number; count: number }[] } {
-    const seed = bolt.seed;
-    const cap = Math.min(out.length, this.boltPointCount);
-    const spans: { start: number; count: number }[] = [];
-    if (bolt.kind === "sprite") return { count: 0, spans };
-    const isCg = bolt.kind === "cg";
-    const steps = Math.min(isCg ? 22 : 18, cap - 1);
-    const drop = isCg ? Math.max(100, bolt.y - this.groundY) : 0;
-    let px = bolt.x;
-    let py = bolt.y;
-    let pz = bolt.z;
-    for (let s = 0; s <= steps; s++) {
-      out[s].set(px, isCg && s === steps ? this.groundY + 2 : py, pz);
-      if (isCg) {
-        const jag = (s % 3 === 1 ? 300 : 150) * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
-        px += Math.sin(seed + s * 2.17) * jag;
-        pz += Math.cos(seed * 1.3 + s) * jag;
-        py -= drop / steps;
-      } else {
-        const jag = (s % 3 === 1 ? 340 : 180) * (0.7 + 0.5 * Math.sin(seed + s * 1.9));
-        px += Math.sin(seed + s * 2.17) * jag;
-        pz += Math.cos(seed * 1.3 + s) * jag;
-        py += Math.sin(seed * 0.7 + s * 0.9) * 26;
+    pos.needsUpdate = true;
+    let q = 0;
+    for (const span of packed.spans) {
+      for (let s = 0; s < span.count - 1; s++) {
+        const a = (span.start + s) * 2;
+        idx.setX(q++, a);
+        idx.setX(q++, a + 1);
+        idx.setX(q++, a + 2);
+        idx.setX(q++, a + 1);
+        idx.setX(q++, a + 3);
+        idx.setX(q++, a + 2);
       }
     }
-    let used = steps + 1;
-    spans.push({ start: 0, count: used });
-
-    const forks = isCg
-      ? [
-          { along: 0.28, len: 8, side: 1, drop: 0.9 },
-          { along: 0.46, len: 7, side: -1, drop: 0.75 },
-          { along: 0.64, len: 6, side: 1, drop: 0.55 },
-        ]
-      : [{ along: 0.4, len: 5, side: 1, drop: 0 }];
-    for (let f = 0; f < forks.length; f++) {
-      const fork = forks[f];
-      const from = Math.max(1, Math.min(steps - 2, Math.floor(steps * fork.along)));
-      const n = Math.min(fork.len, cap - used - 1);
-      if (n < 3) break;
-      const origin = out[from];
-      let bx = origin.x;
-      let by = origin.y;
-      let bz = origin.z;
-      const bSeed = seed + 4.1 * (f + 1);
-      const heading = seed * 1.7 + f * 2.2 + fork.side * 0.9;
-      const stepH = isCg ? 210 + f * 40 : 300;
-      const stepV = isCg ? (drop / steps) * fork.drop : 0;
-      const start = used;
-      for (let s = 0; s <= n; s++) {
-        out[used++].set(bx, Math.max(this.groundY + 4, by), bz);
-        const jag = 0.65 + 0.35 * Math.sin(bSeed + s * 1.8);
-        bx += Math.cos(heading + s * 0.18) * stepH * jag * fork.side;
-        bz += Math.sin(heading + s * 0.21) * stepH * jag;
-        by += isCg ? -stepV : Math.sin(bSeed + s * 1.5) * 90;
-      }
-      spans.push({ start, count: n + 1 });
-    }
-    return { count: used, spans };
+    idx.needsUpdate = true;
+    mesh.geometry.setDrawRange(0, q);
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    mat.color.copy(color);
+    mat.opacity = opacity;
+    return q > 0;
   }
 
   /** Close bolts are blue-white. Distant ones shift toward yellow. */
@@ -2300,7 +2393,7 @@ if(abs(uSurface - 2.0) < 0.5){
       (this.kmGrid.material as THREE.Material).dispose();
       this.kmGrid = null;
     }
-    for (const ribbon of this.boltRibbons) {
+    for (const ribbon of [...this.boltGlows, ...this.boltCores]) {
       ribbon.geometry.dispose();
       (ribbon.material as THREE.Material).dispose();
     }

@@ -7,7 +7,7 @@ import {
   gridFromExtentAndResolution,
 } from "./sim/Grid3D";
 import { FluidSolver } from "./sim/FluidSolver";
-import type { LightningKind } from "./sim/FluidSolver";
+import type { LightningStrike } from "./sim/FluidSolver";
 import type { SimBackend } from "./sim/SimBackend";
 import { WebGPUBackend } from "./sim/WebGPUBackend";
 import { LiveBridge, LiveState } from "./sim/LiveBridge";
@@ -112,6 +112,8 @@ export class App {
   private live: LiveBridge | null = null;
   private liveDebt = 0;
   private liveVolumeAsk = 0;
+  /** Last time we asked the worker for surface winds (ms). */
+  private liveWindsAsk = 0;
   private liveDth: number | null = null;
   private liveCloud: { cloudMax: number; rainMax: number; cloudMass: number } | null = null;
   private outputIntervalSec = 5;
@@ -1772,21 +1774,27 @@ export class App {
     return this.live;
   }
 
-  private placeStrike(hit: {
-    i: number;
-    j: number;
-    k: number;
-    kind: LightningKind;
-  }): void {
+  private placeStrike(hit: LightningStrike): void {
     if (!this.solver || !this.renderer) return;
     const g = this.solver.grid;
+    const world = (i: number, j: number, k: number) => ({
+      x: ((i + 0.5) / g.nx - 0.5) * g.xExtent,
+      z: -((j + 0.5) / g.ny - 0.5) * g.yExtent,
+      y: -g.zTop / 2 + (k + 0.5) * g.dz,
+    });
+    const start = world(hit.i, hit.j, hit.k);
+    const end = world(hit.endI, hit.endJ, hit.endK);
     this.renderer.addLightning({
       i: hit.i,
       j: hit.j,
       kind: hit.kind,
-      x: ((hit.i + 0.5) / g.nx - 0.5) * g.xExtent,
-      z: -((hit.j + 0.5) / g.ny - 0.5) * g.yExtent,
-      y: -g.zTop / 2 + (hit.k + 0.5) * g.dz,
+      polarity: hit.polarity,
+      x: start.x,
+      y: start.y,
+      z: start.z,
+      endX: end.x,
+      endY: end.y,
+      endZ: end.z,
     });
   }
 
@@ -1919,8 +1927,18 @@ export class App {
       // lag does not compound into multi-second physics jobs.
       const simDt = Math.min(2, this.liveDebt * this.simSpeed);
       const now = performance.now();
+      // Pack the 3D volume less often as the grid grows ? physics still runs
+      // every accepted step; only the texture upload backs off.
+      const cells =
+        (this.solver.grid.nx | 0) *
+        (this.solver.grid.ny | 0) *
+        (this.solver.grid.nz | 0);
+      const volumeMs =
+        cells > 700_000 ? 250 : cells > 300_000 ? 150 : cells > 180_000 ? 100 : 50;
       const wantVolume =
-        this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 50;
+        this.showClouds &&
+        !this.showRadar2d &&
+        now - this.liveVolumeAsk >= volumeMs;
       const map =
         this.showRadar2d &&
         this.radar2d &&
@@ -1929,6 +1947,12 @@ export class App {
           : !this.showRadar2d && this.showRadar3d && this.mapRefreshDue("refl")
             ? "refl"
             : null;
+      // Surface winds are cheap on small grids; on large ones pack a few
+      // times per second so every physics step is not a full column scan.
+      const windsMs = cells > 180_000 ? 200 : 0;
+      const wantWinds =
+        this.showSurfaceWinds &&
+        (windsMs <= 0 || now - this.liveWindsAsk >= windsMs);
       if (
         simDt >= 1e-4 &&
         live.step({
@@ -1937,7 +1961,7 @@ export class App {
           lightning: true,
           wantVolume,
           map,
-          winds: this.showSurfaceWinds,
+          winds: wantWinds,
           wantSwath: this.showSwath && !this.showRadar2d,
           wantColdPool: this.showColdPool && !this.showRadar2d,
           fieldMode:
@@ -1949,6 +1973,7 @@ export class App {
       ) {
         this.liveDebt = 0;
         if (wantVolume) this.liveVolumeAsk = now;
+        if (wantWinds) this.liveWindsAsk = now;
       }
     }
 
