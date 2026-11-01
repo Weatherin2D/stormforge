@@ -21,7 +21,15 @@ export class LightVolume {
     this.target = new THREE.WebGL3DRenderTarget(nx, ny, nz, { depthBuffer: false, type: THREE.UnsignedByteType, format: THREE.RGBAFormat })
     const t = this.target.texture
     t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.wrapR = THREE.ClampToEdgeWrapping; t.generateMipmaps = false
-    this.material = new THREE.ShaderMaterial({ vertexShader: lightVolumeVertex, fragmentShader: lightVolumeFragment, depthTest: false, depthWrite: false, uniforms: { ...shared, uDensity: { value: density }, uLayer: { value: 0 } } })
+    // Stormforge boxes are metres; the MeteoLAB fragment assumes km (60 km sun
+    // cap, SHAFT_MAX / extinction). Rescale those two terms for metre paths.
+    const fragment = lightVolumeFragment
+      .replace(', 60.0)', ', 60000.0)')
+      .replace(
+        /od \+= f\.r \* 1\.1 \+ f\.g \* SHAFT_MAX \/ uExtinction;/g,
+        'od += f.r * 1.1 + f.g * (SHAFT_MAX * 0.001) / max(uExtinction, 1e-6);',
+      )
+    this.material = new THREE.ShaderMaterial({ vertexShader: lightVolumeVertex, fragmentShader: fragment, depthTest: false, depthWrite: false, uniforms: { ...shared, uDensity: { value: density }, uLayer: { value: 0 } } })
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material); this.quad.frustumCulled = false; this.scene.add(this.quad)
   }
 

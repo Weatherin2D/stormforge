@@ -213,6 +213,16 @@ export class CloudRainRenderer {
   private lastVolumeMs = 0;
   /** Bumps when the 3D volume texture is rewritten — LightVolume cache key (not wall-clock). */
   private volumeRevision = 0;
+  /** Packed display volume size (matches precipitation / Data3DTexture). */
+  private volNx = 0;
+  private volNy = 0;
+  private volNz = 0;
+  /**
+   * Smoothed 0..1 “under the storm” factor from overhead cloud. Opens exposure and
+   * dims open-sky lights so looking into a core isn’t a black void over neon ground.
+   */
+  private shadowAdapt = 0;
+  private readonly shadowLook = new THREE.Vector3();
   private clearScratch = new THREE.Color();
   private spriteView: SpriteView | null = null;
   /** GPU light volume for cloud lighting (MeteoLAB). */
@@ -302,7 +312,8 @@ export class CloudRainRenderer {
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {
-      const light = new THREE.PointLight(0xdbe7ff, 0, 70000, 1.35);
+      // Shorter range + steeper decay so a flash lights nearby ground/cloud, not the whole domain.
+      const light = new THREE.PointLight(0xdbe7ff, 0, 22000, 2.0);
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
@@ -710,6 +721,9 @@ if(abs(uSurface - 2.0) < 0.5){
     if (this.sunDir.lengthSq() < 1e-8) this.sunDir.set(0, 1, 0);
     else this.sunDir.normalize();
     this.sunLight.position.copy(this.sunDir).multiplyScalar(400);
+    if (this.sharedUniforms.uSunDir) {
+      (this.sharedUniforms.uSunDir.value as THREE.Vector3).copy(this.sunDir);
+    }
     this.updateSkyFromSun();
     this.applyCloudSun();
   }
@@ -904,14 +918,15 @@ if(abs(uSurface - 2.0) < 0.5){
       b: number;
       amount: number;
     }[] = [];
-    const night = Math.max(0.4, 1 - 0.5 * this.sunFrac);
+      const night = Math.max(0.4, 1 - 0.5 * this.sunFrac);
     for (const bolt of this.liveBolts) {
       if (flashes.length >= 4) break;
       if (bolt.kind === "sprite") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
       const pulse = b.main * bolt.brightness;
       if (pulse < 0.02) continue;
-      const gain = (bolt.isCg ? 22 : 14) * night;
+      // Kept below MeteoLAB FLASH_GAIN-scale so clouds don't white-out.
+      const gain = (bolt.isCg ? 7 : 4.5) * night;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number, amt = pulse * gain) => {
         if (flashes.length >= 4) return;
@@ -928,8 +943,8 @@ if(abs(uSurface - 2.0) < 0.5){
       pushAt(bolt.x, bolt.y, bolt.z);
       if (bolt.isCg) {
         const midY = bolt.y * 0.55 + this.groundY * 0.45;
-        pushAt(bolt.x, midY, bolt.z, pulse * gain * 0.85);
-        pushAt(bolt.x, this.groundY + 250, bolt.z, pulse * gain * 0.7);
+        pushAt(bolt.x, midY, bolt.z, pulse * gain * 0.45);
+        pushAt(bolt.x, this.groundY + 250, bolt.z, pulse * gain * 0.28);
       }
     }
     this.cloudMat.setFlashes(flashes);
@@ -973,6 +988,77 @@ if(abs(uSurface - 2.0) < 0.5){
     });
   }
 
+  /**
+   * How much cloud sits above a world XZ column, 0 = clear, 1 = deep core.
+   * Uses the packed display volume (R liquid + G ice).
+   */
+  private columnShadow(worldX: number, worldZ: number, fromY: number): number {
+    const data = this.volumeData;
+    const nx = this.volNx;
+    const ny = this.volNy;
+    const nz = this.volNz;
+    if (!data || nx < 1 || ny < 1 || nz < 1) return 0;
+    const halfX = this.spanX * 0.5;
+    const halfZ = this.spanZ * 0.5;
+    let i = Math.floor(((worldX + halfX) / this.spanX) * nx);
+    let j = Math.floor(((halfZ - worldZ) / this.spanZ) * ny);
+    if (i < 0) i = 0;
+    else if (i >= nx) i = nx - 1;
+    if (j < 0) j = 0;
+    else if (j >= ny) j = ny - 1;
+    let k0 = Math.floor(((fromY - this.groundY) / Math.max(1, this.spanY)) * nz);
+    if (k0 < 0) k0 = 0;
+    if (k0 >= nz) return 0;
+    let sum = 0;
+    let n = 0;
+    for (let k = k0; k < nz; k++) {
+      const row = k + nz * (ny - 1 - j);
+      const o = (i + nx * row) * 4;
+      if (o + 1 >= data.length) break;
+      sum += data[o] + data[o + 1];
+      n++;
+    }
+    if (n < 1) return 0;
+    // ~80 mean packed byte over the column → full shadow.
+    return Math.min(1, sum / (n * 80));
+  }
+
+  /** Sample overhead + look-ahead so facing into a core also opens the iris. */
+  private sampleOverheadShadow(): number {
+    if (!this.volumeData || this.volumeClear) return 0;
+    const cam = this.camera.position;
+    this.camera.getWorldDirection(this.shadowLook);
+    const aheadX = cam.x + this.shadowLook.x * 2800;
+    const aheadZ = cam.z + this.shadowLook.z * 2800;
+    const here = this.columnShadow(cam.x, cam.z, cam.y);
+    const ahead = this.columnShadow(aheadX, aheadZ, cam.y);
+    // Looking upward into base counts more — that’s the pure-black case.
+    const upWeight = Math.max(0, this.shadowLook.y);
+    return Math.min(1, Math.max(here, ahead * (0.65 + 0.35 * upWeight)));
+  }
+
+  /**
+   * Eye adaptation under cloud: raise exposure / cloud ambient, dim open-sky
+   * sun and hemi, and darken the ground albedo so it matches the shadowed air.
+   */
+  private applyLocalShadowAdapt(): void {
+    const target = this.sampleOverheadShadow();
+    this.shadowAdapt += (target - this.shadowAdapt) * 0.1;
+    const s = this.shadowAdapt;
+    this.renderer.toneMappingExposure = 1.05 * (1 + s * 1.25);
+    // Keep a little sun so edges still read; crush most of the open-sky blast.
+    this.sunLight.intensity = SUN_GAIN * (1 - s * 0.9);
+    this.hemi.intensity = Math.max(0.28, 1 - s * 0.62);
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    groundMat.color.copy(this.groundColor).multiplyScalar(1 - s * 0.58);
+    if (this.cloudMat) {
+      this.cloudMat.setLook({
+        exposure: DEFAULT_LOOK.exposure * (1 + s * 1.45),
+        ambientStrength: DEFAULT_LOOK.ambientStrength * (1 + s * 0.7),
+      });
+    }
+  }
+
   private applyCloudWind(): void {
     if (!this.cloudMat) return;
     const spd = Math.hypot(this.envEast, this.envNorth);
@@ -993,7 +1079,8 @@ if(abs(uSurface - 2.0) < 0.5){
     this.ground.scale.set(sx * 1.12, sz * 1.12, 1);
     this.ground.position.y = this.groundY;
     if (this.groundFlashMesh) {
-      this.groundFlashMesh.scale.set(sx * 1.12, sz * 1.12, 1);
+      // Local patch under the strike — not a domain-wide wash.
+      this.groundFlashMesh.scale.set(9000, 9000, 1);
       this.groundFlashMesh.position.y = this.groundY + 1;
     }
     this.camera.far = Math.max(8000, this.domainSpan * 3);
@@ -1060,6 +1147,10 @@ if(abs(uSurface - 2.0) < 0.5){
     const disp = volumeDisplaySize(grid.nx, grid.ny, grid.nz);
     const bytes = disp.nx * disp.ny * disp.nz * 4;
     this.volumeData = new Uint8Array(new ArrayBuffer(bytes));
+    this.volNx = disp.nx;
+    this.volNy = disp.ny;
+    this.volNz = disp.nz;
+    this.shadowAdapt = 0;
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
     this.precipitation.setBounds(sx, sz, this.groundY, height);
@@ -1409,6 +1500,7 @@ if(abs(uSurface - 2.0) < 0.5){
       this.camera.matrixWorldInverse,
     );
     this.invViewProj.copy(this.currViewProj).invert();
+    this.applyLocalShadowAdapt();
     if (this.precipitation.points.visible) {
       this.precipitation.setPixelScale(this.renderer.domElement.height);
       this.precipitation.update(performance.now());
@@ -1416,6 +1508,9 @@ if(abs(uSurface - 2.0) < 0.5){
 
     // Light volume only when the density field or sun moved — never every animation frame.
     if (this.lightVolume) {
+      if (this.sharedUniforms.uSunDir) {
+        (this.sharedUniforms.uSunDir.value as THREE.Vector3).copy(this.sunDir);
+      }
       this.lightVolume.update(this.renderer, this.volumeRevision, this.sunDir);
     }
 
@@ -1652,7 +1747,7 @@ if(abs(uSurface - 2.0) < 0.5){
         const litY = bolt.kind === "cg" ? bolt.y * 0.4 + this.groundY * 0.6 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
         const dayScale = Math.max(0.35, 1 - 0.55 * this.sunFrac);
-        light.intensity = (bolt.isCg ? 2.4e8 : 1.4e8) * pulse * dayScale;
+        light.intensity = (bolt.isCg ? 5.5e7 : 3.0e7) * pulse * dayScale;
       }
       const packed = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -1694,19 +1789,29 @@ if(abs(uSurface - 2.0) < 0.5){
       ribbon.visible = pulse > 0.03 && packed.count >= 2;
     }
     let groundPulse = 0;
+    let groundX = 0;
+    let groundZ = 0;
     for (const bolt of this.liveBolts) {
       if (bolt.kind !== "cg") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
-      groundPulse = Math.max(groundPulse, b.main * bolt.brightness);
+      const pulse = b.main * bolt.brightness;
+      if (pulse >= groundPulse) {
+        groundPulse = pulse;
+        groundX = bolt.x;
+        groundZ = bolt.z;
+      }
     }
     const night = Math.max(0.35, 1 - 0.55 * this.sunFrac);
     if (this.groundFlashMesh) {
       const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = Math.min(0.55, groundPulse * 0.42 * night);
+      mat.opacity = Math.min(0.22, groundPulse * 0.14 * night);
+      this.groundFlashMesh.position.x = groundX;
+      this.groundFlashMesh.position.z = groundZ;
       this.groundFlashMesh.visible = groundPulse > 0.02;
     }
+    // Soft global tint only — local brightness comes from the PointLight + flash patch.
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
-    groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.55 * night);
+    groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.06 * night);
   }
 
   /** Jagged channel plus side branches. Writes packed world points and span list. */

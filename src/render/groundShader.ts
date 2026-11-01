@@ -63,23 +63,27 @@ vec3 toTex(vec3 p){
     0.5 / uGrid.z);
 }
 
+uniform float uExtinction;
+
 vec2 lightAt(vec3 p){
   vec3 t = toTex(p);
   if(t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) return vec2(0.0, 1.0);
   vec4 L = texture(uLight, t);
-  return vec2(L.r * 8.0, L.g);
+  // Match MeteoLAB: R is 1 - exp(-odRaw / 8); optical depth = odRaw * extinction.
+  float od = -8.0 * log(max(1.0 - L.r, 1e-4)) * uExtinction;
+  return vec2(od, L.g);
 }
 
 float sunThrough(float od){
-  float direct = exp(-od);
-  return direct + (1.0 - direct) / (1.0 + 0.75 * 0.15 * od);
+  return max(exp(-od), 1.0 / (1.0 + 1.7 * od));
 }
 
 // x: direct sun, y: sky light, z: scattered sunlight under cloud.
 vec3 cloudShade(vec3 p){
   vec2 l = lightAt(vec3(p.x, uBoxMin.y, p.z));
-  float od = l.x * 0.8;
-  vec3 s = vec3(exp(-od), mix(0.22, 1.0, l.y), max(0.0, sunThrough(od) - exp(-od)));
+  float od = l.x;
+  // Sky floor 0.32 keeps under-storm ground readable once exposure opens.
+  vec3 s = vec3(exp(-od), mix(0.32, 1.0, l.y), max(0.0, sunThrough(od) - exp(-od)));
   vec2 side = min(p.xz - uBoxMin.xz, uBoxMax.xz - p.xz);
   // Fade out over the last ~3 km so domain edges don't cast hard shadow walls.
   float fade = smoothstep(0.0, 3000.0, min(side.x, side.y));

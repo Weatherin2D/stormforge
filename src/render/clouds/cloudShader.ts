@@ -138,10 +138,11 @@ vec3 flashLight(vec3 p) {
     if (amt <= 0.0) continue;
     vec3 d = p - uFlashPos[f];
     float d2 = dot(d, d);
-    float core = exp(-d2 / (4200.0 * 4200.0));
-    float mid = exp(-d2 / (11000.0 * 11000.0));
-    float wide = exp(-d2 / (22000.0 * 22000.0));
-    flash += uFlashColor[f] * amt * (core + 0.9 * mid + 0.45 * wide);
+    // Tighter falloff so a strike lights a local pocket, not the whole storm.
+    float core = exp(-d2 / (2500.0 * 2500.0));
+    float mid = exp(-d2 / (6000.0 * 6000.0));
+    float wide = exp(-d2 / (11000.0 * 11000.0));
+    flash += uFlashColor[f] * amt * (core + 0.55 * mid + 0.18 * wide);
   }
   return flash;
 }
@@ -479,19 +480,23 @@ void main() {
 
       float odUp, odDown;
       ambientDepth(p, odUp, odDown);
-      // Sky visibility ≈ exp(-odUp); deep inside dim like MeteoLAB mix(0.18, 1, L.y).
+      // Sky visibility ≈ exp(-odUp). Floor is higher than MeteoLAB's 0.18 so storm
+      // cores stay dark-grey (readable) instead of pure black voids.
       float skyVis = exp(-odUp * uAmbientAtten);
       vec3 ambientBottom = uGroundColor + uSunColor * sunThrough(odSun) * 0.15;
-      vec3 ambient = mix(ambientBottom, uSkyColor, h) * mix(0.18, 1.0, skyVis) * uAmbientStrength;
+      vec3 ambient = mix(ambientBottom, uSkyColor, h) * mix(0.36, 1.0, skyVis) * uAmbientStrength;
+      // Soft multi-scatter fill that never fully dies in deep OD.
+      vec3 coreFill = (uSkyColor * 0.55 + uGroundColor * 0.45) * 0.14;
 
       // Cloud colour: MeteoLAB cloudCol mix.
-      vec3 cloudCol = uSunColor * sunlight(odSun, phases) * powder * 0.55 + ambient * 0.9;
+      vec3 cloudCol = uSunColor * sunlight(odSun, phases) * powder * 0.55 + ambient * 0.9 + coreFill;
 
       // Shafts: liquid rain (rainbow) below freezing, snow-like phase above.
       float liquid = 1.0 - smoothstep(uFreezing - 300.0, uFreezing + 300.0, p.y - uBoxMin.y);
       vec3 precipPh = mix(vec3(phases.x), rainPh, liquid);
       vec3 rainCol = uSunColor * (exp(-odSun) * precipPh + sunThrough(odSun) - exp(-odSun)) * 0.55
-                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.5) * 0.8;
+                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.5) * 0.8
+                   + coreFill * 0.5;
 
       vec3 flash = flashLight(p);
       cloudCol += flash;
