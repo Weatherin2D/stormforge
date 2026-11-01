@@ -1889,17 +1889,16 @@ export class App {
       return;
     }
 
-    // Count real frame time so a slow rAF still pays the chosen speed.
-    // Cap a single hitch so a tab wake-up does not dump minutes of sim.
-    const wall = Math.min(0.25, Math.max(0, dtMs) / 1000);
+    // One hitch must not dump a huge backlog onto the worker ? that is what
+    // made every resolution crawl after the speed catch-up change.
+    const wall = Math.min(0.05, Math.max(0, dtMs) / 1000);
     if (this.solver && !this.paused) {
       this.liveDebt += wall;
       const live = this.ensureLive();
-      // One physics chunk stays at 2 s (clouds wash out above that). The
-      // worker splits a larger catch-up into those chunks so 75× / 100×
-      // can run faster than 40×.
-      const MAX_CATCHUP = 10;
-      const simDt = Math.min(MAX_CATCHUP, this.liveDebt * this.simSpeed);
+      // Target rate is wall × speed. Cap each message at 2 s of sim so the
+      // worker stays free for the next frame; leftover debt is dropped so
+      // lag does not compound into multi-second physics jobs.
+      const simDt = Math.min(2, this.liveDebt * this.simSpeed);
       const now = performance.now();
       const wantVolume =
         this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 50;
@@ -1915,7 +1914,7 @@ export class App {
         simDt >= 1e-4 &&
         live.step({
           dt: simDt,
-          wall: simDt / Math.max(this.simSpeed, 1),
+          wall,
           lightning: true,
           wantVolume,
           map,
@@ -1929,8 +1928,7 @@ export class App {
           wantVortex: this.showVortex && !this.showRadar2d,
         })
       ) {
-        this.liveDebt -= simDt / Math.max(this.simSpeed, 1);
-        if (this.liveDebt < 1e-4) this.liveDebt = 0;
+        this.liveDebt = 0;
         if (wantVolume) this.liveVolumeAsk = now;
       }
     }
