@@ -20,8 +20,19 @@ import {
 import { DrawnFront, FRONT_COLORS } from "../sim/synoptic";
 import type { LightningKind } from "../sim/FluidSolver";
 
+/** MeteoLAB instrument chrome colours (styles/tokens.css --instrument-*). */
+const INST = {
+  bg: "#0F1317",
+  bar: "#11151A",
+  grid: "rgba(160,190,200,.14)",
+  gridStrong: "rgba(160,190,200,.28)",
+  label: "#9AABB3",
+  text: "#E8EEF2",
+} as const;
+
 /**
- * Flat top-down map display for reflectivity / Doppler / diagnostics.
+ * Flat top-down map display — MeteoLAB instrument shell over the 3D view
+ * (ibar + screen + side panel, NWS palettes, Cartesian grid / cursor readout).
  */
 export class Radar2DView {
   readonly root: HTMLElement;
@@ -30,6 +41,11 @@ export class Radar2DView {
   private titleEl: HTMLElement;
   private unitsEl: HTMLElement;
   private provenanceEl: HTMLElement;
+  private fieldProductEl: HTMLElement;
+  private fieldUnitsEl: HTMLElement;
+  private fieldLayerEl: HTMLElement;
+  private captionEl: HTMLElement;
+  private readoutEl: HTMLElement;
   private legendBar: HTMLElement;
   private legendTicks: HTMLElement;
   private tabsEl: HTMLElement;
@@ -42,8 +58,12 @@ export class Radar2DView {
   private image: ImageData | null = null;
   private nx = 0;
   private ny = 0;
+  /** Domain width / depth in meters (for km grid + scale bar). */
+  private extentX = 50_000;
+  private extentY = 50_000;
   private product: MapProductId = "refl";
   private onProductChange: ((id: MapProductId) => void) | null = null;
+  private onClose: (() => void) | null = null;
   private ro: ResizeObserver | null = null;
   /** When true, only reflectivity is available (batch review recordings). */
   private recordedOnly = false;
@@ -67,12 +87,16 @@ export class Radar2DView {
   private isPanning = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
+  private pointerMoved = false;
+  /** Cursor over the map in grid indices, or null when off-screen. */
+  private hover: { i: number; j: number } | null = null;
   private pinned: Set<MapProductId> = new Set();
   /** Live catalog entry for each implemented product, used for provenance. */
   private readonly liveViews = liveViewsByProduct();
   private searchHits: CatalogView[] = [];
   private searchActive = -1;
   private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
+  private onKeyDown: ((e: KeyboardEvent) => void) | null = null;
 
   private static readonly PIN_KEY = "stormforge.map2d.pins.v3";
   /** Older pin stores are discarded so the view starts with no stars. */
@@ -207,15 +231,27 @@ export class Radar2DView {
 
   constructor(host: HTMLElement) {
     this.root = document.createElement("div");
-    this.root.className = "radar2d-panel hidden";
+    this.root.className = "radar2d-panel instrument-overlay hidden";
+    this.root.dataset.theme = "dark";
     this.root.innerHTML = `
-      <div class="radar2d-frame">
-        <div class="map2d-search">
-          <input id="map2d-search" type="search" placeholder="Search views…" autocomplete="off" spellcheck="false" aria-label="Search 2D views" aria-controls="map2d-search-results" aria-expanded="false" />
-          <div class="map2d-results hidden" id="map2d-search-results" role="listbox" aria-label="2D view catalog"></div>
-        </div>
-        <div class="radar2d-canvas-wrap">
+      <header class="ibar">
+        <span class="ibar__name">STORMFORGE · MAPS 2D</span>
+        <span class="ibar__sep"></span>
+        <span class="ibar__fields">
+          <span>PRODUCT <b id="map2d-field-product">Column-max reflectivity</b></span>
+          <span>UNITS <b id="map2d-field-units">dBZ</b></span>
+          <span>LAYER <b id="map2d-field-layer">—</b></span>
+        </span>
+        <button type="button" class="btn ibar__snap" title="Save the map screen as a PNG">Snapshot</button>
+        <button type="button" class="btn ibar__close" title="Back to 3D (Esc)">Close <span class="kbd">Esc</span></button>
+      </header>
+      <div class="instrument__body">
+        <div class="instrument__screen radar2d-canvas-wrap">
           <canvas id="radar2d-canvas"></canvas>
+          <div class="screen-caption" id="map2d-caption">
+            <span>COLUMN-MAX REFLECTIVITY</span>
+            <span>CARTESIAN · N ↑</span>
+          </div>
           <div class="map2d-compass" aria-hidden="true">
             <span class="n">N</span>
             <span class="e">E</span>
@@ -223,28 +259,42 @@ export class Radar2DView {
             <span class="w">W</span>
           </div>
         </div>
-        <div class="map2d-pinned" id="map2d-pinned" style="display:none"></div>
-        <div class="map2d-tabs" id="map2d-tabs"></div>
-        <details class="map2d-about" id="map2d-about">
-          <summary>About this view</summary>
-          <div class="map2d-about-body" id="map2d-about-body"></div>
-        </details>
-        <label class="map2d-detail">
-          View detail
-          <input id="map2d-detail" type="range" min="1" max="4" step="1" value="2" />
-          <span id="map2d-detail-val">2×</span>
-        </label>
-        <div class="radar2d-meta">
-          <span class="radar2d-title">Column-max reflectivity</span>
-          <span class="map2d-meta-right">
+        <aside class="instrument__side">
+          <section class="psec">
+            <h3 class="psec__title">Product</h3>
+            <div class="map2d-search">
+              <input id="map2d-search" type="search" placeholder="Search views…" autocomplete="off" spellcheck="false" aria-label="Search 2D views" aria-controls="map2d-search-results" aria-expanded="false" />
+              <div class="map2d-results hidden" id="map2d-search-results" role="listbox" aria-label="2D view catalog"></div>
+            </div>
+            <div class="map2d-pinned" id="map2d-pinned" style="display:none"></div>
+            <div class="map2d-tabs" id="map2d-tabs"></div>
+            <div class="stat map2d-product-stat">
+              <span class="radar2d-title">Column-max reflectivity</span>
+              <span class="unit radar2d-units">dBZ</span>
+            </div>
             <span class="map2d-provenance" id="map2d-provenance"></span>
-            <span class="radar2d-units">dBZ</span>
-          </span>
-        </div>
-        <div class="radar2d-legend">
-          <div class="radar-legend-bar"></div>
-          <div class="radar-legend-ticks"><span>5</span><span>30</span><span>50</span><span>70</span></div>
-        </div>
+          </section>
+          <section class="psec">
+            <h3 class="psec__title">Scale</h3>
+            <div class="colorbar">
+              <div class="colorbar__bar radar-legend-bar"></div>
+              <div class="colorbar__ticks radar-legend-ticks"><span>5</span><span>30</span><span>50</span><span>70</span></div>
+            </div>
+            <label class="map2d-detail">
+              View detail
+              <input id="map2d-detail" type="range" min="1" max="4" step="1" value="2" />
+              <span id="map2d-detail-val">2×</span>
+            </label>
+          </section>
+          <section class="psec">
+            <h3 class="psec__title">Cursor</h3>
+            <dl class="kv" id="map2d-readout"></dl>
+          </section>
+          <details class="map2d-about group" id="map2d-about" open>
+            <summary><span class="group__title">About this view</span></summary>
+            <div class="map2d-about-body group__body" id="map2d-about-body"></div>
+          </details>
+        </aside>
       </div>
     `;
     host.appendChild(this.root);
@@ -257,10 +307,26 @@ export class Radar2DView {
     this.canvas.addEventListener("pointerdown", (e) => this.onCanvasPointerDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onCanvasPointerMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.onCanvasPointerUp(e));
-    this.canvas.addEventListener("pointerleave", (e) => this.onCanvasPointerUp(e));
+    this.canvas.addEventListener("pointerleave", (e) => {
+      this.onCanvasPointerUp(e);
+      this.hover = null;
+      this.renderReadout();
+      this.draw();
+    });
     this.canvas.addEventListener("pointercancel", (e) => this.onCanvasPointerUp(e));
     this.titleEl = this.root.querySelector(".radar2d-title") as HTMLElement;
     this.unitsEl = this.root.querySelector(".radar2d-units") as HTMLElement;
+    this.fieldProductEl = this.root.querySelector(
+      "#map2d-field-product",
+    ) as HTMLElement;
+    this.fieldUnitsEl = this.root.querySelector(
+      "#map2d-field-units",
+    ) as HTMLElement;
+    this.fieldLayerEl = this.root.querySelector(
+      "#map2d-field-layer",
+    ) as HTMLElement;
+    this.captionEl = this.root.querySelector("#map2d-caption") as HTMLElement;
+    this.readoutEl = this.root.querySelector("#map2d-readout") as HTMLElement;
     this.provenanceEl = this.root.querySelector(
       "#map2d-provenance",
     ) as HTMLElement;
@@ -282,6 +348,7 @@ export class Radar2DView {
     ) as HTMLElement;
     this.loadPins();
     this.buildTabs();
+    this.renderReadout();
 
     const stats = catalogStats();
     this.searchInput.placeholder =
@@ -317,6 +384,27 @@ export class Radar2DView {
       this.closeSearch();
     };
     document.addEventListener("pointerdown", this.onDocPointerDown);
+
+    this.onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (this.root.classList.contains("hidden")) return;
+      if (!this.searchResultsEl.classList.contains("hidden")) {
+        this.closeSearch();
+        this.searchInput.blur();
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      this.onClose?.();
+    };
+    window.addEventListener("keydown", this.onKeyDown);
+
+    this.root.querySelector(".ibar__close")!.addEventListener("click", () => {
+      this.onClose?.();
+    });
+    this.root.querySelector(".ibar__snap")!.addEventListener("click", () => {
+      this.snapshot();
+    });
 
     this.tabsEl.addEventListener("click", (e) => {
       const pin = (e.target as HTMLElement).closest(".map2d-pin") as HTMLElement | null;
@@ -365,11 +453,15 @@ export class Radar2DView {
     });
 
     this.ro = new ResizeObserver(() => this.layout());
-    this.ro.observe(this.root);
+    this.ro.observe(this.root.querySelector(".instrument__screen") as HTMLElement);
   }
 
   setOnProductChange(cb: (id: MapProductId) => void): void {
     this.onProductChange = cb;
+  }
+
+  setOnClose(cb: () => void): void {
+    this.onClose = cb;
   }
 
   setOnDetailChange(cb: (scale: number) => void): void {
@@ -810,18 +902,29 @@ export class Radar2DView {
   private applyMeta(meta: MapProductMeta): void {
     this.titleEl.textContent = meta.title;
     this.unitsEl.textContent = meta.units;
+    this.fieldProductEl.textContent = meta.title;
+    this.fieldUnitsEl.textContent = meta.units;
     paintLegend(this.legendBar, this.legendTicks, meta);
 
     const view = this.liveViews.get(meta.id);
+    const layer = view
+      ? `${VIEW_PROVENANCE_LABELS[view.provenance]} · ${VIEW_LEVEL_LABELS[view.levelKind]}`
+      : "—";
     this.provenanceEl.textContent = view
       ? `${VIEW_PROVENANCE_LABELS[view.provenance]} · ${VIEW_LEVEL_LABELS[view.levelKind]}`
       : "";
     this.provenanceEl.title = view?.level ? `Layer: ${view.level}` : "";
+    this.fieldLayerEl.textContent = layer;
 
-    const summary = this.aboutEl.querySelector("summary") as HTMLElement;
+    const captionTitle = meta.title.toUpperCase();
+    this.captionEl.innerHTML =
+      `<span>${captionTitle}</span>` +
+      `<span>CARTESIAN · N ↑ · ${meta.units}</span>`;
+
+    const summary = this.aboutEl.querySelector(".group__title") as HTMLElement;
     if (view) {
       summary.textContent =
-        `About this view — ${VIEW_PROVENANCE_LABELS[view.provenance]} · ` +
+        `About — ${VIEW_PROVENANCE_LABELS[view.provenance]} · ` +
         `${view.units} · ${view.level}`;
       this.renderViewDetail(view, this.aboutBodyEl);
     } else {
@@ -833,6 +936,7 @@ export class Radar2DView {
         "No catalog entry is registered for this map product.",
       );
     }
+    this.renderReadout();
   }
 
   setVisible(on: boolean): void {
@@ -857,12 +961,16 @@ export class Radar2DView {
     if (!this.root.classList.contains("hidden")) this.draw();
   }
 
-  setGrid(nx: number, ny: number): void {
+  setGrid(nx: number, ny: number, extentX = 50_000, extentY = 50_000): void {
     this.nx = Math.max(1, nx);
     this.ny = Math.max(1, ny);
+    this.extentX = Math.max(1, extentX);
+    this.extentY = Math.max(1, extentY);
     this.image = new ImageData(this.nx, this.ny);
     this.windSamples = [];
+    this.hover = null;
     this.layout();
+    this.renderReadout();
   }
 
   /** Pack callback fills RGBA nx*ny; then we blit scaled. */
@@ -870,37 +978,31 @@ export class Radar2DView {
     if (!this.image || this.nx < 1) return;
     pack(this.image.data as unknown as Uint8Array);
     this.draw();
+    this.renderReadout();
   }
 
   private layout(): void {
     if (this.root.classList.contains("hidden")) return;
-    const wrap = this.root.querySelector(".radar2d-canvas-wrap") as HTMLElement;
+    const wrap = this.root.querySelector(
+      ".instrument__screen",
+    ) as HTMLElement;
     const w = Math.max(1, wrap.clientWidth);
     const h = Math.max(1, wrap.clientHeight);
     if (h < 40) return;
     if (this.nx < 1 || this.ny < 1) return;
 
-    // Square map inside the wrap. Do not assign wrap width/height — that
-    // locks the flex box and shrinks it on later layout() calls (detail,
-    // pan, zoom).
-    const size = Math.max(1, Math.min(w, h));
+    // Fill the instrument screen (MeteoLAB: canvas inset 0 in overlay).
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.style.width = `${size}px`;
-    this.canvas.style.height = `${size}px`;
-    this.canvas.width = Math.max(1, Math.floor(size * dpr));
-    this.canvas.height = Math.max(1, Math.floor(size * dpr));
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+    this.canvas.width = Math.max(1, Math.floor(w * dpr));
+    this.canvas.height = Math.max(1, Math.floor(h * dpr));
     this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
-    const compass = this.root.querySelector(".map2d-compass") as HTMLElement | null;
-    if (compass) {
-      compass.style.width = `${size}px`;
-      compass.style.height = `${size}px`;
-    }
     this.draw();
   }
 
   private onCanvasWheel(e: WheelEvent): void {
     e.preventDefault();
-    const wrap = this.root.querySelector(".radar2d-canvas-wrap") as HTMLElement;
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -922,25 +1024,36 @@ export class Radar2DView {
   private onCanvasPointerDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     this.isPanning = true;
+    this.pointerMoved = false;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
-    (this.canvas as any).setPointerCapture(e.pointerId);
+    this.canvas.setPointerCapture(e.pointerId);
   }
 
   private onCanvasPointerMove(e: PointerEvent): void {
-    if (!this.isPanning) return;
-    const dx = e.clientX - this.lastPointerX;
-    const dy = e.clientY - this.lastPointerY;
-    this.lastPointerX = e.clientX;
-    this.lastPointerY = e.clientY;
-    this.panX += dx;
-    this.panY += dy;
+    this.updateHover(e.clientX, e.clientY);
+    if (this.isPanning) {
+      const dx = e.clientX - this.lastPointerX;
+      const dy = e.clientY - this.lastPointerY;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) this.pointerMoved = true;
+      this.lastPointerX = e.clientX;
+      this.lastPointerY = e.clientY;
+      this.panX += dx;
+      this.panY += dy;
+    }
     this.draw();
+    this.renderReadout();
   }
 
   private onCanvasPointerUp(e?: PointerEvent): void {
     this.isPanning = false;
-    (this.canvas as any).releasePointerCapture();
+    if (e) {
+      try {
+        this.canvas.releasePointerCapture(e.pointerId);
+      } catch {
+        /* already released */
+      }
+    }
   }
 
   private blitTarget(w: number, h: number): CanvasRenderingContext2D {
@@ -956,6 +1069,34 @@ export class Radar2DView {
       this.blitCtx = this.blitCanvas.getContext("2d");
     }
     return this.blitCtx!;
+  }
+
+  /** Map image rectangle in canvas pixels (after zoom/pan). */
+  private mapFrame(): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null {
+    if (!this.image || this.nx < 1 || this.ny < 1) return null;
+    const f = this.detail;
+    const tw = this.nx * f;
+    const th = this.ny * f;
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    const fit = Math.min(cw / Math.max(1, tw), ch / Math.max(1, th));
+    const dw = tw * fit * this.zoom;
+    const dh = th * fit * this.zoom;
+    const maxPanX = Math.max(0, (dw - cw) / 2);
+    const maxPanY = Math.max(0, (dh - ch) / 2);
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
+    return {
+      x: cw / 2 + this.panX - dw / 2,
+      y: ch / 2 + this.panY - dh / 2,
+      w: dw,
+      h: dh,
+    };
   }
 
   private draw(): void {
@@ -974,41 +1115,39 @@ export class Radar2DView {
       tctx.putImageData(this.upImage, 0, 0);
     }
 
-    this.ctx.fillStyle = "#0a101c";
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.imageSmoothingEnabled = f > 1;
     const cw = this.canvas.width;
     const ch = this.canvas.height;
-    const cx = cw / 2;
-    const cy = ch / 2;
-    // Fit the grid to the canvas. Detail only changes source resolution.
-    const fit = Math.min(cw / Math.max(1, tw), ch / Math.max(1, th));
-    const dw = tw * fit;
-    const dh = th * fit;
-    const maxPanX = Math.max(0, (dw * this.zoom - cw) / 2);
-    const maxPanY = Math.max(0, (dh * this.zoom - ch) / 2);
-    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
-    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
+    this.ctx.fillStyle = INST.bg;
+    this.ctx.fillRect(0, 0, cw, ch);
+    this.ctx.imageSmoothingEnabled = f > 1;
+
+    const box = this.mapFrame();
+    if (!box) return;
+    this.ctx.drawImage(this.blitCanvas!, box.x, box.y, box.w, box.h);
+
     this.ctx.save();
-    this.ctx.translate(cx + this.panX, cy + this.panY);
-    this.ctx.scale(this.zoom, this.zoom);
-    this.ctx.drawImage(this.blitCanvas!, -dw / 2, -dh / 2, dw, dh);
+    this.ctx.beginPath();
+    this.ctx.rect(box.x, box.y, box.w, box.h);
+    this.ctx.clip();
+    if (this.windsVisible && this.windSamples.length > 0) {
+      this.drawWindArrows(box);
+    }
+    if (this.fronts.length > 0) this.drawFronts(box);
+    if (this.lightning.length > 0) this.drawLightning(box);
+    this.drawGrid(box);
     this.ctx.restore();
 
-    if (this.windsVisible && this.windSamples.length > 0) {
-      this.drawWindArrows();
-    }
-    if (this.fronts.length > 0) this.drawFronts();
-    if (this.lightning.length > 0) this.drawLightning();
-    this.drawOverlay();
+    this.ctx.strokeStyle = INST.gridStrong;
+    this.ctx.lineWidth = 1;
+    this.ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1);
+    this.drawScaleBar(box);
+    this.drawHoverMark(box);
   }
 
   /** Front lines from the front editor, drawn on top of the map. */
-  private drawFronts(): void {
-    const w = this.canvas.width;
-    const h = this.canvas.height;
+  private drawFronts(box: { x: number; y: number; w: number; h: number }): void {
     const ctx = this.ctx;
-    const scale = Math.min(w, h);
+    const scale = Math.min(box.w, box.h);
     ctx.save();
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
@@ -1016,20 +1155,23 @@ export class Radar2DView {
       const color = FRONT_COLORS[front.kind] ?? "#ffffff";
       ctx.strokeStyle = "rgba(6, 12, 22, 0.85)";
       ctx.lineWidth = Math.max(3, scale * 0.006);
-      this.strokeFront(front, w, h);
+      this.strokeFront(front, box);
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(1.5, scale * 0.0035);
-      this.strokeFront(front, w, h);
+      this.strokeFront(front, box);
     }
     ctx.restore();
   }
 
-  private strokeFront(front: DrawnFront, w: number, h: number): void {
+  private strokeFront(
+    front: DrawnFront,
+    box: { x: number; y: number; w: number; h: number },
+  ): void {
     const ctx = this.ctx;
     ctx.beginPath();
     front.points.forEach((p, i) => {
-      const x = p.x * w;
-      const y = (1 - p.y) * h;
+      const x = box.x + p.x * box.w;
+      const y = box.y + (1 - p.y) * box.h;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -1042,15 +1184,18 @@ export class Radar2DView {
     if (!this.root.classList.contains("hidden")) this.draw();
   }
 
-  private drawLightning(): void {
+  private drawLightning(box: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }): void {
     const { nx, ny } = this;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
     const ctx = this.ctx;
     for (const m of this.lightning) {
-      const cx = ((m.i + 0.5) / nx) * w;
-      const cy = ((ny - 1 - m.j + 0.5) / ny) * h;
-      const s = Math.max(7, Math.min(w, h) / ny * 0.55);
+      const cx = box.x + ((m.i + 0.5) / nx) * box.w;
+      const cy = box.y + ((ny - 1 - m.j + 0.5) / ny) * box.h;
+      const s = Math.max(7, (Math.min(box.w, box.h) / ny) * 0.55);
       const a = Math.max(0, Math.min(1, m.alpha));
       ctx.save();
       ctx.translate(cx, cy);
@@ -1101,12 +1246,15 @@ export class Radar2DView {
     }
   }
 
-  private drawWindArrows(): void {
+  private drawWindArrows(box: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }): void {
     const { nx, ny } = this;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
     const spdScale = windSpeedScale(this.windSamples);
-    const cell = Math.min(w / nx, h / ny);
+    const cell = Math.min(box.w / nx, box.h / ny);
     const maxLen = cell * 2.2;
 
     this.ctx.save();
@@ -1117,8 +1265,8 @@ export class Radar2DView {
 
     for (const s of this.windSamples) {
       // North-up: row 0 = j = ny-1
-      const cx = ((s.i + 0.5) / nx) * w;
-      const cy = ((ny - 1 - s.j + 0.5) / ny) * h;
+      const cx = box.x + ((s.i + 0.5) / nx) * box.w;
+      const cy = box.y + ((ny - 1 - s.j + 0.5) / ny) * box.h;
       const len =
         maxLen * (0.3 + 0.7 * Math.min(1, s.spd / Math.max(1e-3, spdScale)));
       const ang = Math.atan2(-s.v, s.u); // +u east (+x), +v north (−y)
@@ -1149,41 +1297,191 @@ export class Radar2DView {
     this.ctx.restore();
   }
 
-  /** Basemap-style overlay: grid + scale bar (MeteoLAB-inspired). */
-  private drawOverlay(): void {
-    const w = this.canvas.width;
-    const h = this.canvas.height;
+  /** Cartesian km grid over the domain (MeteoLAB instrument colours). */
+  private drawGrid(box: { x: number; y: number; w: number; h: number }): void {
     const ctx = this.ctx;
-    ctx.save();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    const kmX = this.extentX / 1000;
+    const kmY = this.extentY / 1000;
+    const stepKm = pickGridStep(Math.max(kmX, kmY));
+    const pxPerKmX = box.w / kmX;
+    const pxPerKmY = box.h / kmY;
+
     ctx.lineWidth = 1;
-    const step = Math.max(24, Math.floor(Math.min(w, h) / 8));
-    for (let x = step; x < w; x += step) {
+    ctx.font = '11px "IBM Plex Mono", "Cascadia Mono", ui-monospace, monospace';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    for (let km = stepKm; km < kmX - 1e-6; km += stepKm) {
+      const x = box.x + km * pxPerKmX;
+      const major = Math.abs(km % (stepKm * 2)) < 1e-6;
+      ctx.strokeStyle = major ? INST.gridStrong : INST.grid;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+      ctx.moveTo(x, box.y);
+      ctx.lineTo(x, box.y + box.h);
       ctx.stroke();
     }
-    for (let y = step; y < h; y += step) {
+    for (let km = stepKm; km < kmY - 1e-6; km += stepKm) {
+      const y = box.y + box.h - km * pxPerKmY;
+      const major = Math.abs(km % (stepKm * 2)) < 1e-6;
+      ctx.strokeStyle = major ? INST.gridStrong : INST.grid;
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
+      ctx.moveTo(box.x, y);
+      ctx.lineTo(box.x + box.w, y);
       ctx.stroke();
     }
-    // scale bar
-    const barLen = Math.max(40, Math.floor(w * 0.18));
-    const bx = 14;
-    const by = h - 18;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 2;
+
+    // Tick labels along the south and west edges.
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = INST.bg;
+    ctx.fillStyle = INST.label;
+    const labelEvery = stepKm * pxPerKmX < 36 ? 2 : 1;
+    for (let n = labelEvery, km = stepKm * n; km < kmX - 0.5; n += labelEvery, km = stepKm * n) {
+      const x = box.x + km * pxPerKmX;
+      const text = `${km}`;
+      ctx.strokeText(text, x, box.y + box.h - 12);
+      ctx.fillText(text, x, box.y + box.h - 12);
+    }
+    for (let n = labelEvery, km = stepKm * n; km < kmY - 0.5; n += labelEvery, km = stepKm * n) {
+      const y = box.y + box.h - km * pxPerKmY;
+      const text = `${km}`;
+      ctx.strokeText(text, box.x + 14, y);
+      ctx.fillText(text, box.x + 14, y);
+    }
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  private drawScaleBar(box: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }): void {
+    const ctx = this.ctx;
+    const kmX = this.extentX / 1000;
+    const pxPerKm = box.w / kmX;
+    const stepKm = pickGridStep(kmX);
+    const barKm = Math.max(stepKm, pickNiceKm(kmX * 0.22));
+    const barLen = barKm * pxPerKm;
+    const bx = box.x + 14;
+    const by = box.y + box.h - 22;
+    ctx.save();
+    ctx.strokeStyle = "rgba(11, 16, 19, 0.85)";
+    ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.moveTo(bx, by);
     ctx.lineTo(bx + barLen, by);
     ctx.stroke();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.font = "10px sans-serif";
-    ctx.fillText(`${Math.round(barLen)} px`, bx, by - 4);
+    ctx.strokeStyle = INST.text;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + barLen, by);
+    ctx.moveTo(bx, by - 4);
+    ctx.lineTo(bx, by + 4);
+    ctx.moveTo(bx + barLen, by - 4);
+    ctx.lineTo(bx + barLen, by + 4);
+    ctx.stroke();
+    ctx.fillStyle = INST.text;
+    ctx.font = '11px "IBM Plex Mono", "Cascadia Mono", ui-monospace, monospace';
+    ctx.fillText(`${barKm} km`, bx, by - 8);
     ctx.restore();
+  }
+
+  private drawHoverMark(box: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }): void {
+    if (!this.hover) return;
+    const { i, j } = this.hover;
+    const cx = box.x + ((i + 0.5) / this.nx) * box.w;
+    const cy = box.y + ((this.ny - 1 - j + 0.5) / this.ny) * box.h;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = "#2f7d86";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 7, cy);
+    ctx.lineTo(cx + 7, cy);
+    ctx.moveTo(cx, cy - 7);
+    ctx.lineTo(cx, cy + 7);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private updateHover(clientX: number, clientY: number): void {
+    const box = this.mapFrame();
+    if (!box || this.nx < 1 || this.ny < 1) {
+      this.hover = null;
+      return;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    const sx = ((clientX - rect.left) / Math.max(1e-6, rect.width)) * this.canvas.width;
+    const sy = ((clientY - rect.top) / Math.max(1e-6, rect.height)) * this.canvas.height;
+    if (sx < box.x || sy < box.y || sx > box.x + box.w || sy > box.y + box.h) {
+      this.hover = null;
+      return;
+    }
+    const u = (sx - box.x) / box.w;
+    const v = (sy - box.y) / box.h;
+    const i = Math.min(this.nx - 1, Math.max(0, Math.floor(u * this.nx)));
+    const j = Math.min(
+      this.ny - 1,
+      Math.max(0, Math.floor((1 - v) * this.ny)),
+    );
+    this.hover = { i, j };
+  }
+
+  private renderReadout(): void {
+    if (!this.readoutEl) return;
+    const rows: [string, string][] = [];
+    if (!this.hover || !this.image) {
+      rows.push(["cursor", "off the screen"]);
+    } else {
+      const { i, j } = this.hover;
+      const xKm = ((i + 0.5) / this.nx) * (this.extentX / 1000);
+      const yKm = ((j + 0.5) / this.ny) * (this.extentY / 1000);
+      const meta = MAP_PRODUCTS[this.product];
+      const o = (i + (this.ny - 1 - j) * this.nx) * 4;
+      const r = this.image.data[o];
+      const g = this.image.data[o + 1];
+      const b = this.image.data[o + 2];
+      const sample = approxValueFromRgb(meta, r, g, b);
+      rows.push(["E", `${xKm.toFixed(1)} km`]);
+      rows.push(["N", `${yKm.toFixed(1)} km`]);
+      rows.push(["cell", `${i}, ${j}`]);
+      rows.push([
+        meta.title.split(" (")[0] ?? meta.title,
+        sample ?? "—",
+      ]);
+    }
+    this.readoutEl.innerHTML = rows
+      .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+      .join("");
+  }
+
+  private snapshot(): void {
+    const out = document.createElement("canvas");
+    out.width = this.canvas.width;
+    out.height = this.canvas.height;
+    const ctx = out.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = INST.bg;
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(this.canvas, 0, 0);
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement("a");
+      const now = new Date();
+      const two = (n: number) => String(n).padStart(2, "0");
+      a.href = URL.createObjectURL(blob);
+      a.download = `stormforge-maps2d-${two(now.getHours())}-${two(now.getMinutes())}-${two(now.getSeconds())}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    }, "image/png");
   }
 
   dispose(): void {
@@ -1193,6 +1491,89 @@ export class Radar2DView {
       document.removeEventListener("pointerdown", this.onDocPointerDown);
       this.onDocPointerDown = null;
     }
+    if (this.onKeyDown) {
+      window.removeEventListener("keydown", this.onKeyDown);
+      this.onKeyDown = null;
+    }
     this.root.remove();
   }
+}
+
+/** Nice km spacing for grid / scale (1, 2, 5 × 10^n). */
+function pickGridStep(domainKm: number): number {
+  const target = domainKm / 8;
+  const exp = Math.pow(10, Math.floor(Math.log10(Math.max(1e-3, target))));
+  for (const m of [1, 2, 5, 10]) {
+    if (m * exp >= target * 0.7) return m * exp;
+  }
+  return 10 * exp;
+}
+
+function pickNiceKm(raw: number): number {
+  const exp = Math.pow(10, Math.floor(Math.log10(Math.max(1e-3, raw))));
+  for (const m of [1, 2, 5, 10]) {
+    if (m * exp >= raw * 0.85) return m * exp;
+  }
+  return 10 * exp;
+}
+
+/** Rough value under the cursor from the legend gradient (display only). */
+function approxValueFromRgb(
+  meta: MapProductMeta,
+  r: number,
+  g: number,
+  b: number,
+): string | null {
+  // Near map background → no data / empty.
+  if (r <= 18 && g <= 24 && b <= 36) return "no data";
+  const scale = meta.scale;
+  if (!scale) return `#${hex2(r)}${hex2(g)}${hex2(b)}`;
+  const css = meta.legendCss;
+  const stops = parseLegendStops(css);
+  if (stops.length < 2) return null;
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < stops.length; i++) {
+    const s = stops[i];
+    const d =
+      (s.r - r) * (s.r - r) + (s.g - g) * (s.g - g) + (s.b - b) * (s.b - b);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  const t = stops[best].t;
+  const value = scale.min + t * (scale.max - scale.min);
+  const units = meta.units;
+  if (units === "dBZ" || units === "J/kg" || units === "%") {
+    return `${Math.round(value)} ${units}`;
+  }
+  if (units === "m/s" || units === "kg/m²" || units === "mm/h") {
+    return `${value.toFixed(1)} ${units}`;
+  }
+  if (units === "km") return `${value.toFixed(1)} ${units}`;
+  if (units === "°C" || units === "K") return `${value.toFixed(1)} ${units}`;
+  return `${value.toFixed(1)} ${units}`;
+}
+
+function hex2(n: number): string {
+  return Math.max(0, Math.min(255, n | 0)).toString(16).padStart(2, "0");
+}
+
+function parseLegendStops(
+  css: string,
+): { t: number; r: number; g: number; b: number }[] {
+  const out: { t: number; r: number; g: number; b: number }[] = [];
+  const re = /#([0-9a-fA-F]{6})\s+([\d.]+)%/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css))) {
+    const hex = m[1];
+    out.push({
+      t: Number(m[2]) / 100,
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16),
+    });
+  }
+  return out;
 }

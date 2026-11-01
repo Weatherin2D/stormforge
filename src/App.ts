@@ -1423,6 +1423,36 @@ export class App {
     this.renderer?.setFreezingLevel(this.freezingHeightAgl());
   }
 
+  /** Close the Maps 2D instrument (Close button / Esc) and restore 3D chrome. */
+  private closeMaps2d(): void {
+    if (!this.showRadar2d) return;
+    this.showRadar2d = false;
+    if (!this.showClouds && !this.showRadar3d) this.showClouds = true;
+    const q = (sel: string) => this.simScreen.querySelector(sel) as HTMLElement;
+    q("#btn-clouds")?.classList.toggle("active", this.showClouds);
+    q("#btn-radar3d")?.classList.toggle("active", this.showRadar3d);
+    q("#btn-radar2d")?.classList.toggle("active", false);
+    const legend = q("#radar-legend");
+    if (legend) {
+      const show3dLegend = this.showRadar3d;
+      legend.classList.toggle("hidden", !show3dLegend);
+      legend.setAttribute("aria-hidden", show3dLegend ? "false" : "true");
+    }
+    this.radar2d?.setVisible(false);
+    this.renderer?.setVolumeVisible(this.showClouds);
+    this.renderer?.setWindsVisible(this.showSurfaceWinds);
+    this.radar2d?.setWindsVisible(false);
+    this.renderer?.setDropletsVisible(this.showDroplets);
+    this.renderer?.setShowSwath(this.showSwath);
+    this.renderer?.setShowColdPool(this.showColdPool);
+    this.renderer?.setShowVortex(this.showVortex);
+    this.renderer?.setShowFronts(this.showFronts3d);
+    this.renderer?.setFieldMode(this.fieldMode);
+    if (this.sessionMode === "playback") {
+      this.showPlaybackFrame(this.playbackIndex);
+    }
+  }
+
   private mountSimView(grid: Grid3D, zTop: number): void {
     this.viewport.querySelectorAll("canvas").forEach((c) => {
       if (c.parentElement === this.viewport) c.remove();
@@ -1443,7 +1473,7 @@ export class App {
     this.renderer.resize();
     this.syncFreezingLevel();
     this.radar2d = new Radar2DView(this.viewport);
-    this.radar2d.setGrid(grid.nx, grid.ny);
+    this.radar2d.setGrid(grid.nx, grid.ny, grid.xExtent, grid.yExtent);
     this.radar2d.setProduct(this.mapProduct);
     this.radar2d.setOnProductChange((id) => {
       this.mapProduct = id;
@@ -1452,6 +1482,7 @@ export class App {
         this.showPlaybackFrame(this.playbackIndex);
       }
     });
+    this.radar2d.setOnClose(() => this.closeMaps2d());
     this.radar2d.setOnDetailChange((scale) => {
       this.renderer?.setRadarDetail(scale);
     });

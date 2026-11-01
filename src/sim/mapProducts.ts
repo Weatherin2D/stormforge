@@ -175,30 +175,44 @@ function legendFromStops(stops: RgbaStop[], min: number, max: number): string {
   return `linear-gradient(90deg,${parts.join(",")})`;
 }
 
-/** RadarScope standard reflectivity, 5–75 dBZ. */
+/**
+ * NWS classic reflectivity (MeteoLAB z-nws / GRLevelX BR), 5–75 dBZ.
+ * Cyan → blue → green → yellow → orange → red → magenta → white.
+ */
 const REFL_STOPS: RgbaStop[] = [
-  [5, 29, 37, 60],
-  [17.5, 89, 155, 171],
-  [22.5, 33, 186, 72],
-  [32.5, 5, 101, 1],
-  [37.5, 251, 252, 0],
-  [42.5, 253, 149, 2],
-  [50, 253, 38, 0],
-  [60, 193, 148, 179],
-  [70, 165, 2, 215],
-  [75, 135, 255, 253],
+  [5, 4, 233, 231],
+  [10, 1, 159, 244],
+  [15, 3, 0, 244],
+  [20, 2, 253, 2],
+  [25, 1, 197, 1],
+  [30, 0, 142, 0],
+  [35, 253, 248, 2],
+  [40, 229, 188, 0],
+  [45, 253, 149, 0],
+  [50, 253, 0, 0],
+  [55, 212, 0, 0],
+  [60, 188, 0, 0],
+  [65, 248, 0, 253],
+  [70, 152, 84, 198],
+  [75, 253, 253, 253],
 ];
 
-/** RadarScope velocity: inbound green, near-zero gray, outbound red. */
+/**
+ * MeteoLAB / NWS-style radial velocity: inbound green, outbound red,
+ * near-zero grey (couplet readable).
+ */
 const VEL_STOPS: RgbaStop[] = [
-  [-30, 0, 70, 0],
-  [-18, 0, 170, 40],
-  [-6, 140, 230, 140],
-  [-1, 90, 90, 90],
-  [1, 90, 90, 90],
-  [6, 240, 140, 140],
-  [18, 230, 30, 30],
-  [30, 140, 0, 0],
+  [-40, 0, 255, 166],
+  [-30, 0, 200, 90],
+  [-20, 0, 140, 55],
+  [-10, 0, 85, 33],
+  [-5, 61, 79, 66],
+  [0, 90, 70, 70],
+  [5, 112, 31, 31],
+  [10, 140, 36, 36],
+  [20, 200, 52, 52],
+  [30, 255, 96, 96],
+  [40, 255, 160, 160],
 ];
 
 /** Pivotal-style surface temperature, −15°C to 40°C. */
@@ -365,15 +379,15 @@ const LWP_STOPS: RgbaStop[] = [
 ];
 
 /** Vertically integrated liquid, 0–75 kg/m². */
+/** MeteoLAB-style VIL (kg/m²). */
 const VIL_STOPS: RgbaStop[] = [
-  [0, 22, 32, 48],
-  [5, 44, 92, 180],
-  [15, 40, 160, 200],
-  [28, 70, 196, 110],
-  [40, 236, 216, 70],
-  [55, 244, 132, 36],
-  [68, 220, 40, 90],
-  [75, 255, 210, 255],
+  [5, 59, 110, 150],
+  [10, 47, 158, 92],
+  [20, 227, 214, 58],
+  [35, 239, 140, 31],
+  [50, 215, 48, 31],
+  [65, 197, 27, 138],
+  [80, 255, 255, 255],
 ];
 
 /** Surface precipitation rate, 0–60 mm/h. */
@@ -500,9 +514,9 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "doppler",
     title: "Radial velocity (center radar)",
     units: "m/s",
-    legendCss: legendFromStops(VEL_STOPS, -30, 30),
-    ticks: ["-30", "0", "+30"],
-    scale: { min: -30, max: 30, values: [-30, 0, 30] },
+    legendCss: legendFromStops(VEL_STOPS, -40, 40),
+    ticks: ["−40", "−20", "0", "+20", "+40"],
+    scale: { min: -40, max: 40, values: [-40, -20, 0, 20, 40] },
   },
   cape: {
     id: "cape",
@@ -788,9 +802,9 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "vil",
     title: "Vertically integrated liquid",
     units: "kg/m²",
-    legendCss: legendFromStops(VIL_STOPS, 0, 75),
-    ticks: ["0", "15", "30", "45", "60", "75"],
-    scale: { min: 0, max: 75, values: [0, 15, 30, 45, 60, 75] },
+    legendCss: legendFromStops(VIL_STOPS, 0, 80),
+    ticks: ["0", "10", "20", "35", "50", "65", "80"],
+    scale: { min: 0, max: 80, values: [0, 10, 20, 35, 50, 65, 80] },
   },
   t925: {
     id: "t925",
@@ -1626,7 +1640,7 @@ function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
 }
 
 function velocityToRgba(vr: number, out: Uint8Array, o: number): void {
-  lerpStops(Math.min(30, Math.max(-30, vr)), VEL_STOPS, out, o, 255);
+  lerpStops(Math.min(40, Math.max(-40, vr)), VEL_STOPS, out, o, 255);
 }
 
 function tempToRgba(tC: number, out: Uint8Array, o: number): void {
@@ -2331,7 +2345,7 @@ function packVil(grid: Grid3D, f: SimFields, out: Uint8Array): void {
             Math.max(0, f.qh[id])) *
           dz;
       }
-      lerpStops(clamp(vil, 0, 75), VIL_STOPS, out, mapPix(i, j, nx, ny), 255);
+      lerpStops(clamp(vil, 0, 80), VIL_STOPS, out, mapPix(i, j, nx, ny), 255);
     }
   }
 }

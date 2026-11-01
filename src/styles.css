@@ -11,6 +11,20 @@
   --danger: #e85d5d;
   --ok: #3ecf8e;
   --font: "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  --instrument-bg: #0f1317;
+  --instrument-bar: #11151a;
+  --instrument-grid: rgba(160, 190, 200, 0.14);
+  --instrument-grid-strong: rgba(160, 190, 200, 0.28);
+  --instrument-label: #9aabb3;
+  --line: #2a333c;
+  --surface-1: #161b21;
+  --surface-2: #1b222a;
+  --surface-3: #222a33;
+  --text-2: #b7c2c9;
+  --text-3: #8a97a0;
+  --hover: rgba(255, 255, 255, 0.04);
+  --accent-soft: rgba(77, 184, 255, 0.14);
 }
 
 * {
@@ -902,31 +916,274 @@ label {
   white-space: nowrap;
 }
 
-.radar2d-panel {
+.radar2d-panel.instrument-overlay {
   position: absolute;
   inset: 0;
-  z-index: 8;
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-  background: #070b14;
+  z-index: 20;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+  background: var(--instrument-bg);
+  color: var(--text);
+  font-family: var(--font);
 }
 
 .radar2d-panel.hidden {
   display: none;
 }
 
-.radar2d-frame {
+.radar2d-panel .ibar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  height: 48px;
+  padding: 0 8px 0 16px;
+  background: var(--instrument-bar);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.radar2d-panel .ibar__name {
+  flex: none;
+  font: 500 0.72rem/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.radar2d-panel .ibar__sep {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex: none;
+}
+
+.radar2d-panel .ibar__fields {
+  display: flex;
+  gap: 18px;
+  min-width: 0;
+  overflow: hidden;
+  font: 0.72rem/1 var(--font-mono);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.radar2d-panel .ibar__fields b {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.radar2d-panel .ibar__snap {
+  margin-left: auto;
+}
+
+.radar2d-panel .ibar__close {
+  margin-left: 0;
+}
+
+.radar2d-panel .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--text);
+  font: 500 0.78rem/1 var(--font);
+  white-space: nowrap;
+}
+
+.radar2d-panel .btn:hover {
+  background: #2a333e;
+}
+
+.radar2d-panel .kbd {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: 0.65rem/1.2 var(--font-mono);
+  color: var(--text-3);
+}
+
+.radar2d-panel .instrument__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(340px, 38vw);
+  min-height: 0;
+}
+
+.radar2d-panel .instrument__screen {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--instrument-bg);
+  cursor: crosshair;
+}
+
+.radar2d-panel .instrument__screen > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: var(--instrument-bg);
+}
+
+.radar2d-panel .instrument__side {
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-1);
+  border-left: 1px solid var(--line);
+}
+
+.radar2d-panel .psec {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.radar2d-panel .psec:first-child {
+  border-top: 0;
+}
+
+.radar2d-panel .psec__title {
+  margin: 0;
+  font: 600 0.82rem/1 var(--font);
+  color: var(--text);
+}
+
+.radar2d-panel .colorbar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.radar2d-panel .colorbar__bar,
+.radar2d-panel .radar-legend-bar {
+  position: relative;
+  height: 10px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  background-color: var(--instrument-bar);
+}
+
+.radar2d-panel .colorbar__ticks,
+.radar2d-panel .radar-legend-ticks {
+  position: relative;
+  display: block;
+  height: 12px;
+  font: 0.68rem/1 var(--font-mono);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.radar2d-panel .radar-legend-ticks.scaled span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+
+.radar2d-panel .screen-caption {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: 0.72rem/16px var(--font-mono);
+  color: var(--instrument-label);
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.radar2d-panel .screen-caption span:first-child {
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.radar2d-panel .kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  margin: 0;
+  font: 0.72rem/1.4 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.radar2d-panel .kv dt {
+  color: var(--text-3);
+}
+
+.radar2d-panel .kv dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.radar2d-panel .stat.map2d-product-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+}
+
+.radar2d-panel .stat .unit {
+  font: 500 0.72rem/1 var(--font-mono);
+  color: var(--text-3);
+}
+
+.radar2d-panel .group {
+  border-top: 1px solid var(--line);
+}
+
+.radar2d-panel .group > summary {
+  display: flex;
   align-items: center;
-  gap: 0.45rem;
-  width: min(96%, 820px);
-  height: 100%;
-  max-height: 100%;
-  min-height: 0;
-  box-sizing: border-box;
-  padding: 8px 0 6px;
+  gap: 8px;
+  height: 36px;
+  padding: 0 16px;
+  list-style: none;
+  font: 600 0.82rem/1 var(--font);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.radar2d-panel .group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.radar2d-panel .group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 16px 14px;
+}
+
+@media (max-width: 860px) {
+  .radar2d-panel .instrument__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(42vh, 1fr) auto;
+    overflow: auto;
+  }
+
+  .radar2d-panel .instrument__side {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    overflow: visible;
+  }
+
+  .radar2d-panel .ibar__fields {
+    display: none;
+  }
 }
 
 .map2d-search {
@@ -939,9 +1196,9 @@ label {
   width: 100%;
   margin: 0;
   padding: 0.4rem 0.6rem;
-  background: #0a101c;
+  background: var(--instrument-bg);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   font-size: 0.82rem;
 }
@@ -961,8 +1218,8 @@ label {
   display: flex;
   flex-direction: column;
   max-height: min(56vh, 460px);
-  background: #0d1524;
-  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
   overflow: hidden;
@@ -1156,56 +1413,18 @@ label {
   color: var(--muted);
 }
 
-.map2d-about {
-  flex: 0 0 auto;
-  width: 100%;
-  color: var(--muted);
-  font-size: 0.74rem;
-}
-
-.map2d-about summary {
-  padding: 0.1rem;
-  cursor: pointer;
-}
-
-.map2d-about-body {
-  max-height: 136px;
-  margin-top: 0.2rem;
-  padding: 0.35rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(18, 26, 43, 0.7);
+.radar2d-panel .map2d-about-body {
+  max-height: 220px;
   overflow-y: auto;
-}
-
-.radar2d-canvas-wrap {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.radar2d-frame canvas {
-  display: block;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #0a101c;
-  image-rendering: pixelated;
 }
 
 .map2d-compass {
   pointer-events: none;
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 100%;
-  height: 100%;
-  transform: translate(-50%, -50%);
-  color: rgba(197, 212, 234, 0.9);
-  font: 700 0.72rem/1 sans-serif;
+  inset: 0;
+  z-index: 1;
+  color: var(--instrument-label);
+  font: 700 0.72rem/1 var(--font-mono);
   letter-spacing: 0.04em;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
@@ -1238,35 +1457,20 @@ label {
   transform: translateY(-50%);
 }
 
-.radar2d-meta {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  max-width: 100%;
-  font-size: 0.78rem;
-  color: var(--muted);
+.radar2d-panel .radar2d-title {
+  font-size: 0.82rem;
+  color: var(--text);
 }
 
-.radar2d-units {
-  font-weight: 700;
-  color: var(--text);
+.radar2d-panel .radar2d-units {
+  font-weight: 500;
+  color: var(--text-3);
   letter-spacing: 0.04em;
 }
 
-.map2d-meta-right {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-}
-
-.map2d-provenance {
+.radar2d-panel .map2d-provenance {
   color: var(--accent);
   font-size: 0.72rem;
-}
-
-.radar2d-legend {
-  width: 100%;
-  max-width: 100%;
 }
 
 .map2d-detail {
@@ -1275,9 +1479,9 @@ label {
   flex-wrap: nowrap;
   align-items: center;
   gap: 0.55rem;
-  width: min(100%, 420px);
+  width: 100%;
   font-size: 0.78rem;
-  color: var(--muted);
+  color: var(--text-3);
   white-space: nowrap;
 }
 
@@ -1299,19 +1503,23 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
-  justify-content: center;
+  justify-content: flex-start;
   width: 100%;
   margin-bottom: 0.15rem;
 }
 
 .map2d-tabs button {
   padding: 0.3rem 0.55rem;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
+  border-radius: 6px;
+  background: var(--surface-3);
+  border: 0;
 }
 
 .map2d-tabs button.active {
-  border-color: var(--accent);
-  background: rgba(77, 184, 255, 0.15);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .map2d-tabs button span {
@@ -1331,7 +1539,7 @@ label {
 }
 
 .map2d-pinned {
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.35rem;
   margin: 0.1rem 0;
@@ -1339,12 +1547,16 @@ label {
 
 .map2d-pinned-btn {
   padding: 0.25rem 0.5rem;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface-3);
 }
 
 .map2d-pinned-btn.active {
-  border-color: var(--accent);
-  background: rgba(77, 184, 255, 0.15);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .side-panel {
