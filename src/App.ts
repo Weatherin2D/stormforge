@@ -93,6 +93,8 @@ export class App {
   private showFronts3d = true;
   /** Mesocyclone vortex rings. */
   private showVortex = false;
+  /** Domain Galilean frame follows estimated storm motion. */
+  private followStorm = false;
   /** 3D scalar field overlay mode. */
   private fieldMode: OverlayField = "off";
   private mapProduct: MapProductId = "refl";
@@ -177,6 +179,7 @@ export class App {
                 <button id="btn-swath" title="Accumulated precipitation swath">Swath</button>
                 <button id="btn-coldpool" title="Cold-pool shade">Cold pool</button>
                 <button id="btn-vortex" title="Mesocyclone vortex rings">Vortex</button>
+                <button id="btn-follow-storm" title="Move the domain with the storm so it stays in view">Follow storm</button>
                 <label class="sim-speed" title="3D scalar field overlay">
                   Field
                   <select id="sel-field">
@@ -631,6 +634,10 @@ export class App {
       };
       this.solver.reset(levels, opts);
       this.live?.reset(levels, opts);
+      if (this.followStorm) {
+        this.solver.setFollowStorm(true);
+        this.live?.followStorm(true);
+      }
     });
 
     q("#btn-batch-cancel").addEventListener("click", () => {
@@ -679,6 +686,7 @@ export class App {
       q("#btn-swath").classList.toggle("active", this.showSwath);
       q("#btn-coldpool").classList.toggle("active", this.showColdPool);
       q("#btn-vortex").classList.toggle("active", this.showVortex);
+      q("#btn-follow-storm")?.classList.toggle("active", this.followStorm);
       q("#btn-radar3d").classList.toggle("active", this.showRadar3d);
       q("#btn-radar2d").classList.toggle("active", this.showRadar2d);
       q("#btn-winds").classList.toggle("active", this.showSurfaceWinds);
@@ -760,6 +768,12 @@ export class App {
     });
     q("#btn-vortex").addEventListener("click", () => {
       this.showVortex = !this.showVortex;
+      syncViewToggles();
+    });
+    q("#btn-follow-storm")?.addEventListener("click", () => {
+      this.followStorm = !this.followStorm;
+      this.solver?.setFollowStorm(this.followStorm);
+      this.live?.followStorm(this.followStorm);
       syncViewToggles();
     });
     q("#sel-field").addEventListener("change", () => {
@@ -1155,6 +1169,10 @@ export class App {
       radiation,
       clockPaused: this.clockPaused,
     });
+    if (this.followStorm) {
+      this.solver.setFollowStorm(true);
+      this.live?.followStorm(true);
+    }
     this.syncSunUi(true);
 
     this.setup.hide();
@@ -1776,6 +1794,7 @@ export class App {
     if (!this.solver || !this.renderer) return;
     this.solver.time = st.time;
     this.solver.setSolarHour(st.solarHour);
+    this.renderer.setGroundFrameOffset(st.frameEast ?? 0, st.frameNorth ?? 0);
     this.liveDth = st.dThSfc;
     this.liveCloud = {
       cloudMax: st.cloudMax,

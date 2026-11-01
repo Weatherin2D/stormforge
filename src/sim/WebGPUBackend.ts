@@ -25,6 +25,7 @@ import {
   spawnInitBubble,
 } from "./InitFromSounding";
 import { SoundingLevel } from "./thermo";
+import { domainMotionFromProfile } from "./sounding";
 import {
   RadiationOptions,
   DEFAULT_RADIATION,
@@ -624,6 +625,11 @@ export class WebGPUBackend implements SimBackend {
   radiation: RadiationOptions = { ...DEFAULT_RADIATION };
   vorticityStrength = 0;
   hydrostatic: HydrostaticMode = "auto";
+  private followStorm = false;
+  private frameU = 0;
+  private frameV = 0;
+  private groundEast = 0;
+  private groundNorth = 0;
 
   private device: WebGPUDevice | null = null;
   private b: {
@@ -805,7 +811,10 @@ export class WebGPUBackend implements SimBackend {
   reset(sounding: SoundingLevel[], opts: InitOptions): void {
     this.time = 0;
     this.stepCount = 0;
+    this.groundEast = 0;
+    this.groundNorth = 0;
     initFromSounding(this.grid, sounding, this.fields, opts);
+    if (this.followStorm) this.applyFrameToWinds(true);
     this.uploadFields(this.fields, this.grid, this.b!);
   }
 
@@ -815,6 +824,49 @@ export class WebGPUBackend implements SimBackend {
     setActiveSynoptic(setup);
     applySynopticPattern(this.grid, this.fields, previous, setup);
     if (this.b) this.uploadFields(this.fields, this.grid, this.b);
+  }
+
+  setFollowStorm(on: boolean): void {
+    if (on === this.followStorm) return;
+    if (on) {
+      const m = domainMotionFromProfile(
+        this.fields.u0,
+        this.fields.v0,
+        this.grid.dz,
+      );
+      this.frameU = m.u;
+      this.frameV = m.v;
+      this.applyFrameToWinds(true);
+      this.followStorm = true;
+    } else {
+      this.applyFrameToWinds(false);
+      this.frameU = 0;
+      this.frameV = 0;
+      this.followStorm = false;
+    }
+    if (this.b) this.uploadFields(this.fields, this.grid, this.b);
+  }
+
+  getFollowStorm(): boolean {
+    return this.followStorm;
+  }
+
+  frameOffset(): { east: number; north: number } {
+    return { east: this.groundEast, north: this.groundNorth };
+  }
+
+  private applyFrameToWinds(enter: boolean): void {
+    const s = enter ? -1 : 1;
+    const du = s * this.frameU;
+    const dv = s * this.frameV;
+    if (du === 0 && dv === 0) return;
+    const f = this.fields;
+    for (let k = 0; k < this.grid.nz; k++) {
+      f.u0[k] += du;
+      f.v0[k] += dv;
+    }
+    for (let i = 0; i < f.u.length; i++) f.u[i] += du;
+    for (let i = 0; i < f.v.length; i++) f.v[i] += dv;
   }
 
   setRadiation(partial: Partial<RadiationOptions>): void {
@@ -919,6 +971,10 @@ export class WebGPUBackend implements SimBackend {
     this.uploadFields(this.fields, g, b);
 
     this.time += dt;
+    if (this.followStorm) {
+      this.groundEast += this.frameU * dt;
+      this.groundNorth += this.frameV * dt;
+    }
     this.stepCount++;
   }
 

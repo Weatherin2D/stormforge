@@ -79,6 +79,7 @@ function publish(extra: {
   if (extra.coldPool) transfers.push(extra.coldPool.buffer);
   if (extra.field) transfers.push(extra.field.buffer);
   if (extra.vortex) transfers.push(extra.vortex.buffer);
+  const fo = solver.frameOffset();
   const payload = {
     type: "state" as const,
     time: solver.time,
@@ -102,6 +103,9 @@ function publish(extra: {
     field: extra.field ?? null,
     fieldMode: extra.fieldMode ?? null,
     vortex: extra.vortex ?? null,
+    frameEast: fo.east,
+    frameNorth: fo.north,
+    followStorm: solver.getFollowStorm(),
   };
   (self as unknown as { postMessage(message: unknown, transfer: Transferable[]): void }).postMessage(
     payload,
@@ -124,6 +128,7 @@ self.onmessage = (ev: MessageEvent) => {
     | { type: "radiation"; radiation: Partial<RadiationOptions> }
     | { type: "clock"; paused: boolean }
     | { type: "synoptic"; setup: SynopticSetup }
+    | { type: "followStorm"; on: boolean }
     | StepMsg;
   if (msg.type === "rebuild") {
     const grid = new Grid3D(msg.grid);
@@ -155,6 +160,10 @@ self.onmessage = (ev: MessageEvent) => {
   if (msg.type === "synoptic") {
     // Fronts edited while the run is going: swap the pattern in place.
     solver.setSynoptic(msg.setup);
+    return;
+  }
+  if (msg.type === "followStorm") {
+    solver.setFollowStorm(!!msg.on);
     return;
   }
   solver.step(Math.min(2, Math.max(0, msg.dt)));

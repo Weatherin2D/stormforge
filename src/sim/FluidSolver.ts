@@ -9,6 +9,7 @@ import {
 } from "./InitFromSounding";
 import { stepMicrophysics } from "./Microphysics";
 import { SoundingLevel, G, TFromTheta, exnerFromP, qsat } from "./thermo";
+import { domainMotionFromProfile } from "./sounding";
 import { getActiveSynoptic, sampleSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
 import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
@@ -105,6 +106,14 @@ export class FluidSolver implements SimBackend {
   private iceScratch: Float32Array = new Float32Array(0);
   private mgLevels: MgLevel[] = [];
   private lastBubbleOpts: InitOptions = { bubbleStrength: 3 };
+  /** Domain follows the storm (Galilean frame). */
+  private followStorm = false;
+  /** Frame velocity over the ground (u east, v north), m/s. */
+  private frameU = 0;
+  private frameV = 0;
+  /** Integrated domain travel over the ground, metres. */
+  private groundEast = 0;
+  private groundNorth = 0;
 
   constructor(grid: Grid3D) {
     this.grid = grid;
@@ -172,16 +181,21 @@ export class FluidSolver implements SimBackend {
     this.fields = createFields(grid);
     this.time = 0;
     this.stepCount = 0;
+    this.groundEast = 0;
+    this.groundNorth = 0;
     this.lastBubbleOpts = { ...opts };
     this.allocWork();
     initFromSounding(grid, sounding, this.fields, opts);
     this.refreshLandMask();
     this.refreshExner();
+    if (this.followStorm) this.applyFrameToWinds(true);
   }
 
   reset(sounding: SoundingLevel[], opts: InitOptions): void {
     this.time = 0;
     this.stepCount = 0;
+    this.groundEast = 0;
+    this.groundNorth = 0;
     const synoptic = opts.synoptic ?? this.lastBubbleOpts.synoptic;
     this.lastBubbleOpts = { ...opts, synoptic };
     initFromSounding(this.grid, sounding, this.fields, this.lastBubbleOpts);
@@ -189,6 +203,51 @@ export class FluidSolver implements SimBackend {
     this.plumeCooldown.fill(0);
     this.flash.fill(0);
     this.refreshExner();
+    if (this.followStorm) this.applyFrameToWinds(true);
+  }
+
+  setFollowStorm(on: boolean): void {
+    if (on === this.followStorm) return;
+    if (on) {
+      const m = domainMotionFromProfile(
+        this.fields.u0,
+        this.fields.v0,
+        this.grid.dz,
+      );
+      this.frameU = m.u;
+      this.frameV = m.v;
+      this.applyFrameToWinds(true);
+      this.followStorm = true;
+    } else {
+      this.applyFrameToWinds(false);
+      this.frameU = 0;
+      this.frameV = 0;
+      this.followStorm = false;
+    }
+  }
+
+  getFollowStorm(): boolean {
+    return this.followStorm;
+  }
+
+  frameOffset(): { east: number; north: number } {
+    return { east: this.groundEast, north: this.groundNorth };
+  }
+
+  /** Subtract (enter) or restore (leave) frame velocity on profile + 3D winds. */
+  private applyFrameToWinds(enter: boolean): void {
+    const s = enter ? -1 : 1;
+    const du = s * this.frameU;
+    const dv = s * this.frameV;
+    if (du === 0 && dv === 0) return;
+    const f = this.fields;
+    const nz = this.grid.nz;
+    for (let k = 0; k < nz; k++) {
+      f.u0[k] += du;
+      f.v0[k] += dv;
+    }
+    for (let i = 0; i < f.u.length; i++) f.u[i] += du;
+    for (let i = 0; i < f.v.length; i++) f.v[i] += dv;
   }
 
   /** Swap the synoptic pattern of the running simulation. */
@@ -300,6 +359,10 @@ export class FluidSolver implements SimBackend {
       }
       this.time += h;
       this.stepCount++;
+      if (this.followStorm) {
+        this.groundEast += this.frameU * h;
+        this.groundNorth += this.frameV * h;
+      }
     }
     // The fronts are a slow relaxation of the pattern onto the fields, so
     // they are put back once per step rather than once per sub-step.

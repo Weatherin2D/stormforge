@@ -160,6 +160,57 @@ function stormMotion(levels: SoundingLevel[]): { u: number; v: number } {
   return { u: ubar + (dev * vbar) / mag, v: vbar - (dev * ubar) / mag };
 }
 
+/** Bulk shear (m/s) above which the domain follows the Bunkers right-mover (MeteoLAB). */
+export const FOLLOW_SUPERCELL_SHEAR = 15;
+
+/**
+ * Velocity of a storm-following domain (u east, v north, m/s): Bunkers right-mover
+ * in supercell shear, otherwise the 0–6 km mean wind (MeteoLAB domainMotion).
+ */
+export function domainMotionFromProfile(
+  u0: Float32Array,
+  v0: Float32Array,
+  dz: number,
+): { u: number; v: number } {
+  const n = Math.min(u0.length, v0.length);
+  if (n < 1 || !(dz > 0)) return { u: 0, v: 0 };
+  const at = (z: number): { u: number; v: number } => {
+    const fk = z / dz - 0.5;
+    if (fk <= 0) return { u: u0[0], v: v0[0] };
+    if (fk >= n - 1) return { u: u0[n - 1], v: v0[n - 1] };
+    const k0 = fk | 0;
+    const t = fk - k0;
+    return {
+      u: u0[k0] * (1 - t) + u0[k0 + 1] * t,
+      v: v0[k0] * (1 - t) + v0[k0 + 1] * t,
+    };
+  };
+  const meanBand = (z0: number, z1: number): { u: number; v: number } => {
+    let u = 0;
+    let v = 0;
+    let w = 0;
+    for (let z = z0; z <= z1 + 1e-6; z += Math.max(dz, 100)) {
+      const p = at(z);
+      u += p.u;
+      v += p.v;
+      w += 1;
+    }
+    return w > 0 ? { u: u / w, v: v / w } : { u: 0, v: 0 };
+  };
+  const low = meanBand(0, 500);
+  const high = meanBand(5500, 6000);
+  const mean = meanBand(0, 6000);
+  const su = high.u - low.u;
+  const sv = high.v - low.v;
+  const shear = Math.hypot(su, sv);
+  const sfc = at(0);
+  const top = at(6000);
+  const bulk = Math.hypot(top.u - sfc.u, top.v - sfc.v);
+  if (bulk < FOLLOW_SUPERCELL_SHEAR || shear < 1e-3) return mean;
+  const inv = 7.5 / shear;
+  return { u: mean.u + inv * sv, v: mean.v - inv * su };
+}
+
 /** Lowest height (m) where the profile crosses a temperature (°C). */
 function levelCrossing(levels: SoundingLevel[], tC: number): number {
   for (let i = 0; i < levels.length; i++) {

@@ -640,6 +640,26 @@ if(abs(uSurface - 2.0) < 0.5){
   }
 
   /**
+   * Slide the ground texture/grid by how far the domain has travelled while
+   * following the storm (MeteoLAB: uGroundOffset = frameOffset / domain size).
+   */
+  setGroundFrameOffset(eastM: number, northM: number): void {
+    const ox = this.spanX > 0 ? eastM / this.spanX : 0;
+    const oy = this.spanZ > 0 ? northM / this.spanZ : 0;
+    const u = this.groundUniforms.uGroundOffset;
+    if (u) (u.value as THREE.Vector2).set(ox, oy);
+    if (this.kmGrid) {
+      const step = Math.max(
+        1000,
+        this.spanX / Math.max(1, Math.round(this.spanX / 3000)),
+      );
+      const wrap = (m: number) => ((m % step) + step) % step;
+      this.kmGrid.position.x = -wrap(eastM);
+      this.kmGrid.position.z = wrap(northM);
+    }
+  }
+
+  /**
    * Move the player. xn/yn are 0..1 across the domain (east, north).
    * Altitude is meters above the ground.
    */

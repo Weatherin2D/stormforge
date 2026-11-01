@@ -35,6 +35,10 @@ export interface LiveState {
   fieldMode: OverlayField | null;
   /** Flattened vortex rings [x,y,z,r,zeta,…], when requested. */
   vortex: Float32Array | null;
+  /** Domain travel over the ground while follow-storm is on (metres). */
+  frameEast: number;
+  frameNorth: number;
+  followStorm: boolean;
 }
 
 /** Physics runs off the render thread so the camera stays smooth. */
@@ -89,6 +93,11 @@ export class LiveBridge {
   /** Replace the synoptic pattern of the running simulation. */
   synoptic(setup: SynopticSetup): void {
     this.worker.postMessage({ type: "synoptic", setup });
+  }
+
+  /** Keep the domain centered on the storm (Galilean frame). */
+  followStorm(on: boolean): void {
+    this.worker.postMessage({ type: "followStorm", on });
   }
 
   step(payload: {

@@ -101,6 +101,15 @@ export interface SimBackend {
   setRadiation(partial: Partial<RadiationOptions>): void;
   setSolarHour(hour: number): void;
   getSolarStatus(): SolarStatus;
+  /**
+   * Galilean frame that keeps the storm near domain centre (MeteoLAB followStorm).
+   * Subtracts estimated storm motion from the winds; ground texture slides under.
+   */
+  setFollowStorm(on: boolean): void;
+  /** Whether the domain is currently storm-following. */
+  getFollowStorm(): boolean;
+  /** Metres the domain has travelled over the ground (east, north). */
+  frameOffset(): { east: number; north: number };
   step(dt: number): void;
   respawnBubble(opts?: Partial<InitOptions>): void;
   packVolumeRGBA(out: Uint8Array): void;
