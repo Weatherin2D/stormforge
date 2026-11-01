@@ -525,8 +525,8 @@ void main() {
   float avgDist = distAcc / max(weightAcc, 1e-4);
   float haze = 1.0 - exp(-avgDist * uHazeDensity);
   straight = mix(straight, uHazeColor, haze) * uExposure;
-  // Mild highlight compress only — full Reinhard crushed night values into a few bands.
-  straight = straight / (vec3(1.0) + straight * 0.35);
+  // Stronger highlight compress so silver linings / sunset rims don't clip to white.
+  straight = straight / (vec3(1.0) + straight * 0.55);
   straight = max(straight, vec3(0.0));
   // Dither before tonemap so HalfFloat→display still looks smooth at night.
   float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);

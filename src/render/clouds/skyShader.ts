@@ -91,7 +91,8 @@ void main(){
   if(d.y >= 0.0){
     c = skyAt(d);
     float a = acos(clamp(dot(d, uSunDir), -1.0, 1.0)) / SUN_RADIUS;
-    if(a < 1.0) c += uSunDisc * (1.0 - 0.6 * (1.0 - sqrt(1.0 - a * a)));
+    // Soft limb: keep a readable disc without a hard white core.
+    if(a < 1.0) c += uSunDisc * (0.55 * (1.0 - 0.65 * (1.0 - sqrt(1.0 - a * a))));
     if(uStars > 0.0){
       vec3 up = (RAYLEIGH * RAYLEIGH_SCALE + uHaze / HAZE_ALBEDO * HAZE_SCALE) / max(d.y, 0.02);
       c += stars(d) * uStars * exp(-up);
@@ -117,6 +118,8 @@ void main(){
     c = surface * T + inscatter;
   }
   c = mix(c, vec3(0.009, 0.026, 0.044), uLab);
+  // Soft highlight roll-off before ACES — low-sun Mie glow + disc used to bleach half the sky.
+  c = c / (vec3(1.0) + c * 0.18);
   // Triangular dither before 8-bit display / tonemap — kills night sky banding.
   float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   float dm = fract(sin(dot(gl_FragCoord.xy + 19.19, vec2(12.9898, 78.233))) * 43758.5453);

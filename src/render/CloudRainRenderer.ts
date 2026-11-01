@@ -29,8 +29,15 @@ import type { OverlayField } from "./fields";
 import type { DrawnFront } from "../sim/synoptic";
 import type { VortexLevel } from "../sim/fieldPack";
 
-/** Daylight gains matching MeteoLAB view.ts. */
-const SUN_GAIN = 3, SKY_GAIN = 14, SUN_DISC = 40;
+/**
+ * Daylight gains (MeteoLAB view.ts). DirectionalLight intensity stays 1 —
+ * SUN_GAIN scales cloud sun only; baking it into intensity too bleaches the ground.
+ * SUN_DISC is below MeteoLAB's 40 so low-sun Mie + disc don't clip to white.
+ */
+const SUN_GAIN = 3, SKY_GAIN = 12, SUN_DISC = 16;
+/** Soft ceiling on sky/disc gain so twilight adaptation can't blow the frame. */
+const SKY_GAIN_CAP = 48;
+const SUN_DISC_LUM_CAP = 6.5;
 /** Sky dome / clear-color night floor (deep airglow). */
 const NIGHT_SKY = [0.008, 0.012, 0.026] as const;
 const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
@@ -242,6 +249,14 @@ export class CloudRainRenderer {
   /** Water and hail data per ground column. */
   private water: Float32Array | null = null;
   private hailCover: Float32Array | null = null;
+  /** 2D cloud→ground shadow map (R = sun transmittance, G = sky visibility). */
+  private cloudShadowData: Uint8Array | null = null;
+  private cloudShadowTex: THREE.DataTexture | null = null;
+  private readonly cloudShadowUniform: { value: THREE.Texture } = {
+    value: null as unknown as THREE.Texture,
+  };
+  private shadowMapRevision = -1;
+  private readonly shadowMapSun = new THREE.Vector3(NaN, NaN, NaN);
   /** MeteoLAB value-noise cube for land patterns / cloud detail. */
   private readonly noise = noiseTexture();
   /** Mean ground albedo colour (grass by default). */
@@ -358,7 +373,7 @@ export class CloudRainRenderer {
         ...this.sharedUniforms,
         ...this.groundUniforms,
         uNoise: { value: this.noise },
-        uLight: { value: this.lightVolume?.texture ?? this.noise },
+        uCloudShadow: this.cloudShadowUniform,
         uSky: { value: this.skyTexture },
         uSkyGain: { value: 1 },
         uSkyFloor: { value: new THREE.Color() },
@@ -375,7 +390,7 @@ export class CloudRainRenderer {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          `#include <common>\n${groundShadowPars}\n${groundSurfacePars}`,
+          `#include <common>\n${groundSurfacePars}\n${groundShadowPars}`,
         )
         .replace(
           "#include <map_fragment>",
@@ -386,7 +401,7 @@ export class CloudRainRenderer {
   gWater = st.r * GROUND_WATER; gHail = st.g;
   float blur = min(length(dFdx(q)), length(dFdy(q)));
   if(abs(uSurface - 2.0) < 0.5){
-    float U = texture(uWind, toTex(vCloudWorld).xy).r * WIND_SCALE / 1.15;
+    float U = texture(uWind, groundAt(vCloudWorld)).r * WIND_SCALE / 1.15;
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6), clamp(3.84e-6 * pow(U, 3.41), 0.0, 0.3));
     gSpec = 1.0;
   } else {
@@ -403,7 +418,7 @@ export class CloudRainRenderer {
           "#include <roughnessmap_fragment>",
           `#include <roughnessmap_fragment>
 if(abs(uSurface - 2.0) < 0.5){
-  float U = texture(uWind, toTex(vCloudWorld).xy).r * WIND_SCALE / 1.15;
+  float U = texture(uWind, groundAt(vCloudWorld)).r * WIND_SCALE / 1.15;
   roughnessFactor = sqrt(sqrt(0.003 + 0.00512 * U));
 } else roughnessFactor = mix(roughnessFactor, 0.15, gSpec);`,
         )
@@ -759,9 +774,12 @@ if(abs(uSurface - 2.0) < 0.5){
     const adapt = adaptation(luminance(S) + luminance(E));
     const night = (adapt / ADAPT_MAX) ** 2;
     const city = 0; // no city config yet
-    const skyGain = SKY_GAIN * adapt;
-    const groundGain = SKY_GAIN * adapt;
+    const skyGain = Math.min(SKY_GAIN_CAP, SKY_GAIN * adapt);
+    const groundGain = skyGain;
     const g = this.groundColor;
+    // Low sun: keep colour, cut intensity so the ground isn't a white disc.
+    const el = this.sunElevationDeg;
+    const horizonLift = Math.max(0.35, Math.min(1, (el + 1) / 14));
 
     const mat = this.sky.material as THREE.ShaderMaterial;
     (mat.uniforms.uSkyGain as { value: number }).value = skyGain;
@@ -784,20 +802,26 @@ if(abs(uSurface - 2.0) < 0.5){
       (g.g / Math.PI) * ((S[1] + E[1]) * groundGain + NIGHT_GROUND[1] * night),
       (g.b / Math.PI) * ((S[2] + E[2]) * groundGain + NIGHT_GROUND[2] * night),
     );
-    // Sun disc coloured by transmittance at ground level.
-    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setRGB(
-      state.sunByHeight[0] * SUN_DISC * adapt,
-      state.sunByHeight[1] * SUN_DISC * adapt,
-      state.sunByHeight[2] * SUN_DISC * adapt,
-    );
+    // Sun disc coloured by transmittance at ground level; luminance-capped for sunset.
+    let dr = state.sunByHeight[0] * SUN_DISC * adapt;
+    let dg = state.sunByHeight[1] * SUN_DISC * adapt;
+    let db = state.sunByHeight[2] * SUN_DISC * adapt;
+    const dLum = 0.2126 * dr + 0.7152 * dg + 0.0722 * db;
+    if (dLum > SUN_DISC_LUM_CAP) {
+      const s = SUN_DISC_LUM_CAP / dLum;
+      dr *= s;
+      dg *= s;
+      db *= s;
+    }
+    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setRGB(dr, dg, db);
 
-    // Match MeteoLAB's sun / hemi lights so the ground isn't a flat grey slab.
+    // Match MeteoLAB: irradiance lives in the colour; intensity stays ~1.
     this.sunLight.color.setRGB(
-      state.sunByHeight[0] * groundGain,
-      state.sunByHeight[1] * groundGain,
-      state.sunByHeight[2] * groundGain,
+      state.sunByHeight[0] * groundGain * horizonLift,
+      state.sunByHeight[1] * groundGain * horizonLift,
+      state.sunByHeight[2] * groundGain * horizonLift,
     );
-    this.sunLight.intensity = SUN_GAIN;
+    this.sunLight.intensity = 1;
     this.hemi.color.setRGB(
       E[0] * groundGain + NIGHT_GROUND[0] * night,
       E[1] * groundGain + NIGHT_GROUND[1] * night,
@@ -961,14 +985,15 @@ if(abs(uSurface - 2.0) < 0.5){
     const E = this.skyState.skyIrradiance;
     const adapt = adaptation(luminance(S) + luminance(E));
     const night = (adapt / ADAPT_MAX) ** 2;
-    const skyGain = SKY_GAIN * adapt;
+    const skyGain = Math.min(SKY_GAIN_CAP, SKY_GAIN * adapt);
     const sunCol = this.skyState.sunByHeight;
     const sunEl = Math.sin((el * Math.PI) / 180);
     const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(Math.max(0, sunEl) * (SUN_LEVELS - 1))));
+    const horizonLift = Math.max(0.4, Math.min(1, (el + 1) / 14));
     const cm = this.cloudMat.uniforms;
     (cm.uSunColor as { value: THREE.Vector3 }).value
       .set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2])
-      .multiplyScalar(SUN_GAIN * adapt);
+      .multiplyScalar(SUN_GAIN * adapt * horizonLift);
     (cm.uSkyColor as { value: THREE.Vector3 }).value.set(
       E[0] / Math.PI * skyGain + NIGHT_TOP[0] * night,
       E[1] / Math.PI * skyGain + NIGHT_TOP[1] * night,
@@ -986,6 +1011,139 @@ if(abs(uSurface - 2.0) < 0.5){
       stepSize: DEFAULT_LOOK.stepSize * nightStep,
       shadowProbes: night > 0.7 ? 0 : this.tune.shadowProbes,
     });
+  }
+
+  /** Allocate / replace the 2D ground shadow texture for the display grid. */
+  private ensureCloudShadowMap(nx: number, ny: number): void {
+    if (
+      this.cloudShadowTex &&
+      this.cloudShadowData &&
+      this.cloudShadowTex.image.width === nx &&
+      this.cloudShadowTex.image.height === ny
+    ) {
+      return;
+    }
+    if (this.cloudShadowTex) this.cloudShadowTex.dispose();
+    this.cloudShadowData = new Uint8Array(nx * ny * 4);
+    // Clear sky default (full sun + sky) until the first rebuild.
+    for (let i = 0; i < nx * ny; i++) {
+      this.cloudShadowData[i * 4] = 255;
+      this.cloudShadowData[i * 4 + 1] = 255;
+      this.cloudShadowData[i * 4 + 2] = 0;
+      this.cloudShadowData[i * 4 + 3] = 255;
+    }
+    this.cloudShadowTex = new THREE.DataTexture(
+      this.cloudShadowData as unknown as BufferSource,
+      nx,
+      ny,
+      THREE.RGBAFormat,
+    );
+    this.cloudShadowTex.magFilter = this.cloudShadowTex.minFilter = THREE.LinearFilter;
+    this.cloudShadowTex.wrapS = this.cloudShadowTex.wrapT = THREE.ClampToEdgeWrapping;
+    this.cloudShadowTex.needsUpdate = true;
+    this.cloudShadowUniform.value = this.cloudShadowTex;
+    this.shadowMapRevision = -1;
+  }
+
+  /**
+   * March the packed volume toward the sun for each ground column and write
+   * sun/sky transmittance into uCloudShadow. Stormforge density is Y-up metres;
+   * this is the reliable ground-shadow path (the MeteoLAB 3D light volume is not).
+   */
+  private rebuildCloudShadowMap(force: boolean): void {
+    const data = this.volumeData;
+    const out = this.cloudShadowData;
+    const tex = this.cloudShadowTex;
+    const nx = this.volNx;
+    const ny = this.volNy;
+    const nz = this.volNz;
+    if (!data || !out || !tex || nx < 1 || ny < 1 || nz < 1) return;
+
+    const sunChanged = this.shadowMapSun.distanceToSquared(this.sunDir) > 1e-8;
+    if (!force && this.shadowMapRevision === this.volumeRevision && !sunChanged) {
+      return;
+    }
+    this.shadowMapRevision = this.volumeRevision;
+    this.shadowMapSun.copy(this.sunDir);
+
+    if (this.volumeClear) {
+      out.fill(255);
+      for (let i = 0; i < nx * ny; i++) out[i * 4 + 2] = 0;
+      tex.needsUpdate = true;
+      return;
+    }
+
+    const dx = this.spanX / nx;
+    const dy = this.spanY / Math.max(1, nz);
+    const dz = this.spanZ / ny;
+    const cell = Math.max(dx, dy, dz);
+    const step = Math.max(cell * 0.65, 40);
+    const maxDist = Math.max(this.spanX, this.spanZ, this.spanY) * 1.6;
+    const steps = Math.min(96, Math.max(12, Math.ceil(maxDist / step)));
+
+    // Match cloudShader extinctions (1/m) on packed 0..1 opacity.
+    const sigL = 0.0022 * 1.15;
+    const sigI = 0.00055 * 1.15;
+    const sigR = 0.0010;
+    const sunY = this.sunDir.y;
+    const sx = this.sunDir.x;
+    const sy = this.sunDir.y;
+    const sz = this.sunDir.z;
+    const halfX = this.spanX * 0.5;
+    const halfZ = this.spanZ * 0.5;
+    const y0 = this.groundY + dy * 0.5;
+    const yTop = this.groundY + this.spanY;
+
+    const sampleSigma = (i: number, j: number, k: number): number => {
+      if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) return 0;
+      const row = k + nz * (ny - 1 - j);
+      const o = (i + nx * row) * 4;
+      return (
+        (data[o] / 255) * sigL +
+        (data[o + 1] / 255) * sigI +
+        (data[o + 2] / 255) * sigR
+      );
+    };
+
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        // Sky visibility: vertical optical depth above the column.
+        let odUp = 0;
+        for (let k = 0; k < nz; k++) odUp += sampleSigma(i, j, k) * dy;
+        const skyVis = Math.exp(-odUp * 0.55);
+
+        // Direct sun: march from the ground cell toward the sun through the volume.
+        let sunVis = 1;
+        if (sunY > -0.02) {
+          let x = ((i + 0.5) / nx) * this.spanX - halfX;
+          let y = y0;
+          let z = halfZ - ((j + 0.5) / ny) * this.spanZ;
+          let odSun = 0;
+          for (let s = 0; s < steps; s++) {
+            x += sx * step;
+            y += sy * step;
+            z += sz * step;
+            if (y > yTop || y < this.groundY) break;
+            if (x < -halfX || x > halfX || z < -halfZ || z > halfZ) break;
+            const ii = Math.floor(((x + halfX) / this.spanX) * nx);
+            const jj = Math.floor(((halfZ - z) / this.spanZ) * ny);
+            const kk = Math.floor(((y - this.groundY) / this.spanY) * nz);
+            odSun += sampleSigma(ii, jj, kk) * step;
+            if (odSun > 12) break;
+          }
+          sunVis = Math.exp(-odSun);
+        } else {
+          sunVis = 0;
+        }
+
+        const o = (i + nx * j) * 4;
+        out[o] = Math.min(255, Math.max(0, (sunVis * 255) | 0));
+        out[o + 1] = Math.min(255, Math.max(0, (skyVis * 255) | 0));
+        out[o + 2] = 0;
+        out[o + 3] = 255;
+      }
+    }
+    tex.needsUpdate = true;
   }
 
   /**
@@ -1045,12 +1203,13 @@ if(abs(uSurface - 2.0) < 0.5){
     const target = this.sampleOverheadShadow();
     this.shadowAdapt += (target - this.shadowAdapt) * 0.1;
     const s = this.shadowAdapt;
-    this.renderer.toneMappingExposure = 1.05 * (1 + s * 1.25);
-    // Keep a little sun so edges still read; crush most of the open-sky blast.
-    this.sunLight.intensity = SUN_GAIN * (1 - s * 0.9);
+    this.renderer.toneMappingExposure = 1.0 * (1 + s * 0.9);
+    // Intensity baseline is 1 (gain is in sunLight.color); dim further under cloud.
+    this.sunLight.intensity = Math.max(0.08, 1 - s * 0.9);
     this.hemi.intensity = Math.max(0.28, 1 - s * 0.62);
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
-    groundMat.color.copy(this.groundColor).multiplyScalar(1 - s * 0.58);
+    // Mild global dim — spatial cloud shadows do the real work.
+    groundMat.color.copy(this.groundColor).multiplyScalar(1 - s * 0.22);
     if (this.cloudMat) {
       this.cloudMat.setLook({
         exposure: DEFAULT_LOOK.exposure * (1 + s * 1.45),
@@ -1151,6 +1310,7 @@ if(abs(uSurface - 2.0) < 0.5){
     this.volNy = disp.ny;
     this.volNz = disp.nz;
     this.shadowAdapt = 0;
+    this.ensureCloudShadowMap(disp.nx, disp.ny);
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
     this.precipitation.setBounds(sx, sz, this.groundY, height);
@@ -1190,10 +1350,12 @@ if(abs(uSurface - 2.0) < 0.5){
       uSunDir: { value: this.sunDir.clone() },
     };
 
-    // Initialize LightVolume for GPU-based cloud lighting
+    // Initialize LightVolume for GPU-based cloud lighting (volumetric / flash path).
     this.lightVolume = new LightVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
-    // Force ground material to recompile so it picks up the real light volume texture.
+    // Force ground material to recompile with current shared + shadow uniforms.
     (this.ground.material as THREE.MeshStandardMaterial).needsUpdate = true;
+    this.shadowMapRevision = -1;
+    this.rebuildCloudShadowMap(true);
 
     // Initialize FlashVolume for GPU-based lightning lighting
     this.flashVolume = new FlashVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
@@ -1506,7 +1668,8 @@ if(abs(uSurface - 2.0) < 0.5){
       this.precipitation.update(performance.now());
     }
 
-    // Light volume only when the density field or sun moved — never every animation frame.
+    // Ground cloud shadows + light volume when density or sun moved.
+    this.rebuildCloudShadowMap(false);
     if (this.lightVolume) {
       if (this.sharedUniforms.uSunDir) {
         (this.sharedUniforms.uSunDir.value as THREE.Vector3).copy(this.sunDir);
@@ -1991,6 +2154,9 @@ if(abs(uSurface - 2.0) < 0.5){
     this.skyTexture?.dispose();
     this.groundState?.dispose();
     this.windTexture?.dispose();
+    this.cloudShadowTex?.dispose();
+    this.cloudShadowTex = null;
+    this.cloudShadowData = null;
     this.fieldView.dispose();
     this.groundOverlays.dispose();
     this.blitMesh.geometry.dispose();

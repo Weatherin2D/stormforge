@@ -2,6 +2,11 @@
  * Ground surface + cloud-shadow injection for MeshStandardMaterial.
  * Land patterns match MeteoLAB (fields / steppe / city / water).
  * World units are metres; landPattern receives coordinates in km via uGroundSize.
+ *
+ * Cloud shadows come from a 2D map (uCloudShadow) built from the packed volume:
+ * R = direct-sun transmittance, G = sky visibility. That avoids the MeteoLAB
+ * light-volume axis/unit mismatch (km, Z-up texture) against Stormforge's
+ * metre Y-up density texture.
  */
 
 export const groundSurfacePars = /* glsl */`
@@ -11,6 +16,9 @@ uniform vec2 uGroundOffset;
 uniform vec2 uGroundSize;
 uniform float uSurface;
 uniform sampler3D uNoise;
+uniform vec3 uBoxMin;
+uniform vec3 uBoxMax;
+uniform vec3 uGrid;
 const float GROUND_WATER = 16.0, WIND_SCALE = 40.0;
 float gWater, gHail, gSpec;
 
@@ -45,45 +53,26 @@ vec3 landPattern(vec2 q, float blur){
 `;
 
 /**
- * Cloud shade on the ground. Uses the light volume when present; otherwise a soft
- * falloff from domain centre so the ground is never unlit-black under clouds.
+ * Cloud shade on the ground from uCloudShadow (R = sun transmittance, G = sky visibility).
  */
 export const groundShadowPars = /* glsl */`
-uniform vec3 uBoxMin;
-uniform vec3 uBoxMax;
-uniform vec3 uGrid;
-uniform sampler3D uLight;
+uniform sampler2D uCloudShadow;
 varying vec3 vCloudWorld;
 
-vec3 toTex(vec3 p){
-  vec3 s = uBoxMax - uBoxMin;
-  return vec3(
-    (p.x - uBoxMin.x) / s.x + 0.5 / uGrid.x,
-    (uBoxMax.z - p.z) / s.z + 0.5 / uGrid.y,
-    0.5 / uGrid.z);
-}
-
-uniform float uExtinction;
-
-vec2 lightAt(vec3 p){
-  vec3 t = toTex(p);
-  if(t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) return vec2(0.0, 1.0);
-  vec4 L = texture(uLight, t);
-  // Match MeteoLAB: R is 1 - exp(-odRaw / 8); optical depth = odRaw * extinction.
-  float od = -8.0 * log(max(1.0 - L.r, 1e-4)) * uExtinction;
-  return vec2(od, L.g);
-}
-
-float sunThrough(float od){
-  return max(exp(-od), 1.0 / (1.0 + 1.7 * od));
+float sunThroughVis(float t){
+  // Invert T≈exp(-od) soft two-stream: scattered light under cloud.
+  float od = -log(max(t, 1e-3));
+  return max(t, 1.0 / (1.0 + 1.7 * od));
 }
 
 // x: direct sun, y: sky light, z: scattered sunlight under cloud.
 vec3 cloudShade(vec3 p){
-  vec2 l = lightAt(vec3(p.x, uBoxMin.y, p.z));
-  float od = l.x;
-  // Sky floor 0.32 keeps under-storm ground readable once exposure opens.
-  vec3 s = vec3(exp(-od), mix(0.32, 1.0, l.y), max(0.0, sunThrough(od) - exp(-od)));
+  vec2 uv = groundAt(p);
+  vec4 L = texture(uCloudShadow, uv);
+  float sunVis = L.r;
+  float skyVis = L.g;
+  float scatter = max(0.0, sunThroughVis(sunVis) - sunVis);
+  vec3 s = vec3(sunVis, mix(0.28, 1.0, skyVis), scatter);
   vec2 side = min(p.xz - uBoxMin.xz, uBoxMax.xz - p.xz);
   // Fade out over the last ~3 km so domain edges don't cast hard shadow walls.
   float fade = smoothstep(0.0, 3000.0, min(side.x, side.y));
