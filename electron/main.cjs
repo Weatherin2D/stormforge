@@ -16,7 +16,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     title: "Stormforge",
-    backgroundColor: "#0b1220",
+    backgroundColor: "#0a0f16",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

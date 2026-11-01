@@ -555,7 +555,10 @@ export class SynopticEditor {
     const ctx = this.ctx;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
-    ctx.fillStyle = "#0c1424";
+    ctx.fillStyle =
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--bg")
+        .trim() || "#0a0f16";
     ctx.fillRect(0, 0, cssW, cssH);
     this.paintTint(cssW, cssH);
     this.paintMarine(cssW, cssH);

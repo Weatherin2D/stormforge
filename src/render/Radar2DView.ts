@@ -20,15 +20,48 @@ import {
 import { DrawnFront, FRONT_COLORS } from "../sim/synoptic";
 import type { LightningKind } from "../sim/FluidSolver";
 
-/** MeteoLAB instrument chrome colours (styles/tokens.css --instrument-*). */
+/** Instrument chrome colours — read from shared CSS tokens with fallbacks. */
+function instrumentColors(): {
+  bg: string;
+  bar: string;
+  grid: string;
+  gridStrong: string;
+  label: string;
+  text: string;
+} {
+  const s = getComputedStyle(document.documentElement);
+  const g = (n: string, fb: string) => s.getPropertyValue(n).trim() || fb;
+  return {
+    bg: g("--instrument-bg", "#0c1118"),
+    bar: g("--instrument-bar", "#0c1118"),
+    grid: g("--instrument-grid", "rgba(160,190,200,.12)"),
+    gridStrong: g("--instrument-grid-strong", "rgba(160,190,200,.24)"),
+    label: g("--instrument-label", "#8fa0b0"),
+    text: g("--text", "#e8eef6"),
+  };
+}
+
+/** Fresh token snapshot for canvas draws. */
 const INST = {
-  bg: "#0F1317",
-  bar: "#11151A",
-  grid: "rgba(160,190,200,.14)",
-  gridStrong: "rgba(160,190,200,.28)",
-  label: "#9AABB3",
-  text: "#E8EEF2",
-} as const;
+  get bg() {
+    return instrumentColors().bg;
+  },
+  get bar() {
+    return instrumentColors().bar;
+  },
+  get grid() {
+    return instrumentColors().grid;
+  },
+  get gridStrong() {
+    return instrumentColors().gridStrong;
+  },
+  get label() {
+    return instrumentColors().label;
+  },
+  get text() {
+    return instrumentColors().text;
+  },
+};
 
 /**
  * Flat top-down map display — MeteoLAB instrument shell over the 3D view

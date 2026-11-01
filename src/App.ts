@@ -14,8 +14,7 @@ import { WebGPUBackend } from "./sim/WebGPUBackend";
 import { LiveBridge, LiveState } from "./sim/LiveBridge";
 import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
-import { SkewTEditor } from "./skewt/SkewTEditor";
-import { HodographEditor } from "./skewt/HodographEditor";
+import { SoundingCreator } from "./skewt/creator";
 import { SynopticEditor } from "./setup/SynopticEditor";
 import { defaultSounding, SoundingLevel } from "./sim/thermo";
 import { formatSolarClock, sunDirection } from "./sim/SurfaceRadiation";
@@ -27,7 +26,7 @@ import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 import { unpackVortexLevels } from "./sim/fieldPack";
 import type { OverlayField } from "./render/fields";
 
-type PanelView = "skewt" | "hodograph" | "fronts";
+type PanelView = "sounding" | "fronts";
 type SessionMode = "live" | "batching" | "playback";
 
 const MONTH_NAMES = [
@@ -60,23 +59,17 @@ export class App {
   private simScreen: HTMLElement;
   private viewport: HTMLElement;
   private statsEl: HTMLElement;
-  private importBox: HTMLElement;
-  private importText: HTMLTextAreaElement;
-  private skewtCanvas: HTMLCanvasElement | null = null;
-  private hodoCanvas: HTMLCanvasElement | null = null;
-  private modeTabs: HTMLElement | null = null;
   private panelTitle: HTMLElement | null = null;
   private panelDesc: HTMLElement | null = null;
   private renderer: CloudRainRenderer | null = null;
   private radar2d: Radar2DView | null = null;
   private solver: SimBackend | null = null;
-  private skewt: SkewTEditor | null = null;
-  private hodo: HodographEditor | null = null;
+  private creator: SoundingCreator | null = null;
   /** Front editor inside the running simulation. */
   private frontEditor: SynopticEditor | null = null;
   private frontsApplyTimer = 0;
   private sounding: SoundingLevel[] = defaultSounding(12000, 41);
-  private panelView: PanelView = "skewt";
+  private panelView: PanelView = "sounding";
   private bubbleStrength = 3;
   private paused = false;
   /** Freeze sun/clock only; simulation keeps running. */
@@ -152,124 +145,145 @@ export class App {
               <button type="button" id="btn-sim-menu-close">Close</button>
             </div>
             <span class="stats" id="sim-stats">—</span>
-            <div class="sim-menu-actions">
-              <button id="btn-pause" title="Pause / resume simulation time (Space)">Pause</button>
-              <button id="btn-bubble">Respawn bubble</button>
-              <button id="btn-reset">Reset</button>
-              <button id="btn-menu">Main menu</button>
-              <button id="btn-clouds" class="active" title="3D cloud volume (turn off to reduce lag)">Clouds</button>
-              <button id="btn-droplets" class="active" title="Rain and snow particles in the 3D view">Droplets</button>
-              <button id="btn-swath" title="Accumulated precipitation swath on the ground">Swath</button>
-              <button id="btn-coldpool" title="Cold-pool shade on the ground">Cold pool</button>
-              <button id="btn-vortex" title="Mesocyclone vortex rings">Vortex</button>
-              <label class="sim-speed" title="3D scalar field overlay">
-                Field
-                <select id="sel-field">
-                  <option value="off" selected>Off</option>
-                  <option value="updraft">Updraft</option>
-                  <option value="theta">θ′</option>
-                  <option value="moisture">RH</option>
-                  <option value="vorticity">Vorticity</option>
-                  <option value="coldpool">Cold pool 3D</option>
-                </select>
-              </label>
-              <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
-              <button id="btn-radar2d" title="2D maps: Reflectivity, CAPE, shear, clouds, precipitation, and more">Maps 2D</button>
-              <button id="btn-winds" title="Surface wind direction arrows (overlay on 3D or Maps 2D)">Winds</button>
-              <button id="btn-teleport" title="Open the map and click to move">Teleport</button>
-              <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
-              <label class="file-btn file-btn-load" title="Load a .sfz save file">
-                Load
-                <input id="load-file" type="file" accept=".sfz,.json" hidden />
-              </label>
-            </div>
-            <label class="sim-speed">
-              Simulation speed
-              <select id="sim-speed">
-                <option value="1">Realtime</option>
-                <option value="5">5×</option>
-                <option value="15">15×</option>
-                <option value="40" selected>40×</option>
-                <option value="75">75×</option>
-                <option value="100">100×</option>
-              </select>
-            </label>
-            <label class="sim-speed">
-              Cloud look
-              <select id="cloud-look" title="Sun and erosion matched to a reference photo. Live sun follows the clock.">
-                <option value="">Live sun</option>
-                <option value="A_towerWithAnvil">Tower with anvil</option>
-                <option value="B_matureAnvil">Mature anvil</option>
-                <option value="C_flatBaseRain">Flat base and rain</option>
-                <option value="D_towerPileus">Tower with pileus</option>
-              </select>
-            </label>
-            <div class="cloud-tune">
-              <label>
-                Core density
-                <input id="cloud-gain" type="range" min="0.25" max="2.5" step="0.05" value="1" />
-                <span id="cloud-gain-val">1.00</span>
-              </label>
-              <label>
-                Base darkness
-                <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.08" />
-                <span id="cloud-sigma-val">0.080</span>
-              </label>
-              <label>
-                Liquid billow
-                <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="0.6" />
-                <span id="cloud-erosion-val">0.60</span>
-              </label>
-              <label>
-                Ice fibres
-                <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.25" />
-                <span id="cloud-erosion-ice-val">0.25</span>
-              </label>
-              <label>
-                Rain shaft thickness
-                <input id="cloud-sigma-rain" type="range" min="0.005" max="0.3" step="0.005" value="0.18" />
-                <span id="cloud-sigma-rain-val">0.180</span>
-              </label>
-              <label>
-                Lightning frequency
-                <input id="lightning-freq" type="range" min="0" max="1" step="0.01" value="1" />
-                <span id="lightning-freq-val">100%</span>
-              </label>
-              <label>
-                Vorticity
-                <input id="vorticity" type="range" min="0" max="5" step="0.1" value="0" />
-                <span id="vorticity-val">0.0</span>
-              </label>
-            </div>
-            <div class="sun-controls">
-              <span id="sun-clock" class="sun-clock">12:00 · day</span>
-              <div id="sun-panel" class="sun-panel">
-                <label>
-                  Hour
-                  <input id="live-hour" type="range" min="0" max="23.75" step="0.25" value="12" />
-                  <span id="live-hour-val">12:00</span>
+
+            <details class="menu-section" open>
+              <summary>Sim</summary>
+              <div class="menu-section-body sim-menu-actions">
+                <button id="btn-pause" title="Pause / resume simulation time (Space)">Pause</button>
+                <button id="btn-bubble">Respawn bubble</button>
+                <button id="btn-reset">Reset</button>
+                <button id="btn-menu">Main menu</button>
+                <label class="sim-speed">
+                  Simulation speed
+                  <select id="sim-speed">
+                    <option value="1">Realtime</option>
+                    <option value="5">5×</option>
+                    <option value="15">15×</option>
+                    <option value="40" selected>40×</option>
+                    <option value="75">75×</option>
+                    <option value="100">100×</option>
+                  </select>
                 </label>
-                <label>
-                  Latitude
-                  <input id="live-lat" type="range" min="-60" max="60" step="1" value="35" />
-                  <span id="live-lat-val">35°</span>
-                </label>
-                <label>
-                  Month
-                  <input id="live-month" type="range" min="1" max="12" step="1" value="6" />
-                  <span id="live-month-val">Jun</span>
-                </label>
-                <label>
-                  Day length
-                  <input id="live-daylen" type="range" min="1" max="10" step="1" value="3" />
-                  <span id="live-daylen-val">~3m</span>
-                </label>
-                <label class="pause-time-label">
-                  <input id="live-pause" type="checkbox" />
-                  Pause clock / sun
+                <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
+                <label class="file-btn file-btn-load" title="Load a .sfz save file">
+                  Load
+                  <input id="load-file" type="file" accept=".sfz,.json" hidden />
                 </label>
               </div>
-            </div>
+            </details>
+
+            <details class="menu-section" open>
+              <summary>View</summary>
+              <div class="menu-section-body sim-menu-actions">
+                <button id="btn-clouds" class="active" title="3D cloud volume">Clouds</button>
+                <button id="btn-droplets" class="active" title="Rain and snow particles">Droplets</button>
+                <button id="btn-swath" title="Accumulated precipitation swath">Swath</button>
+                <button id="btn-coldpool" title="Cold-pool shade">Cold pool</button>
+                <button id="btn-vortex" title="Mesocyclone vortex rings">Vortex</button>
+                <label class="sim-speed" title="3D scalar field overlay">
+                  Field
+                  <select id="sel-field">
+                    <option value="off" selected>Off</option>
+                    <option value="updraft">Updraft</option>
+                    <option value="theta">θ′</option>
+                    <option value="moisture">RH</option>
+                    <option value="vorticity">Vorticity</option>
+                    <option value="coldpool">Cold pool 3D</option>
+                  </select>
+                </label>
+                <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
+                <button id="btn-radar2d" title="2D maps overlay">Maps 2D</button>
+                <button id="btn-winds" title="Surface wind arrows">Winds</button>
+                <button id="btn-teleport" title="Open the map and click to move">Teleport</button>
+                <button id="btn-open-sounding" title="Open sounding &amp; fronts drawer">Sounding</button>
+              </div>
+            </details>
+
+            <details class="menu-section">
+              <summary>Look</summary>
+              <div class="menu-section-body">
+                <label class="sim-speed">
+                  Cloud look
+                  <select id="cloud-look" title="Sun and erosion matched to a reference photo.">
+                    <option value="">Live sun</option>
+                    <option value="A_towerWithAnvil">Tower with anvil</option>
+                    <option value="B_matureAnvil">Mature anvil</option>
+                    <option value="C_flatBaseRain">Flat base and rain</option>
+                    <option value="D_towerPileus">Tower with pileus</option>
+                  </select>
+                </label>
+                <div class="cloud-tune">
+                  <label>
+                    Core density
+                    <input id="cloud-gain" type="range" min="0.25" max="2.5" step="0.05" value="1" />
+                    <span id="cloud-gain-val">1.00</span>
+                  </label>
+                  <label>
+                    Base darkness
+                    <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.08" />
+                    <span id="cloud-sigma-val">0.080</span>
+                  </label>
+                  <label>
+                    Liquid billow
+                    <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="0.6" />
+                    <span id="cloud-erosion-val">0.60</span>
+                  </label>
+                  <label>
+                    Ice fibres
+                    <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.25" />
+                    <span id="cloud-erosion-ice-val">0.25</span>
+                  </label>
+                  <label>
+                    Rain shaft thickness
+                    <input id="cloud-sigma-rain" type="range" min="0.005" max="0.3" step="0.005" value="0.18" />
+                    <span id="cloud-sigma-rain-val">0.180</span>
+                  </label>
+                  <label>
+                    Lightning frequency
+                    <input id="lightning-freq" type="range" min="0" max="1" step="0.01" value="1" />
+                    <span id="lightning-freq-val">100%</span>
+                  </label>
+                  <label>
+                    Vorticity
+                    <input id="vorticity" type="range" min="0" max="5" step="0.1" value="0" />
+                    <span id="vorticity-val">0.0</span>
+                  </label>
+                </div>
+              </div>
+            </details>
+
+            <details class="menu-section">
+              <summary>Sun</summary>
+              <div class="menu-section-body sun-controls">
+                <span id="sun-clock" class="sun-clock">12:00 · day</span>
+                <div id="sun-panel" class="sun-panel">
+                  <label>
+                    Hour
+                    <input id="live-hour" type="range" min="0" max="23.75" step="0.25" value="12" />
+                    <span id="live-hour-val">12:00</span>
+                  </label>
+                  <label>
+                    Latitude
+                    <input id="live-lat" type="range" min="-60" max="60" step="1" value="35" />
+                    <span id="live-lat-val">35°</span>
+                  </label>
+                  <label>
+                    Month
+                    <input id="live-month" type="range" min="1" max="12" step="1" value="6" />
+                    <span id="live-month-val">Jun</span>
+                  </label>
+                  <label>
+                    Day length
+                    <input id="live-daylen" type="range" min="1" max="10" step="1" value="3" />
+                    <span id="live-daylen-val">~3m</span>
+                  </label>
+                  <label class="pause-time-label">
+                    <input id="live-pause" type="checkbox" />
+                    Pause clock / sun
+                  </label>
+                </div>
+              </div>
+            </details>
           </div>
           <div class="viewport-hint" id="viewport-hint">
             <span id="look-hint">Drag to look · scroll to zoom</span>
@@ -317,51 +331,33 @@ export class App {
             <span id="playback-meta" class="playback-meta">frame 0/0</span>
           </div>
         </div>
-        <aside class="side-panel">
-          <div class="side-panel-head">
-            <h2 id="panel-title">Skew-T</h2>
-            <button id="btn-hide-panel" class="panel-close" title="Hide panel">✕</button>
+        <aside class="side-panel sounding-drawer hidden" id="sounding-drawer">
+          <div class="side-panel-head sounding-drawer-head">
+            <h2 id="panel-title">Sounding</h2>
+            <button id="btn-hide-panel" class="panel-close" title="Close">✕</button>
           </div>
-          <p class="panel-desc" id="panel-desc">Orange = T, green = Td. Wind barbs are readout — use Hodograph to edit wind.</p>
-          <div class="panel-toggle">
-            <button id="view-skewt" class="active">Skew-T</button>
-            <button id="view-hodo">Hodograph</button>
-            <button id="view-fronts">Fronts</button>
-          </div>
-          <div class="mode-tabs" id="mode-tabs">
-            <button id="mode-t" class="active">T</button>
-            <button id="mode-td">Td</button>
-          </div>
-          <canvas id="skewt-canvas"></canvas>
-          <div id="skewt-metrics" class="skewt-metrics"></div>
-          <canvas id="hodo-canvas" class="hidden"></canvas>
-          <div id="hodo-metrics" class="skewt-metrics hidden"></div>
-          <div id="fronts-panel" class="fronts-panel hidden">
-            <div id="fronts-editor-host"></div>
-            <div class="fronts-apply-row">
-              <button id="btn-apply-fronts" class="primary">Apply fronts</button>
-              <span class="hint" id="fronts-status">Applies to the running simulation</span>
+          <div class="sounding-drawer-body">
+            <p class="panel-desc" id="panel-desc">Edit the sounding or fronts, then apply to the live run.</p>
+            <div class="panel-toggle">
+              <button id="view-sounding" class="active">Sounding</button>
+              <button id="view-fronts">Fronts</button>
             </div>
-          </div>
-          <div class="panel-actions">
-            <button id="btn-apply" class="primary">Apply sounding</button>
-            <button id="btn-export">Export</button>
-            <button id="btn-import">Import</button>
-            <button id="btn-default">Default</button>
-          </div>
-          <div id="import-box">
-            <textarea id="import-text" placeholder="Paste SHARPpy %RAW%, Extra CSV, SPC/UWYO, CM1 input_sounding, or Stormforge CSV…"></textarea>
-            <div class="import-row">
-              <button id="btn-import-go" class="primary">Load &amp; apply</button>
-              <label class="file-btn">
-                Open file
-                <input id="import-file" type="file" accept="*/*" hidden />
-              </label>
+            <div id="creator-host"></div>
+            <div id="fronts-panel" class="fronts-panel hidden">
+              <div id="fronts-editor-host"></div>
+              <div class="fronts-apply-row">
+                <button id="btn-apply-fronts" class="primary">Apply fronts</button>
+                <span class="hint" id="fronts-status">Applies to the running simulation</span>
+              </div>
             </div>
-            <span class="hint" id="import-msg">Formats: SHARPpy · Extra · SPC · CM1 · Stormforge (any filename)</span>
+            <div class="sounding-drawer-actions panel-actions">
+              <button id="btn-apply" class="primary">Apply sounding</button>
+              <button id="btn-export">Export</button>
+              <button id="btn-default">Default</button>
+            </div>
           </div>
         </aside>
-        <button id="btn-show-panel" class="panel-reopen hidden">Show sounding ▸</button>
+        <button id="btn-show-panel" class="panel-reopen">Sounding</button>
       </div>
     `;
     this.host.appendChild(this.simScreen);
@@ -373,17 +369,6 @@ export class App {
 
     this.viewport = this.simScreen.querySelector("#viewport") as HTMLElement;
     this.statsEl = this.simScreen.querySelector("#sim-stats") as HTMLElement;
-    this.importBox = this.simScreen.querySelector("#import-box") as HTMLElement;
-    this.importText = this.simScreen.querySelector(
-      "#import-text",
-    ) as HTMLTextAreaElement;
-    this.skewtCanvas = this.simScreen.querySelector(
-      "#skewt-canvas",
-    ) as HTMLCanvasElement;
-    this.hodoCanvas = this.simScreen.querySelector(
-      "#hodo-canvas",
-    ) as HTMLCanvasElement;
-    this.modeTabs = this.simScreen.querySelector("#mode-tabs") as HTMLElement;
     this.panelTitle = this.simScreen.querySelector("#panel-title") as HTMLElement;
     this.panelDesc = this.simScreen.querySelector("#panel-desc") as HTMLElement;
 
@@ -391,48 +376,60 @@ export class App {
   }
 
   private syncSoundingFromEditors(): SoundingLevel[] {
-    if (this.panelView === "hodograph" && this.hodo) {
-      this.sounding = this.hodo.getLevels();
-      this.skewt?.setLevels(this.sounding);
-    } else if (this.skewt) {
-      this.sounding = this.skewt.getLevels();
-      this.hodo?.setLevels(this.sounding);
-    }
+    if (this.creator) this.sounding = this.creator.getLevels();
     return this.sounding;
+  }
+
+  private openSoundingDrawer(view: PanelView = "sounding"): void {
+    const drawer = this.simScreen.querySelector(
+      "#sounding-drawer",
+    ) as HTMLElement;
+    const reopen = this.simScreen.querySelector(
+      "#btn-show-panel",
+    ) as HTMLElement;
+    drawer.classList.remove("hidden");
+    reopen.classList.add("hidden");
+    this.setPanelView(view);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.creator?.resize();
+        this.frontEditor?.resize();
+      });
+    });
+  }
+
+  private closeSoundingDrawer(): void {
+    const drawer = this.simScreen.querySelector(
+      "#sounding-drawer",
+    ) as HTMLElement;
+    const reopen = this.simScreen.querySelector(
+      "#btn-show-panel",
+    ) as HTMLElement;
+    drawer.classList.add("hidden");
+    reopen.classList.remove("hidden");
+    this.renderer?.resize();
   }
 
   private setPanelView(view: PanelView): void {
     this.panelView = view;
     const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
-    q("#view-skewt").classList.toggle("active", view === "skewt");
-    q("#view-hodo").classList.toggle("active", view === "hodograph");
-    q("#view-fronts").classList.toggle("active", view === "fronts");
+    q("#view-sounding")?.classList.toggle("active", view === "sounding");
+    q("#view-fronts")?.classList.toggle("active", view === "fronts");
 
-    const metrics = this.simScreen.querySelector(
-      "#skewt-metrics",
-    ) as HTMLElement | null;
-    const hodoMetrics = this.simScreen.querySelector(
-      "#hodo-metrics",
+    const creatorHost = this.simScreen.querySelector(
+      "#creator-host",
     ) as HTMLElement | null;
     const frontsPanel = this.simScreen.querySelector(
       "#fronts-panel",
     ) as HTMLElement | null;
+    const actions = this.simScreen.querySelector(
+      ".sounding-drawer-actions",
+    ) as HTMLElement | null;
 
     if (view === "fronts") {
-      // Keep the sounding edits in sync before the front map is shown.
-      const hodo = this.hodo;
-      const skewt = this.skewt;
-      if (hodo) {
-        this.sounding = hodo.getLevels();
-        skewt?.setLevels(this.sounding);
-      } else if (skewt) {
-        this.sounding = skewt.getLevels();
-      }
-      this.skewtCanvas?.classList.add("hidden");
-      metrics?.classList.add("hidden");
-      this.hodoCanvas?.classList.add("hidden");
-      hodoMetrics?.classList.add("hidden");
-      this.modeTabs?.classList.add("hidden");
+      this.syncSoundingFromEditors();
+      creatorHost?.classList.add("hidden");
+      actions?.classList.add("hidden");
       frontsPanel?.classList.remove("hidden");
       if (this.panelTitle) this.panelTitle.textContent = "Fronts";
       if (this.panelDesc) {
@@ -444,44 +441,16 @@ export class App {
     }
 
     frontsPanel?.classList.add("hidden");
-
-    if (view === "skewt") {
-      // Pull wind edits from hodograph before showing thermo
-      if (this.hodo) {
-        this.sounding = this.hodo.getLevels();
-        this.skewt?.setLevels(this.sounding);
-      }
-      this.skewtCanvas?.classList.remove("hidden");
-      metrics?.classList.remove("hidden");
-      hodoMetrics?.classList.add("hidden");
-      this.hodoCanvas?.classList.add("hidden");
-      this.modeTabs?.classList.remove("hidden");
-      if (this.panelTitle) this.panelTitle.textContent = "Skew-T";
-      if (this.panelDesc) {
-        this.panelDesc.textContent =
-          "Orange = T, green = Td. Metrics update as you edit. Wind via Hodograph.";
-      }
-      requestAnimationFrame(() => this.skewt?.resize());
-    } else {
-      if (this.skewt) {
-        this.sounding = this.skewt.getLevels();
-        this.hodo?.setLevels(this.sounding);
-      }
-      this.skewtCanvas?.classList.add("hidden");
-      metrics?.classList.add("hidden");
-      hodoMetrics?.classList.remove("hidden");
-      this.hodoCanvas?.classList.remove("hidden");
-      this.modeTabs?.classList.add("hidden");
-      if (this.panelTitle) this.panelTitle.textContent = "Hodograph";
-      if (this.panelDesc) {
-        this.panelDesc.textContent =
-          "Pick a height on the left, drag the tip (or scroll for speed). Plot is north-up: tip shows wind toward (+v up, +u right). Apply when done.";
-      }
-      // Two frames: display:none → visible must layout before measuring
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => this.hodo?.resize());
-      });
+    creatorHost?.classList.remove("hidden");
+    actions?.classList.remove("hidden");
+    if (this.panelTitle) this.panelTitle.textContent = "Sounding";
+    if (this.panelDesc) {
+      this.panelDesc.textContent =
+        "Drag T/Td and hodograph tips, or import a sounding. Apply to push into the live run.";
     }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => this.creator?.resize());
+    });
   }
 
   private setPaused(paused: boolean): void {
@@ -588,8 +557,6 @@ export class App {
       "#btn-bubble",
       "#btn-reset",
       "#btn-apply",
-      "#btn-import",
-      "#btn-import-go",
       "#btn-default",
     ]) {
       const el = this.simScreen.querySelector(id) as HTMLButtonElement | null;
@@ -656,20 +623,14 @@ export class App {
     const q = (id: string) => this.simScreen.querySelector(id) as HTMLElement;
 
     q("#btn-hide-panel").addEventListener("click", () => {
-      const aside = this.simScreen.querySelector(".side-panel") as HTMLElement;
-      aside.classList.add("hidden");
-      q("#btn-show-panel").classList.remove("hidden");
-      // resize the renderer to fill
-      this.renderer?.resize();
+      this.closeSoundingDrawer();
     });
     q("#btn-show-panel").addEventListener("click", () => {
-      const aside = this.simScreen.querySelector(".side-panel") as HTMLElement;
-      aside.classList.remove("hidden");
-      q("#btn-show-panel").classList.add("hidden");
-      this.skewt?.resize();
-      this.hodo?.resize();
-      this.renderer?.resize();
-     });
+      this.openSoundingDrawer(this.panelView);
+    });
+    q("#btn-open-sounding")?.addEventListener("click", () => {
+      this.openSoundingDrawer("sounding");
+    });
     q("#btn-pause").addEventListener("click", () => {
       if (this.sessionMode === "batching") return;
       if (this.sessionMode === "playback") {
@@ -973,9 +934,8 @@ export class App {
     liveMonth.addEventListener("input", applyLiveSun);
     liveDaylen.addEventListener("input", applyLiveSun);
 
-    q("#view-skewt").addEventListener("click", () => this.setPanelView("skewt"));
-    q("#view-hodo").addEventListener("click", () =>
-      this.setPanelView("hodograph"),
+    q("#view-sounding").addEventListener("click", () =>
+      this.setPanelView("sounding"),
     );
     q("#view-fronts").addEventListener("click", () => this.setPanelView("fronts"));
 
@@ -983,17 +943,6 @@ export class App {
     applyFrontsBtn.addEventListener("click", () => {
       if (!this.frontEditor) return;
       this.applyFronts(this.frontEditor.getSetup());
-    });
-
-    q("#mode-t").addEventListener("click", () => {
-      this.skewt?.setMode("T");
-      q("#mode-t").classList.add("active");
-      q("#mode-td").classList.remove("active");
-    });
-    q("#mode-td").addEventListener("click", () => {
-      this.skewt?.setMode("Td");
-      q("#mode-td").classList.add("active");
-      q("#mode-t").classList.remove("active");
     });
 
     q("#btn-apply").addEventListener("click", () => {
@@ -1009,22 +958,7 @@ export class App {
 
     q("#btn-export").addEventListener("click", () => {
       this.syncSoundingFromEditors();
-      const text =
-        this.skewt?.exportText() ??
-        ["alt_m,p_hPa,t_C,td_C,u,v"]
-          .concat(
-            this.sounding.map((l) =>
-              [
-                l.z.toFixed(1),
-                (l.p / 100).toFixed(2),
-                (l.T - 273.15).toFixed(2),
-                (l.Td - 273.15).toFixed(2),
-                l.u.toFixed(2),
-                l.v.toFixed(2),
-              ].join(","),
-            ),
-          )
-          .join("\n");
+      const text = this.creator?.exportText("stormforge") ?? "";
       const blob = new Blob([text], { type: "text/plain" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -1033,75 +967,11 @@ export class App {
       URL.revokeObjectURL(a.href);
     });
 
-    q("#btn-import").addEventListener("click", () => {
-      this.importBox.classList.toggle("visible");
-      if (this.importBox.classList.contains("visible")) {
-        const panel = this.simScreen.querySelector(".side-panel");
-        panel?.scrollTo({ top: panel.scrollHeight, behavior: "smooth" });
-        this.importText.focus();
-      }
-    });
-
-    const applyImported = (text: string) => {
-      const msg = q("#import-msg");
-      if (!text.trim()) {
-        msg.textContent = "Paste sounding text or open a file first.";
-        msg.style.color = "var(--danger)";
-        return;
-      }
-      if (!this.skewt) {
-        msg.textContent = "Start a simulation before importing.";
-        msg.style.color = "var(--danger)";
-        return;
-      }
-      // Ensure Skew-T is visible so the user sees the result
-      this.setPanelView("skewt");
-      const res = this.skewt.importText(text);
-      msg.textContent = res.message;
-      msg.style.color = res.ok ? "var(--ok)" : "var(--danger)";
-      if (res.ok) {
-        this.sounding = this.skewt.getLevels();
-        this.hodo?.setLevels(this.sounding);
-        // Immediately re-init the sim so import is not a silent no-op
-        if (this.solver && this.sessionMode === "live") {
-          const opts = {
-            bubbleStrength: this.bubbleStrength,
-            synoptic: this.synoptic,
-          };
-          this.solver.reset(this.sounding, opts);
-          this.live?.reset(this.sounding, opts);
-          msg.textContent = `${res.message} Loaded into Skew-T and applied to the sim.`;
-        } else if (res.ok) {
-          msg.textContent = `${res.message} (review mode — not applied to physics)`;
-        }
-      }
-    };
-
-    q("#btn-import-go").addEventListener("click", () => {
-      applyImported(this.importText.value);
-    });
-
-    const fileInput = this.simScreen.querySelector(
-      "#import-file",
-    ) as HTMLInputElement;
-    fileInput?.addEventListener("change", () => {
-      const file = fileInput.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const text = String(reader.result ?? "");
-        this.importText.value = text;
-        applyImported(text);
-        fileInput.value = "";
-      };
-      reader.readAsText(file);
-    });
-
     q("#btn-default").addEventListener("click", () => {
-      this.skewt?.resetDefault();
-      if (this.skewt) {
-        this.sounding = this.skewt.getLevels();
-        this.hodo?.setLevels(this.sounding);
+      this.creator?.resetDefault();
+      if (this.creator) {
+        this.sounding = this.creator.getLevels();
+        this.syncFreezingLevel();
       }
     });
 
@@ -1494,40 +1364,19 @@ export class App {
     this.mapBucket = -1;
     this.mapPackedProduct = null;
 
-    this.skewt?.dispose();
-    this.hodo?.dispose();
-    this.skewtCanvas = this.simScreen.querySelector(
-      "#skewt-canvas",
-    ) as HTMLCanvasElement;
-    this.hodoCanvas = this.simScreen.querySelector(
-      "#hodo-canvas",
-    ) as HTMLCanvasElement;
-
-    // Ensure skew-t is visible for initial measure; hodo stays hidden
-    this.skewtCanvas.classList.remove("hidden");
-    this.hodoCanvas.classList.add("hidden");
-
-    this.skewt = new SkewTEditor(this.skewtCanvas, zTop);
-    this.hodo = new HodographEditor(this.hodoCanvas, zTop);
-    const metricsEl = this.simScreen.querySelector(
-      "#skewt-metrics",
-    ) as HTMLElement;
-    this.skewt.setMetricsElement(metricsEl);
-    const hodoMetricsEl = this.simScreen.querySelector(
-      "#hodo-metrics",
-    ) as HTMLElement;
-    this.hodo.setMetricsElement(hodoMetricsEl);
-    this.skewt.setLevels(this.sounding);
-    this.hodo.setLevels(this.sounding);
-
-    this.skewt.onChange = (levels) => {
+    this.creator?.dispose();
+    this.creator = new SoundingCreator({ compact: true });
+    this.creator.setZTop(zTop);
+    this.creator.setLevels(this.sounding);
+    this.creator.onChange = (levels) => {
       this.sounding = levels;
       this.syncFreezingLevel();
     };
-    this.hodo.onChange = (levels) => {
-      this.sounding = levels;
-      this.syncFreezingLevel();
-    };
+    const creatorHost = this.simScreen.querySelector(
+      "#creator-host",
+    ) as HTMLElement;
+    creatorHost.innerHTML = "";
+    creatorHost.appendChild(this.creator.root);
 
     // Front editor for the running simulation. It starts from the pattern the
     // run was launched with and can change it while the simulation runs.
@@ -1545,8 +1394,9 @@ export class App {
     frontsHost?.appendChild(this.frontEditor.root);
     this.pushFrontsToMap();
 
-    this.setPanelView("skewt");
-    this.skewt.resize();
+    this.setPanelView("sounding");
+    this.closeSoundingDrawer();
+    this.creator.resize();
     this.renderer.resize();
     this.syncSessionControls();
 
@@ -1777,10 +1627,10 @@ export class App {
     this.renderer = null;
     this.radar2d?.dispose();
     this.radar2d = null;
-    this.skewt?.dispose();
-    this.skewt = null;
-    this.hodo?.dispose();
-    this.hodo = null;
+    this.creator?.dispose();
+    this.creator = null;
+    this.frontEditor?.root.remove();
+    this.frontEditor = null;
     this.solver = null;
     this.syncSessionControls();
     this.simScreen.classList.remove("active");
