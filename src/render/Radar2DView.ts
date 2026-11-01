@@ -360,7 +360,6 @@ export class Radar2DView {
       this.detail = next;
       if (this.detailVal) this.detailVal.textContent = `${next}×`;
       this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
-      this.layout();
       this.draw();
       this.onDetailChange?.(next);
     });
@@ -881,22 +880,20 @@ export class Radar2DView {
     if (h < 40) return;
     if (this.nx < 1 || this.ny < 1) return;
 
-    // The map is always presented as a square, matching the radar-style view.
+    // Square map inside the wrap. Do not assign wrap width/height — that
+    // locks the flex box and shrinks it on later layout() calls (detail,
+    // pan, zoom).
     const size = Math.max(1, Math.min(w, h));
-    wrap.style.width = `${size}px`;
-    wrap.style.height = `${size}px`;
-    const cw = size;
-    const ch = size;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.style.width = `${cw}px`;
-    this.canvas.style.height = `${ch}px`;
-    this.canvas.width = Math.max(1, Math.floor(cw * dpr));
-    this.canvas.height = Math.max(1, Math.floor(ch * dpr));
+    this.canvas.style.width = `${size}px`;
+    this.canvas.style.height = `${size}px`;
+    this.canvas.width = Math.max(1, Math.floor(size * dpr));
+    this.canvas.height = Math.max(1, Math.floor(size * dpr));
     this.canvas.style.imageRendering = this.detail <= 1 ? "pixelated" : "auto";
     const compass = this.root.querySelector(".map2d-compass") as HTMLElement | null;
     if (compass) {
-      compass.style.width = `${cw}px`;
-      compass.style.height = `${ch}px`;
+      compass.style.width = `${size}px`;
+      compass.style.height = `${size}px`;
     }
     this.draw();
   }
@@ -919,7 +916,7 @@ export class Radar2DView {
     this.zoom = next;
     this.panX = mx - cx - beforeX * this.zoom;
     this.panY = my - cy - beforeY * this.zoom;
-    this.layout();
+    this.draw();
   }
 
   private onCanvasPointerDown(e: PointerEvent): void {
@@ -938,7 +935,7 @@ export class Radar2DView {
     this.lastPointerY = e.clientY;
     this.panX += dx;
     this.panY += dy;
-    this.layout();
+    this.draw();
   }
 
   private onCanvasPointerUp(e?: PointerEvent): void {
@@ -984,21 +981,18 @@ export class Radar2DView {
     const ch = this.canvas.height;
     const cx = cw / 2;
     const cy = ch / 2;
-    // Clamp pan so the image never drifts completely out of view.
-    const maxPanX = Math.max(0, (tw * this.zoom - cw) / 2);
-    const maxPanY = Math.max(0, (th * this.zoom - ch) / 2);
+    // Fit the grid to the canvas. Detail only changes source resolution.
+    const fit = Math.min(cw / Math.max(1, tw), ch / Math.max(1, th));
+    const dw = tw * fit;
+    const dh = th * fit;
+    const maxPanX = Math.max(0, (dw * this.zoom - cw) / 2);
+    const maxPanY = Math.max(0, (dh * this.zoom - ch) / 2);
     this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
     this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
     this.ctx.save();
     this.ctx.translate(cx + this.panX, cy + this.panY);
     this.ctx.scale(this.zoom, this.zoom);
-    this.ctx.drawImage(
-      this.blitCanvas!,
-      -tw / 2,
-      -th / 2,
-      tw,
-      th,
-    );
+    this.ctx.drawImage(this.blitCanvas!, -dw / 2, -dh / 2, dw, dh);
     this.ctx.restore();
 
     if (this.windsVisible && this.windSamples.length > 0) {

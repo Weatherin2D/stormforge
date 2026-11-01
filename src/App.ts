@@ -91,6 +91,8 @@ export class App {
   private showRadar2d = false;
   /** Surface wind arrow mesh / 2D overlay (live fields only). */
   private showSurfaceWinds = false;
+  /** Rain/snow particles in the 3D view. */
+  private showDroplets = true;
   private mapProduct: MapProductId = "refl";
   /** Last sim-time bucket written into the live 2D map / radar plane. */
   private mapBucket = -1;
@@ -144,6 +146,7 @@ export class App {
               <button id="btn-reset">Reset</button>
               <button id="btn-menu">Main menu</button>
               <button id="btn-clouds" class="active" title="3D cloud volume (turn off to reduce lag)">Clouds</button>
+              <button id="btn-droplets" class="active" title="Rain and snow particles in the 3D view">Droplets</button>
               <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
               <button id="btn-radar2d" title="2D maps: Reflectivity, CAPE, shear, clouds, precipitation, and more">Maps 2D</button>
               <button id="btn-winds" title="Surface wind direction arrows (overlay on 3D or Maps 2D)">Winds</button>
@@ -736,6 +739,7 @@ export class App {
 
     const syncViewToggles = () => {
       q("#btn-clouds").classList.toggle("active", this.showClouds);
+      q("#btn-droplets").classList.toggle("active", this.showDroplets);
       q("#btn-radar3d").classList.toggle("active", this.showRadar3d);
       q("#btn-radar2d").classList.toggle("active", this.showRadar2d);
       q("#btn-winds").classList.toggle("active", this.showSurfaceWinds);
@@ -751,6 +755,7 @@ export class App {
       this.radar2d?.setWindsVisible(
         this.showSurfaceWinds && this.showRadar2d,
       );
+      this.renderer?.setDropletsVisible(this.showDroplets && !this.showRadar2d);
     };
 
     q("#btn-clouds").addEventListener("click", () => {
@@ -789,6 +794,14 @@ export class App {
       this.showSurfaceWinds = !this.showSurfaceWinds;
       syncViewToggles();
       this.pushSurfaceWinds();
+    });
+
+    q("#btn-droplets").addEventListener("click", () => {
+      this.showDroplets = !this.showDroplets;
+      syncViewToggles();
+      if (this.sessionMode === "playback") {
+        this.showPlaybackFrame(this.playbackIndex);
+      }
     });
 
     this.bindTeleport();
@@ -1297,11 +1310,15 @@ export class App {
     this.showRadar3d = false;
     this.showRadar2d = false;
     this.showSurfaceWinds = false;
+    this.showDroplets = true;
     this.mapProduct = "refl";
     this.mapBucket = -1;
     this.mapPackedProduct = null;
     this.simScreen
       .querySelector("#btn-clouds")
+      ?.classList.toggle("active", true);
+    this.simScreen
+      .querySelector("#btn-droplets")
       ?.classList.toggle("active", true);
     this.simScreen
       .querySelector("#btn-radar3d")
@@ -1388,6 +1405,7 @@ export class App {
     this.radar2d.setVisible(false);
     this.radar2d.setWindsVisible(false);
     this.renderer.setWindsVisible(false);
+    this.renderer.setDropletsVisible(this.showDroplets);
     this.mapBucket = -1;
     this.mapPackedProduct = null;
 
@@ -1555,6 +1573,7 @@ export class App {
         showRadar3d: this.showRadar3d,
         showRadar2d: this.showRadar2d,
         showSurfaceWinds: this.showSurfaceWinds,
+        showDroplets: this.showDroplets,
         mapProduct: this.mapProduct,
         simSpeed,
         cloudLookPreset: lookPreset,
@@ -1614,14 +1633,17 @@ export class App {
     this.showRadar3d = v.showRadar3d;
     this.showRadar2d = v.showRadar2d;
     this.showSurfaceWinds = v.showSurfaceWinds;
+    this.showDroplets = v.showDroplets !== false;
     this.mapProduct = v.mapProduct;
 
     q("#btn-clouds").classList.toggle("active", this.showClouds);
+    q("#btn-droplets").classList.toggle("active", this.showDroplets);
     q("#btn-radar3d").classList.toggle("active", this.showRadar3d);
     q("#btn-radar2d").classList.toggle("active", this.showRadar2d);
     q("#btn-winds").classList.toggle("active", this.showSurfaceWinds);
 
     this.renderer?.setVolumeVisible(this.showClouds);
+    this.renderer?.setDropletsVisible(this.showDroplets && !this.showRadar2d);
     this.renderer?.setRadarVisible(this.showRadar3d);
     this.radar2d?.setVisible(this.showRadar2d);
     if (this.showRadar2d) this.radar2d?.setProduct(v.mapProduct);
@@ -1731,6 +1753,7 @@ export class App {
       });
     } else {
       this.renderer.setVolumeVisible(this.showClouds);
+      this.renderer.setDropletsVisible(this.showDroplets);
       this.renderer.setRadarVisible(this.showRadar3d);
       if (this.showClouds) {
         this.renderer.updateVolume(
@@ -1826,6 +1849,7 @@ export class App {
         : [
             this.showClouds ? "clouds" : null,
             this.showRadar3d ? "radar3d" : null,
+            this.showDroplets ? "droplets" : null,
           ]
     )
       .concat(this.showSurfaceWinds ? ["winds"] : [])
@@ -2012,6 +2036,7 @@ export class App {
         this.mapProduct = this.radar2d.getProduct();
       } else {
         this.renderer.setVolumeVisible(this.showClouds);
+        this.renderer.setDropletsVisible(this.showDroplets);
         this.renderer.setRadarVisible(this.showRadar3d);
         this.renderer.setWindsVisible(this.showSurfaceWinds);
         this.renderer.render();

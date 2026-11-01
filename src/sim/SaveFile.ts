@@ -20,6 +20,8 @@ export interface SavedView {
   showRadar3d: boolean;
   showRadar2d: boolean;
   showSurfaceWinds: boolean;
+  /** Rain/snow particles. Absent in older saves means on. */
+  showDroplets?: boolean;
   mapProduct: MapProductId;
   simSpeed: 1 | 5 | 15 | 40;
   cloudLookPreset: string;

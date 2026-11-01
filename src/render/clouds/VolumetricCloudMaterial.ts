@@ -62,7 +62,7 @@ export const DEFAULT_LOOK: CloudLook = {
   detailFade: [6000, 28000],
   mammatusDepth: 1200,
   mammatusCell: 900,
-  shaftMax: 0.04,
+  shaftMax: 2.5,
   freezing: 4000,
   shadowProbes: 1,
 };

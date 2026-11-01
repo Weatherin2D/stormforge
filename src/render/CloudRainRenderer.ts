@@ -15,13 +15,21 @@ import {
   DEFAULT_LOOK,
   VolumetricCloudMaterial,
 } from "./clouds/VolumetricCloudMaterial";
-import { computeSkyLighting } from "./clouds/sunLighting";
-import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SUN_TOP, SKY_COLS, SKY_ROWS, adaptation, NOON_LIGHT } from "./sky";
+import { computeSky, SkyState, hazeExtinction, SUN_LEVELS, SKY_COLS, SKY_ROWS, adaptation, ADAPT_MAX, luminance } from "./sky";
 import { skyFragment, skyVertex } from "./clouds/skyShader";
 import { course, brightness, type LightningCourse, LightningView, type Flash } from "./lightning";
 import { SpriteView } from "./sprites";
 import { PrecipitationParticles } from "./precipitation";
 import { LightVolume, FlashVolume } from "./light";
+import { groundSurfacePars, groundShadowPars } from "./groundShader";
+import { noiseTexture } from "./noise";
+
+/** Daylight gains matching MeteoLAB view.ts. */
+const SUN_GAIN = 3, SKY_GAIN = 14, SUN_DISC = 40;
+const NIGHT_SKY = [0.008, 0.012, 0.026] as const;
+const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
+const CITY_SKY = [0.06, 0.036, 0.016] as const;
+const GROUND_WATER_MM = 16;
 
 const blitVert = /* glsl */ `
 out vec2 vUv;
@@ -190,6 +198,19 @@ export class CloudRainRenderer {
   private lightningView: LightningView | null = null;
   /** Shared uniforms for MeteoLAB shaders. */
   private sharedUniforms: Record<string, THREE.IUniform> = {};
+  /** Ground state texture (water, hail per ground column). */
+  private groundState: THREE.DataTexture | null = null;
+  /** Wind texture over the ground. */
+  private windTexture: THREE.DataTexture | null = null;
+  /** Ground uniforms for surface shader. */
+  private groundUniforms: Record<string, THREE.IUniform> = {};
+  /** Water and hail data per ground column. */
+  private water: Float32Array | null = null;
+  private hailCover: Float32Array | null = null;
+  /** MeteoLAB value-noise cube for land patterns / cloud detail. */
+  private readonly noise = noiseTexture();
+  /** Mean ground albedo colour (grass by default). */
+  private readonly groundColor = new THREE.Color(0x596d45);
   /** Renderer-side rain/snow particles spawned from the packed volume. */
   private precipitation: PrecipitationParticles;
   private timeSeconds = 0;
@@ -214,9 +235,9 @@ export class CloudRainRenderer {
   private flashLights: THREE.PointLight[] = [];
   private boltScene = new THREE.Scene();
   private boltRibbons: THREE.Mesh[] = [];
-  private readonly boltPointCount = 28;
+  private readonly boltPointCount = 80;
   private readonly boltScratch: THREE.Vector3[] = Array.from(
-    { length: 28 },
+    { length: 80 },
     () => new THREE.Vector3(),
   );
   private readonly boltRight = new THREE.Vector3();
@@ -252,7 +273,7 @@ export class CloudRainRenderer {
     this.sunLight.position.set(80, 200, 40);
     this.scene.add(this.sunLight);
     for (let n = 0; n < 6; n++) {
-      const light = new THREE.PointLight(0xdbe7ff, 0, 48000, 1.6);
+      const light = new THREE.PointLight(0xdbe7ff, 0, 70000, 1.35);
       light.castShadow = false;
       this.flashLights.push(light);
       this.scene.add(light);
@@ -280,7 +301,7 @@ export class CloudRainRenderer {
 
     const groundGeo = new THREE.PlaneGeometry(4, 4);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x596d45,
+      color: this.groundColor,
       roughness: 0.96,
       metalness: 0,
     });
@@ -288,6 +309,71 @@ export class CloudRainRenderer {
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.y = -0.5;
     this.scene.add(this.ground);
+
+    // Inject MeteoLAB land pattern + wetness + cloud shadows into the ground.
+    // onBeforeCompile runs lazily on first render; shared/ground uniforms are
+    // filled in setGrid() before then.
+    groundMat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, {
+        ...this.sharedUniforms,
+        ...this.groundUniforms,
+        uNoise: { value: this.noise },
+        uLight: { value: this.lightVolume?.texture ?? this.noise },
+        uSky: { value: this.skyTexture },
+        uSkyGain: { value: 1 },
+        uSkyFloor: { value: new THREE.Color() },
+        uCityGlow: { value: new THREE.Color() },
+        uHaze: { value: 0.1 },
+        uAirScale: { value: 0.5 },
+      });
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCloudWorld;")
+        .replace(
+          "#include <project_vertex>",
+          "#include <project_vertex>\nvCloudWorld=(modelMatrix*vec4(transformed,1.0)).xyz;",
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>\n${groundShadowPars}\n${groundSurfacePars}`,
+        )
+        .replace(
+          "#include <map_fragment>",
+          `#include <map_fragment>
+{
+  vec2 g = groundAt(vCloudWorld), q = g * uGroundSize;
+  vec4 st = texture(uGround, g);
+  gWater = st.r * GROUND_WATER; gHail = st.g;
+  float blur = min(length(dFdx(q)), length(dFdy(q)));
+  if(abs(uSurface - 2.0) < 0.5){
+    float U = texture(uWind, toTex(vCloudWorld).xy).r * WIND_SCALE / 1.15;
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6), clamp(3.84e-6 * pow(U, 3.41), 0.0, 0.3));
+    gSpec = 1.0;
+  } else {
+    diffuseColor.rgb *= landPattern(q, blur);
+    float urban = step(2.5, uSurface), steppe = step(0.5, uSurface) * (1.0 - urban);
+    float wet = mix(mix(0.88, 0.7, steppe), 0.55, urban), pond = mix(mix(10.0, 5.0, steppe), 1.5, urban);
+    diffuseColor.rgb *= mix(1.0, wet, smoothstep(0.0, 0.3, gWater));
+    gSpec = smoothstep(pond, pond * 2.0, gWater);
+  }
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.72, 0.75, 0.78), gHail);
+}`,
+        )
+        .replace(
+          "#include <roughnessmap_fragment>",
+          `#include <roughnessmap_fragment>
+if(abs(uSurface - 2.0) < 0.5){
+  float U = texture(uWind, toTex(vCloudWorld).xy).r * WIND_SCALE / 1.15;
+  roughnessFactor = sqrt(sqrt(0.003 + 0.00512 * U));
+} else roughnessFactor = mix(roughnessFactor, 0.15, gSpec);`,
+        )
+        .replace(
+          "#include <lights_fragment_end>",
+          "#include <lights_fragment_end>\n{vec3 s=cloudShade(vCloudWorld);reflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*s.y+reflectedLight.directDiffuse*s.z;reflectedLight.directDiffuse*=s.x;reflectedLight.directSpecular*=s.x;}",
+        )
+        .replace("#include <fog_fragment>", "");
+    };
+    // needsUpdate is set in setGrid() once shared/ground uniforms exist.
 
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     const edges = new THREE.EdgesGeometry(boxGeo);
@@ -308,8 +394,10 @@ export class CloudRainRenderer {
     this.skyTexture.minFilter = this.skyTexture.magFilter = THREE.LinearFilter;
     this.skyTexture.needsUpdate = true;
 
+    // GLSL1 (no glslVersion: GLSL3) so tonemapping/colorspace chunks that write
+    // gl_FragColor compile — the previous GLSL3 sky silently failed and left
+    // only the flat clear-color "dark blue".
     const skyMat = new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
       vertexShader: skyVertex,
       fragmentShader: skyFragment,
       uniforms: {
@@ -324,6 +412,9 @@ export class CloudRainRenderer {
         uStars: { value: 0 },
         uWater: { value: 0 },
         uLab: { value: 0 },
+        uNoise: { value: this.noise },
+        uGroundSize: { value: new THREE.Vector2(40, 40) },
+        uSurface: { value: 0 },
       },
       side: THREE.BackSide,
       depthTest: false,
@@ -451,7 +542,11 @@ export class CloudRainRenderer {
   setVolumeVisible(on: boolean): void {
     this.cloudsOn = on;
     if (this.volumeMesh) this.volumeMesh.visible = on;
+  }
+
+  setDropletsVisible(on: boolean): void {
     this.precipitation.setVisible(on);
+    if (!on) this.precipitation.clear();
   }
 
   /** Height of the 0 °C level above the ground, in metres. */
@@ -567,36 +662,8 @@ export class CloudRainRenderer {
   }
 
   setSunFrac(frac: number): void {
-    const f = Math.min(1, Math.max(0, frac));
-    this.sunFrac = f;
-    // Better sky clear color blending for day/night
-    const mix = (a: number, b: number, t: number) => a + (b - a) * t;
-    let r = mix(8, 135, f);
-    let g = mix(12, 175, f);
-    let b = mix(24, 210, f);
-    // Golden hour tint
-    if (f < 0.3 && f > 0.05) {
-      const g = mix(0, 1, (0.3 - f) / 0.25);
-      r = mix(r, mix(160, 135, f), g * 0.4);
-      b = mix(b, mix(80, 210, f), g * 0.3);
-    }
-    // Twilight/blue hour
-    if (f < 0.05) {
-      const t = mix(0, 1, f / 0.05);
-      r = mix(15, mix(15, 12, 1-t), t);
-      g = mix(22, mix(25, 12, 1-t), t);
-      b = mix(45, mix(65, 24, 1-t), t);
-    }
-    const sky = ((Math.round(r) & 0xff) << 16) | ((Math.round(g) & 0xff) << 8) | (Math.round(b) & 0xff);
-    this.renderer.setClearColor(sky, 1);
-    if (this.scene.fog) {
-      const fogColor = ((Math.round(r + 10) & 0xff) << 16) | ((Math.round(g + 15) & 0xff) << 8) | (Math.round(b + 25) & 0xff);
-      this.scene.fog.color.set(fogColor);
-    }
-    this.hemi.intensity = mix(0.4, 1.0, f);
-    this.hemi.color.setRGB(0.851, 0.937, 1.0);
-    this.hemi.groundColor.setRGB(0.294, 0.267, 0.224);
-    this.sunLight.intensity = mix(0.2, 1.0, f);
+    // Daylight fraction only — sky colour / lights come from updateSkyFromSun().
+    this.sunFrac = Math.min(1, Math.max(0, frac));
   }
 
   /** Daylight fraction plus the world sun direction (+X east, +Y up, −Z north). */
@@ -606,13 +673,11 @@ export class CloudRainRenderer {
     if (this.sunDir.lengthSq() < 1e-8) this.sunDir.set(0, 1, 0);
     else this.sunDir.normalize();
     this.sunLight.position.copy(this.sunDir).multiplyScalar(400);
-    const elev = this.sunDir.y;
-    this.sunLight.color.set(1.0, 0.941, 0.824);
     this.updateSkyFromSun();
     this.applyCloudSun();
   }
 
-  /** Recompute the atmospheric sky table from the current sun direction and upload it. */
+  /** Recompute the atmospheric sky table from the current sun direction and upload it (MeteoLAB view.ts updateSky). */
   private updateSkyFromSun(): void {
     if (!this.skyTexture || !this.sky) return;
     const elev = this.sunDir.y;
@@ -622,11 +687,12 @@ export class CloudRainRenderer {
     const rh = 0.6 + 0.3 * Math.max(0, -elDeg / 15);
     const haze = hazeExtinction(rh);
     this.haze = haze;
-    const state = computeSky(elDeg * Math.PI / 180, haze, 0.2);
+    const albedo = luminance([this.groundColor.r, this.groundColor.g, this.groundColor.b]);
+    const state = computeSky((elDeg * Math.PI) / 180, haze, albedo);
     this.skyState = state;
     // Upload the sky table as an RGBA HalfFloat texture.
-    const data = new Uint16Array(SKY_COLS * SKY_ROWS * 4);
-    const toHalf = (THREE.DataUtils as any).toHalfFloat;
+    const data = this.skyTexture.image.data as unknown as Uint16Array;
+    const toHalf = THREE.DataUtils.toHalfFloat;
     const sky = state.sky;
     for (let i = 0; i < SKY_ROWS * SKY_COLS; i++) {
       const o = i * 4;
@@ -635,47 +701,72 @@ export class CloudRainRenderer {
       data[o + 2] = toHalf(sky[i * 3 + 2]);
       data[o + 3] = toHalf(1);
     }
-    (this.skyTexture.image as unknown as { data: Uint16Array }).data = data;
     this.skyTexture.needsUpdate = true;
 
-    // Sky material uniforms - matching MeteoLAB's approach
+    const S = state.sunIrradiance;
+    const E = state.skyIrradiance;
+    const adapt = adaptation(luminance(S) + luminance(E));
+    const night = (adapt / ADAPT_MAX) ** 2;
+    const city = 0; // no city config yet
+    const skyGain = SKY_GAIN * adapt;
+    const groundGain = SKY_GAIN * adapt;
+    const g = this.groundColor;
+
     const mat = this.sky.material as THREE.ShaderMaterial;
-    const sunEl = Math.sin(elDeg * Math.PI / 180);
-    
-    // Night floor colors from MeteoLAB
-    const NIGHT_SKY = [0.008, 0.012, 0.026];
-    const NIGHT_BOTTOM = [0.06, 0.07, 0.1];
-    const CITY_SKY = [0.06, 0.036, 0.016];
-    const CITY_BOTTOM = [0.09, 0.055, 0.025];
-    
-    // Eye adaptation
-    const totalLight = state.skyIrradiance[0] + state.skyIrradiance[1] + state.skyIrradiance[2];
-    const adapt = adaptation(totalLight);
-    
-    // Sky gain with adaptation
-    const SKY_GAIN = 14;
-    const day = Math.min(1, Math.max(0, (elDeg + 8) / 20));
-    const gain = SKY_GAIN * (Math.max(0, sunEl) + 0.05) * adapt;
-    
-    (mat.uniforms.uSkyGain as { value: number }).value = gain;
+    (mat.uniforms.uSkyGain as { value: number }).value = skyGain;
     (mat.uniforms.uHaze as { value: number }).value = haze;
     (mat.uniforms.uSunDir as { value: THREE.Vector3 }).value.copy(this.sunDir);
-    (mat.uniforms.uStars as { value: number }).value = elDeg < -8 ? 1 : 0;
-    
-    // Night floor with city glow
-    const nightFloor = NIGHT_SKY.map((v, i) => v * adapt * adapt);
-    const cityGlow = CITY_SKY.map((v, i) => v * adapt * adapt * (1 - day));
-    (mat.uniforms.uSkyFloor as { value: THREE.Color }).value.setRGB(nightFloor[0], nightFloor[1], nightFloor[2]);
-    (mat.uniforms.uCityGlow as { value: THREE.Color }).value.setRGB(cityGlow[0], cityGlow[1], cityGlow[2]);
-    
-    // Ground light
-    const irr = state.skyIrradiance;
-    const groundLight = NIGHT_BOTTOM.map((v, i) => Math.max(v * adapt * adapt, irr[i] * adapt));
-    (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(groundLight[0], groundLight[1], groundLight[2]);
-    
-    // Sun disc
-    const SUN_DISC = 40;
-    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setScalar(SUN_DISC * day * adapt);
+    (mat.uniforms.uStars as { value: number }).value = night * night;
+    (mat.uniforms.uSkyFloor as { value: THREE.Color }).value.setRGB(
+      NIGHT_SKY[0] * night,
+      NIGHT_SKY[1] * night,
+      NIGHT_SKY[2] * night,
+    );
+    (mat.uniforms.uCityGlow as { value: THREE.Color }).value.setRGB(
+      CITY_SKY[0] * city,
+      CITY_SKY[1] * city,
+      CITY_SKY[2] * city,
+    );
+    // Ground beyond the domain, lit as the domain ground (Lambertian albedo/π × irradiance).
+    (mat.uniforms.uGroundLight as { value: THREE.Color }).value.setRGB(
+      (g.r / Math.PI) * ((S[0] + E[0]) * groundGain + NIGHT_GROUND[0] * night),
+      (g.g / Math.PI) * ((S[1] + E[1]) * groundGain + NIGHT_GROUND[1] * night),
+      (g.b / Math.PI) * ((S[2] + E[2]) * groundGain + NIGHT_GROUND[2] * night),
+    );
+    // Sun disc coloured by transmittance at ground level.
+    (mat.uniforms.uSunDisc as { value: THREE.Color }).value.setRGB(
+      state.sunByHeight[0] * SUN_DISC * adapt,
+      state.sunByHeight[1] * SUN_DISC * adapt,
+      state.sunByHeight[2] * SUN_DISC * adapt,
+    );
+
+    // Match MeteoLAB's sun / hemi lights so the ground isn't a flat grey slab.
+    this.sunLight.color.setRGB(
+      state.sunByHeight[0] * groundGain,
+      state.sunByHeight[1] * groundGain,
+      state.sunByHeight[2] * groundGain,
+    );
+    this.sunLight.intensity = SUN_GAIN;
+    this.hemi.color.setRGB(
+      E[0] * groundGain + NIGHT_GROUND[0] * night,
+      E[1] * groundGain + NIGHT_GROUND[1] * night,
+      E[2] * groundGain + NIGHT_GROUND[2] * night,
+    );
+    this.hemi.groundColor.setRGB(
+      albedo * (S[0] + E[0]) * groundGain,
+      albedo * (S[1] + E[1]) * groundGain,
+      albedo * (S[2] + E[2]) * groundGain,
+    );
+    this.hemi.intensity = 1;
+
+    // Soft clear colour under the sky dome (only briefly visible while resizing).
+    const clearR = Math.min(1, sky[0] * skyGain + NIGHT_SKY[0] * night);
+    const clearG = Math.min(1, sky[SKY_COLS * 3 + 1] * skyGain + NIGHT_SKY[1] * night);
+    const clearB = Math.min(1, sky[SKY_COLS * 3 + 2] * skyGain + NIGHT_SKY[2] * night);
+    this.renderer.setClearColor(new THREE.Color(clearR, clearG, clearB), 1);
+    if (this.scene.fog) {
+      this.scene.fog.color.setRGB(clearR, clearG, clearB);
+    }
   }
 
   /** Environmental wind in m/s. East is +X, north is +Y in the sim and −Z in the view. */
@@ -776,14 +867,16 @@ export class CloudRainRenderer {
       b: number;
       amount: number;
     }[] = [];
+    const night = Math.max(0.4, 1 - 0.5 * this.sunFrac);
     for (const bolt of this.liveBolts) {
       if (flashes.length >= 4) break;
       if (bolt.kind === "sprite") continue;
-      const alpha = Math.max(0, 1 - bolt.age / bolt.life);
-      const pulse = alpha * alpha * bolt.brightness;
-      const gain = 3 * (1 - 0.9 * this.sunFrac) / 10;
+      const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
+      const pulse = b.main * bolt.brightness;
+      if (pulse < 0.02) continue;
+      const gain = (bolt.isCg ? 22 : 14) * night;
       this.boltTint(bolt.x, bolt.y, bolt.z);
-      const pushAt = (x: number, y: number, z: number) => {
+      const pushAt = (x: number, y: number, z: number, amt = pulse * gain) => {
         if (flashes.length >= 4) return;
         flashes.push({
           x,
@@ -792,10 +885,15 @@ export class CloudRainRenderer {
           r: this.flashTint.r,
           g: this.flashTint.g,
           b: this.flashTint.b,
-          amount: pulse * gain,
+          amount: amt,
         });
       };
       pushAt(bolt.x, bolt.y, bolt.z);
+      if (bolt.isCg) {
+        const midY = bolt.y * 0.55 + this.groundY * 0.45;
+        pushAt(bolt.x, midY, bolt.z, pulse * gain * 0.85);
+        pushAt(bolt.x, this.groundY + 250, bolt.z, pulse * gain * 0.7);
+      }
     }
     this.cloudMat.setFlashes(flashes);
   }
@@ -805,21 +903,31 @@ export class CloudRainRenderer {
     const d = this.sunDir;
     const az = (Math.atan2(d.x, -d.z) * 180) / Math.PI;
     const el = (Math.asin(Math.min(1, Math.max(-1, d.y))) * 180) / Math.PI;
-    // Use the atmospheric sky state for cloud lighting colors when available.
-    if (this.skyState) {
-      const sunEl = Math.sin(el * Math.PI / 180);
-      const day = Math.min(1, Math.max(0, (el + 8) / 20));
-      const irr = this.skyState.sunIrradiance;
-      const sunCol = this.skyState.sunByHeight;
-      // Approximate sun color from the top-of-atmosphere irradiance scaled by sun elevation.
-      const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(sunEl * (SUN_LEVELS - 1))));
-      this.cloudMat.setSun(az, el);
-      const cm = this.cloudMat.uniforms;
-      (cm.uSunColor as { value: THREE.Vector3 }).value.set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2]).multiplyScalar(1 + day);
-      (cm.uSkyColor as { value: THREE.Vector3 }).value.set(irr[0], irr[1], irr[2]);
-    } else {
-      this.cloudMat.setSun(az, el);
-    }
+    this.cloudMat.setSun(az, el);
+    if (!this.skyState) return;
+    const S = this.skyState.sunIrradiance;
+    const E = this.skyState.skyIrradiance;
+    const adapt = adaptation(luminance(S) + luminance(E));
+    const night = (adapt / ADAPT_MAX) ** 2;
+    const skyGain = SKY_GAIN * adapt;
+    const sunCol = this.skyState.sunByHeight;
+    const sunEl = Math.sin((el * Math.PI) / 180);
+    const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(Math.max(0, sunEl) * (SUN_LEVELS - 1))));
+    const cm = this.cloudMat.uniforms;
+    (cm.uSunColor as { value: THREE.Vector3 }).value
+      .set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2])
+      .multiplyScalar(SUN_GAIN * adapt);
+    (cm.uSkyColor as { value: THREE.Vector3 }).value.set(
+      E[0] / Math.PI * skyGain + NIGHT_SKY[0] * night,
+      E[1] / Math.PI * skyGain + NIGHT_SKY[1] * night,
+      E[2] / Math.PI * skyGain + NIGHT_SKY[2] * night,
+    );
+    const g = this.groundColor;
+    (cm.uGroundColor as { value: THREE.Vector3 }).value.set(
+      g.r * (E[0] / Math.PI * skyGain + NIGHT_GROUND[0] * night),
+      g.g * (E[1] / Math.PI * skyGain + NIGHT_GROUND[1] * night),
+      g.b * (E[2] / Math.PI * skyGain + NIGHT_GROUND[2] * night),
+    );
   }
 
   private applyCloudWind(): void {
@@ -854,6 +962,37 @@ export class CloudRainRenderer {
     }
     this.rebuildKmGrid(sx, sz);
     this.warnedEmpty = false;
+
+    // Initialize ground state and wind textures
+    const nx = grid.nx;
+    const ny = grid.ny;
+    
+    // Ground state texture (water, hail per ground column)
+    this.water = new Float32Array(nx * ny).fill(0);
+    this.hailCover = new Float32Array(nx * ny).fill(0);
+    this.groundState = new THREE.DataTexture(new Uint8Array(nx * ny * 4), nx, ny, THREE.RGBAFormat);
+    this.groundState.magFilter = this.groundState.minFilter = THREE.LinearFilter;
+    this.groundState.wrapS = this.groundState.wrapT = THREE.RepeatWrapping;
+    this.groundState.needsUpdate = true;
+    
+    // Wind texture over the ground
+    this.windTexture = new THREE.DataTexture(new Uint8Array(nx * ny), nx, ny, THREE.RedFormat);
+    this.windTexture.magFilter = this.windTexture.minFilter = THREE.LinearFilter;
+    this.windTexture.wrapS = this.windTexture.wrapT = THREE.RepeatWrapping;
+    this.windTexture.needsUpdate = true;
+    
+    // Ground uniforms — uGroundSize is kilometres (landPattern fields are ~0.8×0.5 km).
+    this.groundUniforms = {
+      uGround: { value: this.groundState },
+      uWind: { value: this.windTexture },
+      uGroundOffset: { value: new THREE.Vector2() },
+      uGroundSize: { value: new THREE.Vector2(sx / 1000, sz / 1000) },
+      uSurface: { value: 0 }, // 0 = grass, 1 = dry, 2 = water, 3 = urban
+    };
+    const skyMat = this.sky.material as THREE.ShaderMaterial;
+    if (skyMat.uniforms.uGroundSize) {
+      (skyMat.uniforms.uGroundSize.value as THREE.Vector2).set(sx / 1000, sz / 1000);
+    }
 
     if (this.volumeMesh) {
       this.cloudScene.remove(this.volumeMesh);
@@ -907,16 +1046,20 @@ export class CloudRainRenderer {
     this.applyTune();
     this.historyValid = false;
 
-    // Initialize MeteoLAB components
+    // Initialize MeteoLAB components (box in metres; light volume shaders use the same).
     this.sharedUniforms = {
       uBoxMin: { value: boxMin },
       uBoxMax: { value: boxMax },
+      uGrid: { value: new THREE.Vector3(disp.nx, disp.ny, disp.nz) },
+      uHeight: { value: height },
       uExtinction: { value: 0.035 },
       uSunDir: { value: this.sunDir.clone() },
     };
 
     // Initialize LightVolume for GPU-based cloud lighting
     this.lightVolume = new LightVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
+    // Force ground material to recompile so it picks up the real light volume texture.
+    (this.ground.material as THREE.MeshStandardMaterial).needsUpdate = true;
 
     // Initialize FlashVolume for GPU-based lightning lighting
     this.flashVolume = new FlashVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
@@ -998,15 +1141,24 @@ export class CloudRainRenderer {
       this.volumeClear = false;
     }
     this.volumeTex.needsUpdate = true;
-    // Wet ground: darken under active rain
-    const wetness = Math.min(1, rainMax / 0.002);
+    // Wet ground via MeteoLAB ground-state texture (water mm in R, hail cover in G).
+    if (this.water && this.groundState && this.groundState.image) {
+      const wetMm = Math.min(GROUND_WATER_MM, (rainMax / 0.002) * GROUND_WATER_MM);
+      const data = this.groundState.image.data as Uint8Array;
+      const n = this.water.length;
+      for (let i = 0; i < n; i++) {
+        // Soft temporal blend toward current rain so wetness persists briefly.
+        this.water[i] = this.water[i] * 0.92 + wetMm * 0.08;
+        data[i * 4] = Math.min(255, (this.water[i] / GROUND_WATER_MM) * 255) | 0;
+        data[i * 4 + 1] = Math.min(255, this.hailCover![i] * 255) | 0;
+        data[i * 4 + 2] = 0;
+        data[i * 4 + 3] = 255;
+      }
+      this.groundState.needsUpdate = true;
+    }
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
-    groundMat.color.setRGB(
-      0.3 - wetness * 0.12,
-      0.55 - wetness * 0.2,
-      0.32 - wetness * 0.12,
-    );
-    groundMat.roughness = 0.95 - wetness * 0.35;
+    groundMat.color.copy(this.groundColor);
+    groundMat.roughness = 0.96;
 
     if (!this.warnedEmpty && !empty) {
       let maxA = 0;
@@ -1162,7 +1314,9 @@ export class CloudRainRenderer {
       this.camera.matrixWorldInverse,
     );
     this.invViewProj.copy(this.currViewProj).invert();
-    this.precipitation.update(performance.now());
+    if (this.precipitation.points.visible) {
+      this.precipitation.update(performance.now());
+    }
 
     // Update MeteoLAB components
     if (this.lightVolume) {
@@ -1270,7 +1424,7 @@ export class CloudRainRenderer {
     for (const bolt of this.liveBolts) {
       if (bolt.kind === "sprite") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
-      if (b.main * bolt.brightness > 0.45) return 0.3;
+      if (b.main * bolt.brightness > 0.25) return 0.12;
     }
     return 0.88;
   }
@@ -1278,15 +1432,11 @@ export class CloudRainRenderer {
   private makeBoltRibbon(): THREE.Mesh {
     const n = this.boltPointCount;
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3),
-    );
-    const index: number[] = [];
-    for (let s = 0; s < n - 1; s++) {
-      const a = s * 2;
-      index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-    }
+    const pos = new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3);
+    pos.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("position", pos);
+    const index = new THREE.BufferAttribute(new Uint16Array((n - 1) * 6), 1);
+    index.setUsage(THREE.DynamicDrawUsage);
     geo.setIndex(index);
     const mat = new THREE.MeshBasicMaterial({
       color: 0xf4f7ff,
@@ -1400,7 +1550,6 @@ export class CloudRainRenderer {
       }
       const t = bolt.age * 1000;
       const b = brightness(bolt.course, bolt.isCg, t);
-      const alpha = b.reveal;
       const pulse = b.main * bolt.brightness;
       const sprite = bolt.kind === "sprite";
       if (sprite) {
@@ -1410,20 +1559,20 @@ export class CloudRainRenderer {
       } else {
         this.boltTint(bolt.x, bolt.y, bolt.z);
         light.color.copy(this.flashTint);
-        const litY = bolt.kind === "cg" ? this.groundY + 700 : bolt.y;
+        const litY = bolt.kind === "cg" ? bolt.y * 0.4 + this.groundY * 0.6 : bolt.y;
         light.position.set(bolt.x, litY, bolt.z);
-      // Day/night scale: night=1, day=0.1, smooth transition
-        const dayScale = Math.max(0.15, 1 - 0.85 * this.sunFrac);
-        light.intensity = 4.5e7 * pulse * dayScale / 20;
+        const dayScale = Math.max(0.35, 1 - 0.55 * this.sunFrac);
+        light.intensity = (bolt.isCg ? 2.4e8 : 1.4e8) * pulse * dayScale;
       }
-      const count = this.fillBoltPoints(bolt, this.boltScratch);
+      const packed = this.fillBoltPoints(bolt, this.boltScratch);
       const pos = ribbon.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const half = bolt.kind === "sprite" ? 90 : 85;
+      const idx = ribbon.geometry.getIndex() as THREE.BufferAttribute;
+      const half = 85;
       const eye = this.camera.position;
-      for (let s = 0; s < count; s++) {
+      for (let s = 0; s < packed.count; s++) {
         const p = this.boltScratch[s];
         const prev = this.boltScratch[Math.max(0, s - 1)];
-        const next = this.boltScratch[Math.min(count - 1, s + 1)];
+        const next = this.boltScratch[Math.min(packed.count - 1, s + 1)];
         this.boltTangent.subVectors(next, prev);
         this.boltToCam.subVectors(eye, p);
         this.boltRight.crossVectors(this.boltTangent, this.boltToCam);
@@ -1435,28 +1584,42 @@ export class CloudRainRenderer {
         pos.setXYZ(s * 2 + 1, p.x - this.boltRight.x, p.y - this.boltRight.y, p.z - this.boltRight.z);
       }
       pos.needsUpdate = true;
-      ribbon.geometry.setDrawRange(0, Math.max(0, (count - 1) * 6));
+      let q = 0;
+      for (const span of packed.spans) {
+        for (let s = 0; s < span.count - 1; s++) {
+          const a = (span.start + s) * 2;
+          idx.setX(q++, a);
+          idx.setX(q++, a + 1);
+          idx.setX(q++, a + 2);
+          idx.setX(q++, a + 1);
+          idx.setX(q++, a + 3);
+          idx.setX(q++, a + 2);
+        }
+      }
+      idx.needsUpdate = true;
+      ribbon.geometry.setDrawRange(0, q);
       const mat = ribbon.material as THREE.MeshBasicMaterial;
-      if (sprite) mat.color.copy(this.spriteTint);
-      else mat.color.copy(this.flashTint);
-      mat.opacity = alpha * (sprite ? 0.7 : 0.9);
-      ribbon.visible = alpha > 0.04 && count >= 2;
+      mat.color.copy(this.flashTint);
+      mat.opacity = Math.min(1, 0.45 + 0.7 * pulse);
+      ribbon.visible = pulse > 0.03 && packed.count >= 2;
     }
-    // Ground flash: brightest active CG bolt drives a 10-25% additive overlay
     let groundPulse = 0;
     for (const bolt of this.liveBolts) {
       if (bolt.kind !== "cg") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
       groundPulse = Math.max(groundPulse, b.main * bolt.brightness);
     }
+    const night = Math.max(0.35, 1 - 0.55 * this.sunFrac);
     if (this.groundFlashMesh) {
       const mat = this.groundFlashMesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = groundPulse * 0.044 / 20 * (1 - 0.9 * this.sunFrac);
-      this.groundFlashMesh.visible = groundPulse > 0.01;
+      mat.opacity = Math.min(0.55, groundPulse * 0.42 * night);
+      this.groundFlashMesh.visible = groundPulse > 0.02;
     }
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.55 * night);
   }
 
-  /** Jagged channel. Writes world points and returns how many. */
+  /** Jagged channel plus side branches. Writes packed world points and span list. */
   private fillBoltPoints(
     bolt: {
       kind: LightningKind;
@@ -1466,55 +1629,65 @@ export class CloudRainRenderer {
       seed: number;
     },
     out: THREE.Vector3[],
-  ): number {
+  ): { count: number; spans: { start: number; count: number }[] } {
     const seed = bolt.seed;
     const cap = Math.min(out.length, this.boltPointCount);
-    if (bolt.kind === "sprite") return 0; // sprites are flash-only, no geometry
-    const steps = Math.min(20, cap - 1);
+    const spans: { start: number; count: number }[] = [];
+    if (bolt.kind === "sprite") return { count: 0, spans };
     const isCg = bolt.kind === "cg";
+    const steps = Math.min(isCg ? 22 : 18, cap - 1);
     const drop = isCg ? Math.max(100, bolt.y - this.groundY) : 0;
-    // Main channel. CGs step down to the ground; ICs crawl horizontally
-    // through the cloud deck near the strike altitude.
     let px = bolt.x;
     let py = bolt.y;
     let pz = bolt.z;
     for (let s = 0; s <= steps; s++) {
       out[s].set(px, isCg && s === steps ? this.groundY + 2 : py, pz);
       if (isCg) {
-        // Larger horizontal jag every ~3 steps (stepped leader) - more variation
-        const jagFreq = s % 3 === 1 ? 320 : 160;
-        const jag = jagFreq * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
+        const jag = (s % 3 === 1 ? 300 : 150) * (0.8 + 0.4 * Math.sin(seed + s * 1.3));
         px += Math.sin(seed + s * 2.17) * jag;
         pz += Math.cos(seed * 1.3 + s) * jag;
         py -= drop / steps;
       } else {
-        // Roughly 4 km wide in-cloud channel with a gentle vertical wander.
         const jag = (s % 3 === 1 ? 340 : 180) * (0.7 + 0.5 * Math.sin(seed + s * 1.9));
         px += Math.sin(seed + s * 2.17) * jag;
         pz += Math.cos(seed * 1.3 + s) * jag;
         py += Math.sin(seed * 0.7 + s * 0.9) * 26;
       }
     }
-    const mainCount = steps + 1;
-    // One branch: splits off at ~40% along, runs 5 steps then fades.
-    const branchStart = Math.floor(steps * 0.4);
-    const branchPt = out[branchStart];
-    const branchSteps = Math.min(6, cap - mainCount - 1);
-    if (branchSteps >= 2 && mainCount + branchSteps < cap) {
-      let bx = branchPt.x;
-      let by = branchPt.y;
-      let bz = branchPt.z;
-      const bSeed = seed + 3.7;
-      const bDrop = (drop / steps) * 1.1;
-      for (let s = 0; s <= branchSteps; s++) {
-        out[mainCount + s].set(bx, by, bz);
-        bx += Math.sin(bSeed + s * 2.1) * (isCg ? 200 : 340);
-        bz += Math.cos(bSeed * 1.8 + s) * (isCg ? 200 : 340);
-        by += isCg ? -bDrop : Math.sin(bSeed + s * 1.5) * 110;
+    let used = steps + 1;
+    spans.push({ start: 0, count: used });
+
+    const forks = isCg
+      ? [
+          { along: 0.28, len: 8, side: 1, drop: 0.9 },
+          { along: 0.46, len: 7, side: -1, drop: 0.75 },
+          { along: 0.64, len: 6, side: 1, drop: 0.55 },
+        ]
+      : [{ along: 0.4, len: 5, side: 1, drop: 0 }];
+    for (let f = 0; f < forks.length; f++) {
+      const fork = forks[f];
+      const from = Math.max(1, Math.min(steps - 2, Math.floor(steps * fork.along)));
+      const n = Math.min(fork.len, cap - used - 1);
+      if (n < 3) break;
+      const origin = out[from];
+      let bx = origin.x;
+      let by = origin.y;
+      let bz = origin.z;
+      const bSeed = seed + 4.1 * (f + 1);
+      const heading = seed * 1.7 + f * 2.2 + fork.side * 0.9;
+      const stepH = isCg ? 210 + f * 40 : 300;
+      const stepV = isCg ? (drop / steps) * fork.drop : 0;
+      const start = used;
+      for (let s = 0; s <= n; s++) {
+        out[used++].set(bx, Math.max(this.groundY + 4, by), bz);
+        const jag = 0.65 + 0.35 * Math.sin(bSeed + s * 1.8);
+        bx += Math.cos(heading + s * 0.18) * stepH * jag * fork.side;
+        bz += Math.sin(heading + s * 0.21) * stepH * jag;
+        by += isCg ? -stepV : Math.sin(bSeed + s * 1.5) * 90;
       }
-      return mainCount + branchSteps + 1;
+      spans.push({ start, count: n + 1 });
     }
-    return mainCount;
+    return { count: used, spans };
   }
 
   /** Close bolts are blue-white. Distant ones shift toward yellow. */
@@ -1619,6 +1792,10 @@ export class CloudRainRenderer {
     this.sceneTarget = null;
     this.sky.geometry.dispose();
     (this.sky.material as THREE.Material).dispose();
+    this.noise.dispose();
+    this.skyTexture?.dispose();
+    this.groundState?.dispose();
+    this.windTexture?.dispose();
     this.blitMesh.geometry.dispose();
     (this.blitMesh.material as THREE.Material).dispose();
     this.sceneBlit.geometry.dispose();
