@@ -332,11 +332,12 @@ label {
 #sf-front-canvas {
   position: static;
   display: block;
-  width: 420px;
+  /* Sized in JS to match #sc-st; CSS keeps layout from blowing out. */
+  width: 100%;
   max-width: 100%;
-  height: 420px;
-  max-height: 420px;
-  aspect-ratio: 1 / 1;
+  height: auto;
+  max-height: min(72vh, 960px);
+  aspect-ratio: 1200 / 1120;
   margin: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -349,10 +350,9 @@ label {
 .fronts-embedded #sf-front-canvas,
 .fronts-below-sounding #sf-front-canvas,
 .synoptic-compact #sf-front-canvas {
-  width: 420px;
+  width: 100%;
   max-width: 100%;
-  height: 420px;
-  max-height: 420px;
+  max-height: min(72vh, 960px);
 }
 
 #sf-front-canvas.drawing {

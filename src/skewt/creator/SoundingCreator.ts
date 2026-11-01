@@ -10,11 +10,13 @@ import {
 import {
   drawHodograph,
   drawSkewT,
+  HODO_HIT_R,
   HODO_SIZE,
   hodoPoint,
   Pf,
   readCreatorCss,
   ST_H,
+  ST_HIT_R,
   ST_W,
   Tp,
   X,
@@ -594,7 +596,7 @@ export class SoundingCreator {
 
   private onStDown(e: PointerEvent): void {
     const [px, py] = this.pos(e, this.stCanvas, ST_W, ST_H);
-    let b = 24;
+    let b = ST_HIT_R;
     let bi: [number, "T" | "Td"] | null = null;
     this.levels.forEach((l, i) => {
       ([["T", l.T], ["Td", l.Td]] as ["T" | "Td", number][]).forEach(
@@ -648,7 +650,7 @@ export class SoundingCreator {
 
   private onHoDown(e: PointerEvent): void {
     const [px, py] = this.pos(e, this.hoCanvas, HODO_SIZE, HODO_SIZE);
-    let b = 26;
+    let b = HODO_HIT_R;
     let bi: number | null = null;
     this.levels.forEach((l, i) => {
       if ((l.z ?? 0) > 12e3) return;

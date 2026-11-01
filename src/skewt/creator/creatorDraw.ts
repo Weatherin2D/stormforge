@@ -95,12 +95,19 @@ function path(
   x.stroke();
 }
 
-/** Profile stroke / handle sizes for the large canvas. */
-const PROFILE_W = 5;
-const PARCEL_W = 2.75;
-const HANDLE_R = 7;
-const HODO_W = 5.5;
-const HODO_R = 7.5;
+/**
+ * Logical stroke sizes chosen so that after CSS shrink (logical ST_W/HODO_SIZE
+ * → displayed width) profiles stay ~6–8px on screen with chunky edit handles.
+ */
+const PROFILE_W = 9;
+const PARCEL_W = 4;
+const HANDLE_R = 12;
+const HODO_W = 9;
+const HODO_R = 12;
+
+/** Hit-test radius in logical canvas coords (Skew-T / hodograph). */
+export const ST_HIT_R = 32;
+export const HODO_HIT_R = 34;
 
 const dot = (
   x: CanvasRenderingContext2D,
@@ -113,8 +120,8 @@ const dot = (
   x.arc(px, py, r, 0, 7);
   x.fillStyle = c;
   x.fill();
-  x.lineWidth = 1.5;
-  x.strokeStyle = "rgba(0,0,0,0.35)";
+  x.lineWidth = 2;
+  x.strokeStyle = "rgba(0,0,0,0.45)";
   x.stroke();
 };
 
@@ -309,7 +316,7 @@ export function drawHodograph(
     x.fillStyle = css.card;
     x.fill();
     x.strokeStyle = col(l.z ?? 0);
-    x.lineWidth = 2.75;
+    x.lineWidth = 3.25;
     x.stroke();
   });
   (
@@ -322,7 +329,7 @@ export function drawHodograph(
     const px = hc + v[0] * sc;
     const py = hc - v[1] * sc;
     x.fillStyle = c;
-    x.fillRect(px - 5, py - 5, 10, 10);
-    x.fillText(n, px + 7, py - 5);
+    x.fillRect(px - 6, py - 6, 12, 12);
+    x.fillText(n, px + 8, py - 5);
   });
 }

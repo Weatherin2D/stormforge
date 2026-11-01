@@ -767,6 +767,15 @@ export function stepColdMicrophysics(
       const jBase = kBase + j * nx;
       for (let i = 0; i < nx; i++) {
         const id = jBase + i;
+        const hydrometeor =
+          f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
+        if (hydrometeor < 1e-10) {
+          // No condensate: only supersaturated clear air needs nucleation.
+          const tk = f.theta[id] * ex;
+          const tc = tk - T0;
+          const qsi = qsatIce(tc, p);
+          if (f.qv[id] <= qsi) continue;
+        }
 
         freezeRain(f.theta, f.qr, f.qg, id, ex);
         settleCrystals(f.qi, f.ni, id);

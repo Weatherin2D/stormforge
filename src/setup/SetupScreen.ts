@@ -258,6 +258,7 @@ export class SetupScreen {
       this.sounding = levels;
     };
     this.root.querySelector("#sf-creator-host")!.appendChild(this.creator.root);
+    this.fronts.resize();
 
     const monthNames = [
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",

@@ -47,6 +47,8 @@ export function stepMicrophysics(
 
         const T = th * ex;
         const qs = Math.max(1e-6, mixingRatio(esatFast(T), p0));
+        // Clear unsaturated air has nothing to convert — skip the rest.
+        if (qc < 1e-10 && qr < 1e-10 && qv <= qs) continue;
         const excess = qv - qs;
 
         // Condensation grows cloud whenever supersaturated.

@@ -299,6 +299,16 @@ export class SynopticEditor {
 
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(this.canvas);
+    this.ro.observe(this.root);
+    // Match the Skew-T when it resizes (same visual footprint).
+    const st = () => document.querySelector("#sc-st");
+    const bindSt = () => {
+      const el = st();
+      if (el && this.ro) this.ro.observe(el);
+    };
+    bindSt();
+    // Creator mounts slightly later on setup / drawer open.
+    Promise.resolve().then(bindSt);
     if (opts.setup) this.setup = cloneSynoptic(opts.setup);
     this.renderList();
     this.syncSelectionUi();
@@ -360,6 +370,8 @@ export class SynopticEditor {
   }
 
   resize(): void {
+    const st = document.querySelector("#sc-st");
+    if (st && this.ro) this.ro.observe(st);
     this.draw();
   }
 
@@ -549,9 +561,26 @@ export class SynopticEditor {
     this.notify();
   }
 
+  /** Match the on-screen Skew-T box; fall back to ST aspect in the host width. */
+  private frontCssSize(): { cssW: number; cssH: number } {
+    const st = document.querySelector("#sc-st") as HTMLCanvasElement | null;
+    if (st && st.clientWidth > 40 && st.clientHeight > 40) {
+      return { cssW: Math.round(st.clientWidth), cssH: Math.round(st.clientHeight) };
+    }
+    const parentW = Math.max(
+      1,
+      this.canvas.parentElement?.clientWidth || this.root.clientWidth || 640,
+    );
+    // Same logical aspect as creatorDraw ST_W/ST_H (1200×1120).
+    const cssW = Math.round(Math.min(parentW, 1200));
+    const cssH = Math.round(cssW * (1120 / 1200));
+    return { cssW, cssH };
+  }
+
   private draw(): void {
-    const cssW = Math.max(1, this.canvas.clientWidth);
-    const cssH = Math.max(1, this.canvas.clientHeight);
+    const { cssW, cssH } = this.frontCssSize();
+    this.canvas.style.width = `${cssW}px`;
+    this.canvas.style.height = `${cssH}px`;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.floor(cssW * dpr);
     const h = Math.floor(cssH * dpr);
