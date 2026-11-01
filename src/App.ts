@@ -154,11 +154,11 @@ export class App {
                   Simulation speed
                   <select id="sim-speed">
                     <option value="1">Realtime</option>
-                    <option value="5">5ï¿½</option>
-                    <option value="15">15ï¿½</option>
-                    <option value="40" selected>40ï¿½</option>
-                    <option value="75">75ï¿½</option>
-                    <option value="100">100ï¿½</option>
+                    <option value="5">5×</option>
+                    <option value="15">15×</option>
+                    <option value="40" selected>40×</option>
+                    <option value="75">75×</option>
+                    <option value="100">100×</option>
                   </select>
                 </label>
                 <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
@@ -1410,8 +1410,13 @@ export class App {
         ?.value ?? "";
 
     const simSpeedRaw = this.simSpeed;
-    const simSpeed: 1 | 5 | 15 | 40 =
-      simSpeedRaw === 1 || simSpeedRaw === 5 || simSpeedRaw === 15 || simSpeedRaw === 40
+    const simSpeed: 1 | 5 | 15 | 40 | 75 | 100 =
+      simSpeedRaw === 1 ||
+      simSpeedRaw === 5 ||
+      simSpeedRaw === 15 ||
+      simSpeedRaw === 40 ||
+      simSpeedRaw === 75 ||
+      simSpeedRaw === 100
         ? simSpeedRaw
         : 40;
 
@@ -1884,13 +1889,17 @@ export class App {
       return;
     }
 
-    const wall = Math.min(0.05, Math.max(0, dtMs) / 1000);
+    // Count real frame time so a slow rAF still pays the chosen speed.
+    // Cap a single hitch so a tab wake-up does not dump minutes of sim.
+    const wall = Math.min(0.25, Math.max(0, dtMs) / 1000);
     if (this.solver && !this.paused) {
       this.liveDebt += wall;
       const live = this.ensureLive();
-      // Steps longer than about 2 s drop the cloud field, so the catch-up
-      // timestep stays inside that limit. A 50 ms step then still reaches 40ï¿½.
-      const simDt = Math.min(2, this.liveDebt * this.simSpeed);
+      // One physics chunk stays at 2 s (clouds wash out above that). The
+      // worker splits a larger catch-up into those chunks so 75× / 100×
+      // can run faster than 40×.
+      const MAX_CATCHUP = 10;
+      const simDt = Math.min(MAX_CATCHUP, this.liveDebt * this.simSpeed);
       const now = performance.now();
       const wantVolume =
         this.showClouds && !this.showRadar2d && now - this.liveVolumeAsk >= 50;
@@ -1906,7 +1915,7 @@ export class App {
         simDt >= 1e-4 &&
         live.step({
           dt: simDt,
-          wall,
+          wall: simDt / Math.max(this.simSpeed, 1),
           lightning: true,
           wantVolume,
           map,
@@ -1920,7 +1929,8 @@ export class App {
           wantVortex: this.showVortex && !this.showRadar2d,
         })
       ) {
-        this.liveDebt = 0;
+        this.liveDebt -= simDt / Math.max(this.simSpeed, 1);
+        if (this.liveDebt < 1e-4) this.liveDebt = 0;
         if (wantVolume) this.liveVolumeAsk = now;
       }
     }

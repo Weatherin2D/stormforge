@@ -23,7 +23,7 @@ export interface SavedView {
   /** Rain/snow particles. Absent in older saves means on. */
   showDroplets?: boolean;
   mapProduct: MapProductId;
-  simSpeed: 1 | 5 | 15 | 40;
+  simSpeed: 1 | 5 | 15 | 40 | 75 | 100;
   cloudLookPreset: string;
   cloudTune: {
     gain: number;

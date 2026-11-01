@@ -157,7 +157,14 @@ self.onmessage = (ev: MessageEvent) => {
     solver.setSynoptic(msg.setup);
     return;
   }
-  solver.step(msg.dt);
+  // Chunks of 2 s keep the cloud field intact; several chunks in one
+  // message let 40×–100× actually outrun a 2 s wall-time cap.
+  let left = Math.max(0, msg.dt);
+  while (left > 1e-6) {
+    const h = Math.min(2, left);
+    solver.step(h);
+    left -= h;
+  }
   const strikes = msg.lightning ? solver.rollLightning(msg.wall) : [];
   let volume: Uint8Array | null = null;
   if (msg.wantVolume) {
