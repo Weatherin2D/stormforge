@@ -176,76 +176,87 @@ function legendFromStops(stops: RgbaStop[], min: number, max: number): string {
 }
 
 /**
- * NWS classic reflectivity (MeteoLAB z-nws / GRLevelX BR), 5–75 dBZ.
- * Cyan → blue → green → yellow → orange → red → magenta → white.
+ * RadarScope standard reflectivity (WxTools / GRLevelX Color table), 5–80 dBZ.
  */
 const REFL_STOPS: RgbaStop[] = [
-  [5, 4, 233, 231],
-  [10, 1, 159, 244],
-  [15, 3, 0, 244],
-  [20, 2, 253, 2],
-  [25, 1, 197, 1],
-  [30, 0, 142, 0],
-  [35, 253, 248, 2],
-  [40, 229, 188, 0],
-  [45, 253, 149, 0],
-  [50, 253, 0, 0],
-  [55, 212, 0, 0],
-  [60, 188, 0, 0],
-  [65, 248, 0, 253],
-  [70, 152, 84, 198],
-  [75, 253, 253, 253],
+  [5, 29, 37, 60],
+  [17.5, 89, 155, 171],
+  [22.5, 33, 186, 72],
+  [32.5, 5, 101, 1],
+  [37.5, 251, 252, 0],
+  [42.5, 253, 149, 2],
+  [50, 253, 38, 0],
+  [60, 193, 148, 179],
+  [70, 165, 2, 215],
+  [75, 135, 255, 253],
+  [80, 173, 99, 64],
 ];
 
 /**
- * MeteoLAB / NWS-style radial velocity: inbound green, outbound red,
- * near-zero grey (couplet readable).
+ * Pivotal-style radial velocity: cool inbound, warm outbound, grey near zero.
  */
 const VEL_STOPS: RgbaStop[] = [
-  [-40, 0, 255, 166],
-  [-30, 0, 200, 90],
-  [-20, 0, 140, 55],
-  [-10, 0, 85, 33],
-  [-5, 61, 79, 66],
-  [0, 90, 70, 70],
-  [5, 112, 31, 31],
-  [10, 140, 36, 36],
-  [20, 200, 52, 52],
-  [30, 255, 96, 96],
-  [40, 255, 160, 160],
+  [-40, 20, 140, 90],
+  [-30, 40, 190, 130],
+  [-20, 90, 220, 180],
+  [-10, 150, 230, 210],
+  [-3, 120, 130, 130],
+  [0, 150, 150, 150],
+  [3, 160, 120, 120],
+  [10, 220, 90, 80],
+  [20, 220, 40, 50],
+  [30, 183, 3, 39],
+  [40, 250, 176, 92],
 ];
 
-/** Pivotal-style surface temperature, −15°C to 40°C. */
+/** Pivotal Weather 2 m temperature, −30°C to 45°C. */
 const TEMP_STOPS: RgbaStop[] = [
-  [-15, 110, 0, 170],
-  [-5, 20, 40, 200],
-  [5, 0, 190, 220],
-  [12, 40, 180, 50],
-  [20, 250, 230, 40],
-  [28, 255, 140, 0],
-  [35, 220, 20, 20],
-  [40, 120, 0, 0],
+  [-30, 116, 169, 176],
+  [-20, 163, 190, 216],
+  [-10, 151, 149, 196],
+  [-2, 139, 97, 187],
+  [5, 35, 85, 166],
+  [10, 56, 92, 89],
+  [14, 122, 150, 124],
+  [18, 169, 175, 126],
+  [22, 248, 238, 162],
+  [26, 201, 163, 111],
+  [30, 146, 103, 71],
+  [34, 131, 50, 34],
+  [38, 89, 11, 11],
+  [45, 142, 92, 82],
 ];
 
-/** Pivotal-style dewpoint: brown when dry, dark green when moist. */
+/** Pivotal Weather dewpoint: brown dry → cream → green → teal → purple. */
 const DEW_STOPS: RgbaStop[] = [
-  [-5, 120, 70, 30],
-  [2, 190, 150, 80],
-  [10, 230, 210, 60],
-  [16, 140, 200, 60],
-  [22, 0, 150, 40],
-  [28, 0, 80, 40],
+  [-10, 113, 85, 62],
+  [-4, 85, 69, 54],
+  [2, 103, 94, 77],
+  [8, 150, 143, 123],
+  [12, 197, 193, 169],
+  [16, 200, 234, 200],
+  [18, 140, 212, 140],
+  [20, 95, 196, 95],
+  [22, 35, 142, 35],
+  [24, 62, 110, 116],
+  [26, 96, 94, 148],
+  [28, 125, 75, 117],
 ];
 
-/** Pivotal-style CAPE. The legend holds the dark floor from 0 to 100 J/kg. */
+/** Pivotal Weather CAPE. Dark floor below ~100 J/kg. */
 const CAPE_STOPS: RgbaStop[] = [
-  [100, 255, 255, 190],
-  [500, 255, 230, 40],
-  [1000, 255, 200, 0],
-  [2000, 255, 110, 0],
-  [3000, 210, 20, 20],
-  [4000, 180, 0, 120],
-  [5000, 100, 0, 160],
+  [100, 105, 105, 105],
+  [250, 67, 96, 117],
+  [500, 117, 148, 162],
+  [1000, 167, 200, 206],
+  [1500, 232, 209, 134],
+  [2000, 229, 160, 68],
+  [2500, 226, 123, 18],
+  [3000, 220, 65, 16],
+  [3500, 184, 40, 44],
+  [4000, 148, 15, 73],
+  [4500, 115, 8, 138],
+  [5000, 195, 121, 210],
 ];
 const CAPE_LEGEND: RgbaStop[] = [
   [0, 10, 16, 28],
@@ -253,231 +264,253 @@ const CAPE_LEGEND: RgbaStop[] = [
   ...CAPE_STOPS,
 ];
 
+/** Pivotal Weather simulated IR (cold tops enhanced). */
 const IR_STOPS: RgbaStop[] = [
-  [-90, 180, 0, 220],
-  [-80, 128, 128, 128],
-  [-70, 80, 0, 0],
-  [-60, 255, 0, 0],
-  [-50, 255, 140, 0],
-  [-40, 255, 255, 0],
-  [-30, 180, 255, 0],
-  [-20, 0, 200, 0],
-  [0, 0, 0, 180],
-  [20, 0, 80, 255],
-  [40, 0, 255, 255],
+  [-90, 233, 245, 245],
+  [-80, 192, 208, 233],
+  [-70, 128, 165, 210],
+  [-60, 43, 108, 179],
+  [-50, 44, 64, 150],
+  [-40, 118, 43, 165],
+  [-30, 124, 29, 94],
+  [-20, 250, 48, 36],
+  [-10, 171, 84, 20],
+  [0, 255, 176, 25],
+  [10, 239, 203, 1],
+  [20, 112, 125, 123],
+  [40, 167, 190, 188],
 ];
 
-/** Low-level relative humidity: dry brown → saturated green/blue. */
+/** Pivotal Weather relative humidity: dry brown → saturated green. */
 const RH_STOPS: RgbaStop[] = [
-  [0, 120, 78, 34],
-  [25, 168, 138, 66],
-  [45, 216, 206, 84],
-  [65, 96, 190, 92],
-  [80, 24, 150, 74],
-  [100, 40, 96, 190],
+  [0, 100, 74, 55],
+  [15, 77, 69, 58],
+  [30, 138, 128, 116],
+  [45, 188, 177, 163],
+  [55, 196, 212, 189],
+  [65, 146, 170, 148],
+  [75, 114, 155, 130],
+  [85, 69, 123, 97],
+  [95, 24, 91, 65],
+  [100, 0, 74, 47],
 ];
 
-/** Equivalent potential temperature, 300–380 K. */
+/** Pivotal Weather theta-e (same family as dewpoint / moisture). */
 const THETAE_STOPS: RgbaStop[] = [
-  [300, 60, 40, 140],
-  [312, 40, 90, 210],
-  [324, 40, 180, 200],
-  [334, 60, 200, 96],
-  [344, 226, 220, 60],
-  [356, 250, 150, 32],
-  [368, 226, 48, 40],
-  [380, 170, 30, 110],
+  [300, 136, 100, 72],
+  [310, 105, 83, 63],
+  [318, 149, 142, 122],
+  [326, 203, 199, 175],
+  [334, 230, 228, 202],
+  [342, 200, 234, 200],
+  [350, 140, 212, 140],
+  [358, 48, 174, 48],
+  [366, 45, 84, 87],
+  [374, 83, 78, 136],
+  [380, 120, 69, 115],
 ];
 
-/** LCL height, 0–4000 m. */
+/** Pivotal Weather LCL height, 0–4000 m (CAPE-family ramp). */
 const LCL_STOPS: RgbaStop[] = [
-  [0, 24, 36, 56],
-  [400, 64, 116, 190],
-  [900, 60, 190, 190],
-  [1500, 80, 200, 90],
-  [2400, 236, 214, 60],
-  [3200, 244, 144, 40],
-  [4000, 200, 44, 44],
+  [0, 150, 150, 150],
+  [400, 67, 96, 117],
+  [800, 142, 174, 184],
+  [1200, 232, 209, 134],
+  [1600, 229, 160, 68],
+  [2000, 226, 123, 18],
+  [2500, 220, 65, 16],
+  [3000, 184, 40, 44],
+  [3500, 115, 8, 138],
+  [4000, 195, 121, 210],
 ];
 
-/** Precipitable water, 0–70 mm. */
+/** Pivotal Weather precipitable water, 0–70 mm. */
 const PWAT_STOPS: RgbaStop[] = [
-  [0, 20, 30, 48],
-  [8, 44, 92, 170],
-  [18, 40, 160, 190],
-  [30, 70, 190, 100],
-  [42, 232, 214, 60],
-  [54, 244, 142, 40],
-  [70, 210, 52, 160],
+  [0, 115, 107, 82],
+  [8, 194, 190, 166],
+  [15, 165, 212, 165],
+  [22, 106, 162, 106],
+  [30, 8, 78, 8],
+  [38, 88, 150, 160],
+  [45, 45, 84, 87],
+  [52, 89, 87, 136],
+  [58, 70, 62, 124],
+  [64, 125, 76, 117],
+  [70, 233, 213, 192],
 ];
 
-/** Bulk shear, 0–60 m/s. */
+/** Pivotal Weather bulk shear / wind speed, 0–40 m/s (~0–80 kt). */
 const SHEAR_STOPS: RgbaStop[] = [
-  [0, 24, 36, 56],
-  [8, 48, 110, 190],
-  [16, 44, 180, 190],
-  [25, 70, 196, 100],
-  [35, 236, 214, 60],
-  [45, 244, 120, 40],
-  [55, 214, 44, 120],
-  [60, 255, 255, 255],
+  [0, 177, 223, 252],
+  [5, 146, 210, 251],
+  [10, 126, 171, 237],
+  [15, 143, 108, 210],
+  [20, 221, 132, 211],
+  [24, 188, 69, 178],
+  [28, 183, 3, 39],
+  [32, 220, 40, 60],
+  [36, 246, 176, 92],
+  [40, 250, 240, 100],
 ];
 
-/** Column-max updraft, 0–35 m/s. */
+/** Column-max updraft — Pivotal shear-family ramp, 0–40 m/s. */
 const WMAX_STOPS: RgbaStop[] = [
-  [0, 24, 36, 56],
-  [2, 46, 92, 180],
-  [5, 40, 160, 200],
-  [9, 70, 196, 110],
-  [15, 236, 216, 70],
-  [23, 244, 132, 36],
-  [35, 220, 40, 60],
+  [0, 177, 223, 252],
+  [4, 126, 171, 237],
+  [8, 143, 108, 210],
+  [14, 221, 132, 211],
+  [20, 183, 3, 39],
+  [28, 246, 176, 92],
+  [40, 250, 240, 100],
 ];
 
-/** Cloud-top / echo-top height, 0–15 km. */
+/** Cloud-top / echo-top height — Pivotal CAPE-family, 0–15 km. */
 const TOP_STOPS: RgbaStop[] = [
-  [0, 24, 36, 56],
-  [2000, 52, 92, 190],
-  [4000, 48, 168, 200],
-  [6000, 66, 196, 108],
-  [8000, 226, 214, 66],
-  [10000, 244, 140, 40],
-  [13000, 214, 44, 120],
-  [15000, 255, 230, 255],
+  [0, 150, 150, 150],
+  [2000, 67, 96, 117],
+  [4000, 167, 200, 206],
+  [6000, 232, 209, 134],
+  [8000, 226, 123, 18],
+  [10000, 220, 65, 16],
+  [12000, 148, 15, 73],
+  [15000, 195, 121, 210],
 ];
 
-/** Cloud fraction, 0–100 %. */
+/** Pivotal Weather cloud cover, 0–100 %. */
 const CFR_STOPS: RgbaStop[] = [
-  [0, 22, 32, 48],
-  [15, 60, 84, 116],
-  [35, 120, 148, 180],
-  [55, 182, 202, 222],
-  [75, 226, 236, 246],
-  [100, 255, 255, 255],
+  [0, 243, 243, 241],
+  [20, 219, 218, 214],
+  [35, 183, 182, 181],
+  [50, 142, 141, 146],
+  [65, 89, 97, 111],
+  [80, 43, 66, 93],
+  [90, 14, 73, 131],
+  [100, 49, 140, 206],
 ];
 
-/** Cloud liquid water content, 0–6 g/kg. */
+/** Cloud liquid water — Pivotal precip-family. */
 const CLWC_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.3, 44, 92, 180],
-  [0.8, 40, 160, 200],
-  [1.5, 70, 196, 110],
-  [2.5, 236, 216, 70],
-  [4, 244, 132, 36],
-  [6, 220, 40, 60],
+  [0.3, 106, 162, 106],
+  [0.8, 232, 209, 134],
+  [1.5, 226, 123, 18],
+  [2.5, 220, 65, 16],
+  [4, 148, 15, 73],
+  [6, 195, 121, 210],
 ];
 
-/** Liquid water path, 0–1200 g/m². */
+/** Liquid water path — Pivotal precip-family. */
 const LWP_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [60, 44, 92, 180],
-  [180, 40, 160, 200],
-  [380, 70, 196, 110],
-  [650, 236, 216, 70],
-  [900, 244, 132, 36],
-  [1200, 232, 232, 255],
+  [60, 106, 162, 106],
+  [180, 232, 209, 134],
+  [380, 226, 123, 18],
+  [650, 220, 65, 16],
+  [900, 148, 15, 73],
+  [1200, 233, 213, 192],
 ];
 
-/** Vertically integrated liquid, 0–75 kg/m². */
-/** MeteoLAB-style VIL (kg/m²). */
+/** Pivotal-style VIL (kg/m²). */
 const VIL_STOPS: RgbaStop[] = [
-  [5, 59, 110, 150],
-  [10, 47, 158, 92],
-  [20, 227, 214, 58],
-  [35, 239, 140, 31],
-  [50, 215, 48, 31],
-  [65, 197, 27, 138],
-  [80, 255, 255, 255],
+  [5, 106, 162, 106],
+  [10, 232, 209, 134],
+  [20, 226, 123, 18],
+  [35, 220, 65, 16],
+  [50, 148, 15, 73],
+  [65, 195, 121, 210],
+  [80, 233, 213, 192],
 ];
 
-/** Surface precipitation rate, 0–60 mm/h. */
+/** Pivotal Weather QPF / precip rate family. */
 const PRECIP_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.5, 30, 78, 120],
-  [2, 40, 150, 170],
-  [6, 60, 190, 110],
-  [12, 236, 216, 70],
-  [25, 244, 132, 36],
-  [40, 220, 40, 60],
-  [60, 200, 90, 220],
+  [0.5, 165, 212, 165],
+  [2, 106, 162, 106],
+  [6, 232, 209, 134],
+  [12, 226, 123, 18],
+  [25, 220, 65, 16],
+  [40, 148, 15, 73],
+  [60, 195, 121, 210],
 ];
 
-/** Storm-total accumulation, 0–100 mm. */
+/** Storm-total accumulation — Pivotal QPF family. */
 const ACCUM_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [2, 32, 84, 130],
-  [8, 40, 156, 176],
-  [20, 70, 196, 110],
-  [40, 238, 216, 70],
-  [65, 244, 128, 36],
-  [100, 210, 50, 190],
+  [2, 165, 212, 165],
+  [8, 106, 162, 106],
+  [20, 232, 209, 134],
+  [40, 226, 123, 18],
+  [65, 220, 65, 16],
+  [100, 148, 15, 73],
 ];
 
-/** Graupel mixing ratio, 0–3 g/kg. */
+/** Graupel mixing ratio — Pivotal precip-family. */
 const GRAUPEL_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.1, 54, 88, 150],
-  [0.4, 60, 160, 190],
-  [0.9, 80, 200, 120],
-  [1.5, 236, 216, 70],
-  [2.2, 244, 132, 36],
-  [3, 240, 220, 255],
+  [0.1, 106, 162, 106],
+  [0.4, 232, 209, 134],
+  [0.9, 226, 123, 18],
+  [1.5, 220, 65, 16],
+  [2.2, 148, 15, 73],
+  [3, 195, 121, 210],
 ];
 
-/** Snow + cloud ice mixing ratio, 0–6 g/kg. */
+/** Snow + cloud ice — cool Pivotal moisture ramp. */
 const SNOW_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.2, 58, 92, 158],
-  [0.8, 78, 156, 206],
-  [1.8, 140, 198, 226],
-  [3.2, 214, 230, 240],
-  [6, 255, 255, 255],
+  [0.2, 167, 200, 206],
+  [0.8, 128, 165, 210],
+  [1.8, 96, 94, 148],
+  [3.2, 195, 121, 210],
+  [6, 233, 245, 245],
 ];
 
-/** Hail diameter, 0–80 mm. */
+/** Hail diameter — Pivotal severe ramp. */
 const HAIL_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [5, 40, 120, 170],
-  [12, 60, 190, 140],
-  [25, 236, 216, 70],
-  [40, 244, 120, 36],
-  [60, 214, 40, 70],
-  [80, 255, 230, 255],
+  [5, 167, 200, 206],
+  [12, 232, 209, 134],
+  [25, 226, 123, 18],
+  [40, 220, 65, 16],
+  [60, 148, 15, 73],
+  [80, 195, 121, 210],
 ];
 
-/** Mean sea-level pressure, 980–1040 hPa. */
+/** Pivotal Weather MSLP, 980–1040 hPa. */
 const MSLP_STOPS: RgbaStop[] = [
-  [980, 60, 40, 170],
-  [995, 60, 110, 220],
-  [1005, 130, 190, 230],
-  [1013, 236, 236, 240],
-  [1021, 250, 210, 130],
-  [1030, 240, 140, 60],
-  [1040, 190, 50, 50],
+  [980, 44, 64, 150],
+  [990, 43, 108, 179],
+  [1000, 128, 165, 210],
+  [1010, 233, 245, 245],
+  [1016, 248, 238, 162],
+  [1024, 226, 123, 18],
+  [1032, 220, 65, 16],
+  [1040, 148, 15, 73],
 ];
 
-/** Updraft helicity, 0–300 m²/s². */
+/** Updraft helicity — Pivotal CAPE-family, 0–300 m²/s². */
 const UH_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [25, 44, 92, 180],
-  [75, 40, 168, 200],
-  [150, 70, 196, 110],
-  [220, 236, 216, 70],
-  [270, 244, 120, 40],
-  [300, 220, 40, 60],
+  [25, 67, 96, 117],
+  [75, 167, 200, 206],
+  [125, 232, 209, 134],
+  [175, 226, 123, 18],
+  [225, 220, 65, 16],
+  [275, 148, 15, 73],
+  [300, 195, 121, 210],
 ];
 
 /** Meteorological wind direction, circular 0–360°. */
 const WDIR_STOPS: RgbaStop[] = [
-  [0, 230, 90, 70],
-  [45, 230, 170, 70],
-  [90, 90, 200, 90],
-  [135, 70, 200, 190],
-  [180, 70, 130, 230],
-  [225, 140, 100, 220],
-  [270, 230, 190, 80],
-  [315, 230, 110, 140],
-  [360, 230, 90, 70],
+  [0, 220, 65, 16],
+  [45, 226, 123, 18],
+  [90, 232, 209, 134],
+  [135, 106, 162, 106],
+  [180, 67, 96, 117],
+  [225, 143, 108, 210],
+  [270, 221, 132, 211],
+  [315, 183, 3, 39],
+  [360, 220, 65, 16],
 ];
 
 /** Compact metadata builder for the derived-scalar products. */
@@ -506,9 +539,9 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "refl",
     title: "Column-max reflectivity",
     units: "dBZ",
-    legendCss: legendFromStops(REFL_STOPS, 5, 75),
-    ticks: ["5", "20", "35", "50", "65", "75"],
-    scale: { min: 5, max: 75, values: [5, 20, 35, 50, 65, 75] },
+    legendCss: legendFromStops(REFL_STOPS, 5, 80),
+    ticks: ["5", "20", "35", "50", "65", "80"],
+    scale: { min: 5, max: 80, values: [5, 20, 35, 50, 65, 80] },
   },
   doppler: {
     id: "doppler",
@@ -530,48 +563,64 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "cin",
     title: "Surface-based CIN",
     units: "J/kg",
-    legendCss:
-      "linear-gradient(90deg,#1a2030 0%,#5078b4 35%,#2850c8 70%,#7828b4 100%)",
-    ticks: ["0", "50", "150", "300"],
+    legendCss: legendFromStops(
+      [
+        [0, 10, 16, 28],
+        [50, 67, 96, 117],
+        [100, 167, 200, 206],
+        [200, 232, 209, 134],
+        [300, 220, 65, 16],
+        [400, 115, 8, 138],
+      ],
+      0,
+      400,
+    ),
+    ticks: ["0", "50", "150", "300", "400"],
   },
   tsfc: {
     id: "tsfc",
     title: "Surface temperature",
     units: "°C",
-    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
-    ticks: ["-15", "0", "15", "30", "40"],
-    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+    legendCss: legendFromStops(TEMP_STOPS, -30, 45),
+    ticks: ["-30", "-15", "0", "15", "30", "45"],
+    scale: { min: -30, max: 45, values: [-30, -15, 0, 15, 30, 45] },
   },
   td: {
     id: "td",
     title: "Surface dewpoint",
     units: "°C",
-    legendCss: legendFromStops(DEW_STOPS, -5, 28),
-    ticks: ["-5", "5", "15", "22", "28"],
-    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+    legendCss: legendFromStops(DEW_STOPS, -10, 28),
+    ticks: ["-10", "0", "10", "20", "28"],
+    scale: { min: -10, max: 28, values: [-10, 0, 10, 20, 28] },
   },
   wspd: {
     id: "wspd",
     title: "Surface wind speed",
     units: "m/s",
-    legendCss:
-      "linear-gradient(90deg,#1a2030 0%,#3cb46a 30%,#ffe060 65%,#ffffff 100%)",
-    ticks: ["0", "10", "20", "40"],
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
   },
   psfc: {
     id: "psfc",
     title: "Surface pressure",
     units: "hPa",
-    legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+    legendCss: legendFromStops(MSLP_STOPS, 980, 1040),
     ticks: ["-12", "0", "+12"],
   },
   ltg: {
     id: "ltg",
     title: "Lightning hotspots",
     units: "/min",
-    legendCss:
-      "linear-gradient(90deg,#1a1428 0%,#c87820 40%,#ffe060 70%,#ffffff 100%)",
+    legendCss: legendFromStops(
+      [
+        [0, 10, 16, 28],
+        [5, 226, 123, 18],
+        [15, 220, 65, 16],
+        [30, 233, 213, 192],
+      ],
+      0,
+      30,
+    ),
     ticks: ["0", "5", "15", "30"],
   },
   vis: {
@@ -658,25 +707,25 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "t850",
     title: "850 hPa temperature",
     units: "°C",
-    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
-    ticks: ["-15", "0", "15", "30", "40"],
-    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+    legendCss: legendFromStops(TEMP_STOPS, -30, 45),
+    ticks: ["-30", "-15", "0", "15", "30", "45"],
+    scale: { min: -30, max: 45, values: [-30, -15, 0, 15, 30, 45] },
   },
   td850: {
     id: "td850",
     title: "850 hPa dewpoint",
     units: "°C",
-    legendCss: legendFromStops(DEW_STOPS, -5, 28),
-    ticks: ["-5", "5", "15", "22", "28"],
-    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+    legendCss: legendFromStops(DEW_STOPS, -10, 28),
+    ticks: ["-10", "0", "10", "20", "28"],
+    scale: { min: -10, max: 28, values: [-10, 0, 10, 20, 28] },
   },
   w850: {
     id: "w850",
     title: "850 hPa wind speed",
     units: "m/s",
-    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
-    ticks: ["0", "15", "30", "45", "60"],
-    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
+    scale: { min: 0, max: 40, values: [0, 10, 20, 30, 40] },
   },
   wdir: {
     id: "wdir",
@@ -690,32 +739,32 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "wmax",
     title: "Column-max updraft",
     units: "m/s",
-    legendCss: legendFromStops(WMAX_STOPS, 0, 35),
-    ticks: ["0", "5", "10", "20", "35"],
-    scale: { min: 0, max: 35, values: [0, 5, 10, 20, 35] },
+    legendCss: legendFromStops(WMAX_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
+    scale: { min: 0, max: 40, values: [0, 10, 20, 30, 40] },
   },
   w3k: {
     id: "w3k",
     title: "3 km vertical velocity",
     units: "m/s",
     legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 35%,#b8b8b8 50%,#ffb0a0 65%,#ff2020 100%)",
+      "linear-gradient(90deg,#2b6cb3 0%,#a0c0ff 35%,#eeeeee 50%,#f89c84 65%,#dc283c 100%)",
     ticks: ["-15", "-5", "0", "+5", "+15"],
   },
   shear06: {
     id: "shear06",
     title: "0–6 km bulk shear",
     units: "m/s",
-    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
-    ticks: ["0", "15", "30", "45", "60"],
-    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
+    scale: { min: 0, max: 40, values: [0, 10, 20, 30, 40] },
   },
   conv: {
     id: "conv",
     title: "Surface wind convergence",
     units: "10⁻⁴ s⁻¹",
     legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+      "linear-gradient(90deg,#2b6cb3 0%,#a0c0ff 40%,#eeeeee 50%,#f89c84 60%,#dc283c 100%)",
     ticks: ["-20", "0", "+20"],
   },
   vort: {
@@ -723,7 +772,7 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     title: "Surface relative vorticity",
     units: "10⁻⁴ s⁻¹",
     legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+      "linear-gradient(90deg,#2b6cb3 0%,#a0c0ff 40%,#eeeeee 50%,#f89c84 60%,#dc283c 100%)",
     ticks: ["-20", "0", "+20"],
   },
   mconv: {
@@ -731,7 +780,7 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     title: "Surface moisture convergence",
     units: "10⁻⁶ kg kg⁻¹ s⁻¹",
     legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+      "linear-gradient(90deg,#2b6cb3 0%,#a0c0ff 40%,#eeeeee 50%,#f89c84 60%,#dc283c 100%)",
     ticks: ["-20", "0", "+20"],
   },
   uh25: {
@@ -786,9 +835,9 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "refl1k",
     title: "1 km reflectivity",
     units: "dBZ",
-    legendCss: legendFromStops(REFL_STOPS, 5, 75),
-    ticks: ["5", "20", "35", "50", "65", "75"],
-    scale: { min: 5, max: 75, values: [5, 20, 35, 50, 65, 75] },
+    legendCss: legendFromStops(REFL_STOPS, 5, 80),
+    ticks: ["5", "20", "35", "50", "65", "80"],
+    scale: { min: 5, max: 80, values: [5, 20, 35, 50, 65, 80] },
   },
   echotop: {
     id: "echotop",
@@ -810,72 +859,72 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
     id: "t925",
     title: "925 hPa temperature",
     units: "°C",
-    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
-    ticks: ["-15", "0", "15", "30", "40"],
-    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+    legendCss: legendFromStops(TEMP_STOPS, -30, 45),
+    ticks: ["-30", "-15", "0", "15", "30", "45"],
+    scale: { min: -30, max: 45, values: [-30, -15, 0, 15, 30, 45] },
   },
   t700: {
     id: "t700",
     title: "700 hPa temperature",
     units: "°C",
-    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
-    ticks: ["-15", "0", "15", "30", "40"],
-    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+    legendCss: legendFromStops(TEMP_STOPS, -30, 45),
+    ticks: ["-30", "-15", "0", "15", "30", "45"],
+    scale: { min: -30, max: 45, values: [-30, -15, 0, 15, 30, 45] },
   },
   t500: {
     id: "t500",
     title: "500 hPa temperature",
     units: "°C",
-    legendCss: legendFromStops(TEMP_STOPS, -15, 40),
-    ticks: ["-15", "0", "15", "30", "40"],
-    scale: { min: -15, max: 40, values: [-15, 0, 15, 30, 40] },
+    legendCss: legendFromStops(TEMP_STOPS, -30, 45),
+    ticks: ["-30", "-15", "0", "15", "30", "45"],
+    scale: { min: -30, max: 45, values: [-30, -15, 0, 15, 30, 45] },
   },
   td925: {
     id: "td925",
     title: "925 hPa dewpoint",
     units: "°C",
-    legendCss: legendFromStops(DEW_STOPS, -5, 28),
-    ticks: ["-5", "5", "15", "22", "28"],
-    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+    legendCss: legendFromStops(DEW_STOPS, -10, 28),
+    ticks: ["-10", "0", "10", "20", "28"],
+    scale: { min: -10, max: 28, values: [-10, 0, 10, 20, 28] },
   },
   td700: {
     id: "td700",
     title: "700 hPa dewpoint",
     units: "°C",
-    legendCss: legendFromStops(DEW_STOPS, -5, 28),
-    ticks: ["-5", "5", "15", "22", "28"],
-    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+    legendCss: legendFromStops(DEW_STOPS, -10, 28),
+    ticks: ["-10", "0", "10", "20", "28"],
+    scale: { min: -10, max: 28, values: [-10, 0, 10, 20, 28] },
   },
   td500: {
     id: "td500",
     title: "500 hPa dewpoint",
     units: "°C",
-    legendCss: legendFromStops(DEW_STOPS, -5, 28),
-    ticks: ["-5", "5", "15", "22", "28"],
-    scale: { min: -5, max: 28, values: [-5, 5, 15, 22, 28] },
+    legendCss: legendFromStops(DEW_STOPS, -10, 28),
+    ticks: ["-10", "0", "10", "20", "28"],
+    scale: { min: -10, max: 28, values: [-10, 0, 10, 20, 28] },
   },
   shear01: {
     id: "shear01",
     title: "0–1 km bulk shear",
     units: "m/s",
-    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
-    ticks: ["0", "15", "30", "45", "60"],
-    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
+    scale: { min: 0, max: 40, values: [0, 10, 20, 30, 40] },
   },
   shear03: {
     id: "shear03",
     title: "0–3 km bulk shear",
     units: "m/s",
-    legendCss: legendFromStops(SHEAR_STOPS, 0, 60),
-    ticks: ["0", "15", "30", "45", "60"],
-    scale: { min: 0, max: 60, values: [0, 15, 30, 45, 60] },
+    legendCss: legendFromStops(SHEAR_STOPS, 0, 40),
+    ticks: ["0", "10", "20", "30", "40"],
+    scale: { min: 0, max: 40, values: [0, 10, 20, 30, 40] },
   },
   div: {
     id: "div",
     title: "Surface wind divergence",
     units: "10⁻⁴ s⁻¹",
     legendCss:
-      "linear-gradient(90deg,#2040ff 0%,#a0c0ff 40%,#f0f0f0 50%,#ffb0a0 60%,#ff2020 100%)",
+      "linear-gradient(90deg,#2b6cb3 0%,#a0c0ff 40%,#eeeeee 50%,#f89c84 60%,#dc283c 100%)",
     ticks: ["-20", "0", "+20"],
   },
   precip: {
@@ -954,7 +1003,7 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   mflux: pm("mflux", "Surface moisture flux", "g kg⁻¹ m s⁻¹", DERIVED_LEGENDS.scalar, 0, 400, [0, 100, 200, 300, 400], ["0", "100", "200", "300", "400"]),
   dryint: pm("dryint", "Mid-level dry-air intrusion", "%", DERIVED_LEGENDS.scalar, 0, 100, [0, 25, 50, 75, 100], ["0", "25", "50", "75", "100"]),
   blrh: pm("blrh", "Boundary-layer relative humidity", "%", DERIVED_LEGENDS.scalar, 0, 100, [0, 25, 50, 75, 100], ["0", "25", "50", "75", "100"]),
-  wetbulb: pm("wetbulb", "Surface wet-bulb temperature", "°C", DERIVED_LEGENDS.scalar, -15, 40, [-15, 0, 15, 30, 40], ["-15", "0", "15", "30", "40"]),
+  wetbulb: pm("wetbulb", "Surface wet-bulb temperature", "°C", DERIVED_LEGENDS.scalar, -30, 45, [-30, -15, 0, 15, 30, 45], ["-30", "-15", "0", "15", "30", "45"]),
   evappot: pm("evappot", "Surface evaporation potential", "g/kg", DERIVED_LEGENDS.scalar, 0, 20, [0, 5, 10, 20], ["0", "5", "10", "20"]),
   // ── Derived cloud structure ───────────────────────────────────────────────
   cice: pm("cice", "Column-max cloud ice", "g/kg", DERIVED_LEGENDS.scalar, 0, 3, [0, 0.5, 1, 2, 3], ["0", "0.5", "1", "2", "3"]),
@@ -965,19 +1014,19 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   ctdiv: pm("ctdiv", "Cloud-top divergence", "10⁻⁴ s⁻¹", DERIVED_LEGENDS.diverging, -20, 20, [-20, 0, 20], ["-20", "0", "+20"]),
   downdraft: pm("downdraft", "Column-max downdraft", "m/s", DERIVED_LEGENDS.scalar, 0, 20, [0, 5, 10, 15, 20], ["0", "5", "10", "15", "20"]),
   // ── Derived wind and dynamics ─────────────────────────────────────────────
-  w925: pm("w925", "925 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 60, [0, 15, 30, 45, 60], ["0", "15", "30", "45", "60"]),
-  w700: pm("w700", "700 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
-  w500: pm("w500", "500 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
-  w300: pm("w300", "300 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
-  w200: pm("w200", "200 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  w925: pm("w925", "925 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 40, [0, 10, 20, 30, 40], ["0", "10", "20", "30", "40"]),
+  w700: pm("w700", "700 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 50, [0, 10, 20, 35, 50], ["0", "10", "20", "35", "50"]),
+  w500: pm("w500", "500 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 60, [0, 15, 30, 45, 60], ["0", "15", "30", "45", "60"]),
+  w300: pm("w300", "300 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 70, [0, 15, 30, 50, 70], ["0", "15", "30", "50", "70"]),
+  w200: pm("w200", "200 hPa wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 70, [0, 15, 30, 50, 70], ["0", "15", "30", "50", "70"]),
   omega: pm("omega", "700 hPa pressure vertical velocity", "Pa/s", DERIVED_LEGENDS.diverging, -5, 5, [-5, 0, 5], ["-5", "0", "+5"]),
-  shear08: pm("shear08", "0–8 km bulk shear", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  shear08: pm("shear08", "0–8 km bulk shear", "m/s", DERIVED_LEGENDS.scalar, 0, 50, [0, 10, 20, 35, 50], ["0", "10", "20", "35", "50"]),
   srh01: pm("srh01", "0–1 km storm-relative helicity", "m²/s²", DERIVED_LEGENDS.diverging, -150, 150, [-150, 0, 150], ["-150", "0", "+150"]),
   srh03: pm("srh03", "0–3 km storm-relative helicity", "m²/s²", DERIVED_LEGENDS.diverging, -300, 300, [-300, 0, 300], ["-300", "0", "+300"]),
-  srw: pm("srw", "Surface storm-relative wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 60, [0, 15, 30, 45, 60], ["0", "15", "30", "45", "60"]),
+  srw: pm("srw", "Surface storm-relative wind speed", "m/s", DERIVED_LEGENDS.scalar, 0, 40, [0, 10, 20, 30, 40], ["0", "10", "20", "30", "40"]),
   brn: pm("brn", "Bulk Richardson number", "–", DERIVED_LEGENDS.scalar, 0, 100, [0, 10, 25, 50, 100], ["0", "10", "25", "50", "100"]),
   llj: pm("llj", "Low-level jet (0–3 km max wind)", "m/s", DERIVED_LEGENDS.scalar, 0, 40, [0, 10, 20, 30, 40], ["0", "10", "20", "30", "40"]),
-  ulj: pm("ulj", "Upper-level jet (8–12 km max wind)", "m/s", DERIVED_LEGENDS.scalar, 0, 80, [0, 15, 30, 50, 80], ["0", "15", "30", "50", "80"]),
+  ulj: pm("ulj", "Upper-level jet (8–12 km max wind)", "m/s", DERIVED_LEGENDS.scalar, 0, 70, [0, 15, 30, 50, 70], ["0", "15", "30", "50", "70"]),
   ucomp: pm("ucomp", "Surface u-component wind", "m/s", DERIVED_LEGENDS.diverging, -30, 30, [-30, 0, 30], ["-30", "0", "+30"]),
   vcomp: pm("vcomp", "Surface v-component wind", "m/s", DERIVED_LEGENDS.diverging, -30, 30, [-30, 0, 30], ["-30", "0", "+30"]),
   // ── Derived precipitation and synoptic fields ─────────────────────────────
@@ -1636,7 +1685,7 @@ function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
     out[o + 3] = 255;
     return;
   }
-  lerpStops(Math.min(75, dbz), REFL_STOPS, out, o, 255);
+  lerpStops(Math.min(80, dbz), REFL_STOPS, out, o, 255);
 }
 
 function velocityToRgba(vr: number, out: Uint8Array, o: number): void {
@@ -1644,53 +1693,49 @@ function velocityToRgba(vr: number, out: Uint8Array, o: number): void {
 }
 
 function tempToRgba(tC: number, out: Uint8Array, o: number): void {
-  lerpStops(Math.min(40, Math.max(-15, tC)), TEMP_STOPS, out, o, 255);
+  lerpStops(Math.min(45, Math.max(-30, tC)), TEMP_STOPS, out, o, 255);
 }
 
 function dewToRgba(tdC: number, out: Uint8Array, o: number): void {
-  lerpStops(Math.min(28, Math.max(-5, tdC)), DEW_STOPS, out, o, 255);
+  lerpStops(Math.min(28, Math.max(-10, tdC)), DEW_STOPS, out, o, 255);
 }
 
 function cinToRgba(cin: number, out: Uint8Array, o: number): void {
   if (cin < 10) {
-    out[o] = 20;
-    out[o + 1] = 24;
-    out[o + 2] = 36;
+    out[o] = MAP_BG[1];
+    out[o + 1] = MAP_BG[2];
+    out[o + 2] = MAP_BG[3];
     out[o + 3] = 255;
     return;
   }
   const stops: [number, number, number, number][] = [
-    [10, 80, 120, 180],
-    [50, 80, 140, 220],
-    [150, 40, 80, 200],
-    [300, 120, 40, 180],
+    [10, 105, 105, 105],
+    [50, 67, 96, 117],
+    [100, 167, 200, 206],
+    [200, 232, 209, 134],
+    [300, 220, 65, 16],
+    [400, 115, 8, 138],
   ];
   lerpStops(Math.min(400, cin), stops, out, o, 255);
 }
 
 function speedToRgba(spd: number, out: Uint8Array, o: number): void {
-  const stops: [number, number, number, number][] = [
-    [0, 26, 32, 48],
-    [10, 60, 180, 106],
-    [20, 255, 224, 96],
-    [40, 255, 255, 255],
-  ];
-  lerpStops(Math.min(40, Math.max(0, spd)), stops, out, o, 255);
+  lerpStops(Math.min(40, Math.max(0, spd)), SHEAR_STOPS, out, o, 255);
 }
 
 function lightningToRgba(rate: number, out: Uint8Array, o: number): void {
   if (rate < 0.4) {
-    out[o] = 20;
-    out[o + 1] = 16;
-    out[o + 2] = 32;
+    out[o] = MAP_BG[1];
+    out[o + 1] = MAP_BG[2];
+    out[o + 2] = MAP_BG[3];
     out[o + 3] = 255;
     return;
   }
   const stops: [number, number, number, number][] = [
-    [0.4, 80, 40, 20],
-    [5, 200, 120, 32],
-    [15, 255, 224, 96],
-    [30, 255, 255, 255],
+    [0.4, 226, 123, 18],
+    [5, 220, 65, 16],
+    [15, 148, 15, 73],
+    [30, 233, 213, 192],
   ];
   lerpStops(Math.min(40, rate), stops, out, o, 255);
 }
@@ -1902,7 +1947,7 @@ function packWindAt(
         grid.vCenter(f.v, i, j, k),
       );
       lerpStops(
-        clamp(spd, 0, 60),
+        clamp(spd, 0, 40),
         SHEAR_STOPS,
         out,
         mapPix(i, j, nx, ny),
@@ -1943,7 +1988,7 @@ function packColumnMaxW(grid: Grid3D, f: SimFields, out: Uint8Array): void {
         if (w > wMax) wMax = w;
       }
       lerpStops(
-        clamp(wMax, 0, 35),
+        clamp(wMax, 0, 40),
         WMAX_STOPS,
         out,
         mapPix(i, j, nx, ny),
@@ -1966,7 +2011,7 @@ function packBulkShear(
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       lerpStops(
-        clamp(shear, 0, 80),
+        clamp(shear, 0, 40),
         SHEAR_STOPS,
         out,
         mapPix(i, j, nx, ny),

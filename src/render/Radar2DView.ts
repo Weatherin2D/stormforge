@@ -65,7 +65,7 @@ const INST = {
 
 /**
  * Flat top-down map display — MeteoLAB instrument shell over the 3D view
- * (ibar + screen + side panel, NWS palettes, Cartesian grid / cursor readout).
+ * (ibar + screen + side panel, Pivotal/RadarScope palettes, Cartesian grid / cursor readout).
  */
 export class Radar2DView {
   readonly root: HTMLElement;
