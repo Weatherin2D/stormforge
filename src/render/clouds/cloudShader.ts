@@ -229,11 +229,13 @@ float mammaDensity(vec3 p, float anvilBase, float anvilPresence){
 }
 
 // Precipitation shaft extinction (1/m): MeteoLAB curtains, uShaftMax in 1/km.
+// Soft intensity gate so drizzle (~few dBZ) still draws a very transparent curtain.
 float shaftDensity(vec3 p, float rain){
   if(rain <= 0.0) return 0.0;
   vec3 n = octaves(vec3(p.x * 0.0024, p.y * 0.00008 + uTime * 0.0009, p.z * 0.0024) + vec3(5.3, 0.0, 2.9));
-  float streak = smoothstep(0.3, 0.75, n.g * 0.7 + n.b * 0.3);
-  float km = rain * uShaftMax * mix(0.15, 2.0, streak) * smoothstep(0.0, 0.5, rain * 12.0 + n.r - 0.5);
+  float streak = smoothstep(0.22, 0.7, n.g * 0.7 + n.b * 0.3);
+  float gate = smoothstep(0.0, 0.4, rain * 55.0 + n.r * 0.35 - 0.08);
+  float km = rain * uShaftMax * mix(0.35, 2.0, streak) * gate;
   return km * 0.001;
 }
 
@@ -342,9 +344,10 @@ vec3 sampleSigma(vec3 p, float detail) {
     }
 
     // Rain: contrast + scrolling sheared streaks (shaft extinction added below).
-    if (rain > 0.002) {
-      float rainCore = smoothstep(0.05, 0.55, rain);
-      rain = mix(rain, rainCore, 0.65);
+    // Keep a soft floor so light drizzle is not crushed before shaftDensity.
+    if (rain > 0.0004) {
+      float rainCore = smoothstep(0.002, 0.45, rain);
+      rain = mix(rain, max(rain, rainCore * 0.35), 0.35);
 
       vec3 sheared = rel + uRainWindShear * (p.y - uBoxMin.y);
       vec3 qr = vec3(sheared.x * uShapeFreq * 1.8,
@@ -352,10 +355,10 @@ vec3 sampleSigma(vec3 p, float detail) {
                      sheared.z * uShapeFreq * 1.8);
       float streak = textureLod(uShapeNoise, qr, 0.0).g;
       float edgeMask = 1.0 - rainCore;
-      rain *= mix(1.0, mix(0.35, 1.4, streak), detail * (0.4 + 0.6 * edgeMask));
+      rain *= mix(1.0, mix(0.45, 1.4, streak), detail * (0.35 + 0.65 * edgeMask));
 
       float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
-      rain += rainCore * groundFade * 0.4;
+      rain += rainCore * groundFade * 0.35;
       rain = clamp(rain, 0.0, 1.0);
     }
   }

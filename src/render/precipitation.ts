@@ -16,8 +16,11 @@ import * as THREE from "three";
 const PARTICLE_CAPACITY = 8000;
 /** Spawn attempts per second. Each attempt targets one random column. */
 const SPAWN_RATE = 2200;
-/** Packed byte value below which a cell is considered empty. */
-const PACK_EMPTY = 4;
+/**
+ * Packed byte value below which a cell is considered empty.
+ * Keep low so drizzle (~few dBZ) still seeds particles.
+ */
+const PACK_EMPTY = 1;
 /** Vertical distance over which snow melts, metres (MeteoLAB MELT_DEPTH). */
 const MELT_DEPTH = 600;
 /** Snowflake fall speed, m/s (MeteoLAB SNOW_FALL). */
@@ -248,10 +251,12 @@ export class PrecipitationParticles {
       this.positions[o + 1] = y;
       this.positions[o + 2] = z;
       this.age[p] = 0;
-      // Shorter life → faster turnover, denser curtains (MeteoLAB ages out at 2400 model-s;
-      // renderer clock is wall time, so keep visual life short).
+      // Live long enough to fall under gravity from spawn height to the ground
+      // (MeteoLAB ages out at 2400 model-s; wall-clock life must cover the drop).
       const melt0 = this.meltAt(y);
-      this.life[p] = melt0 > 0.5 ? 4 + Math.random() * 8 : 8 + Math.random() * 16;
+      const fall0 = SNOW_FALL + (RAIN_FALL - SNOW_FALL) * melt0;
+      const drop = Math.max(80, y - (this.groundY + 1));
+      this.life[p] = drop / Math.max(fall0, 0.5) + 1.5 + Math.random() * 3;
       this.alive[p] = 1;
       this.melt[p] = melt0;
     }

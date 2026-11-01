@@ -1524,7 +1524,7 @@ export class FluidSolver implements SimBackend {
    * so grid j = ny−1 is texture Z = 0).
    * R = cloud liquid opacity (MeteoLAB cloudOpacity of qc),
    * G = cold opacity (0.25·ice + 0.08·snow + 0.03·(graupel+hail)),
-   * B = rain (1.5 g/kg → 1.0). A = max channel for empty-volume checks.
+   * B = rain ((qr/0.0015)^0.65 → 1.0 so drizzle still curtains). A = max channel.
    */
   packVolumeRGBA(out: Uint8Array): void {
     const f = this.fields;
@@ -1540,18 +1540,23 @@ export class FluidSolver implements SimBackend {
         0.03 * (f.qg[id] + f.qh[id]);
       return cloudOpacity(cold);
     };
+    // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
+    // shaft still packs a transparent curtain instead of vanishing to 0.
     const rainUnit = 0.0015;
     const byte01 = (v: number): number => {
       if (v <= 0) return 0;
       const x = v * 255;
       return x >= 255 ? 255 : x | 0;
     };
+    const rainByte = (qr: number): number => {
+      if (qr <= 0) return 0;
+      const x = Math.pow(qr / rainUnit, 0.65) * 255;
+      return x >= 255 ? 255 : x | 0;
+    };
     const write = (id: number, _k: number, o: number): void => {
       const liq = byte01(cloudOpacity(f.qc[id]));
       const ice = byte01(coldOpacity(id));
-      const rainQ = f.qr[id];
-      const rain =
-        rainQ <= 0 ? 0 : Math.min(255, ((rainQ / rainUnit) * 255) | 0);
+      const rain = rainByte(f.qr[id]);
       out[o] = liq;
       out[o + 1] = ice;
       out[o + 2] = rain;
