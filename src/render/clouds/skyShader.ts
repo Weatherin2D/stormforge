@@ -117,7 +117,11 @@ void main(){
     c = surface * T + inscatter;
   }
   c = mix(c, vec3(0.009, 0.026, 0.044), uLab);
-  gl_FragColor = vec4(c, 1.0);
+  // Triangular dither before 8-bit display / tonemap — kills night sky banding.
+  float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  float dm = fract(sin(dot(gl_FragCoord.xy + 19.19, vec2(12.9898, 78.233))) * 43758.5453);
+  c += (dn + dm - 1.0) / 255.0;
+  gl_FragColor = vec4(max(c, vec3(0.0)), 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

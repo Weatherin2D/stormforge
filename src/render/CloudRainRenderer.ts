@@ -48,16 +48,28 @@ void main() {
 }
 `;
 
+/** Triangular dither → breaks 8-bit night banding on the final framebuffer. */
+const ditherFn = /* glsl */ `
+float triDither(vec2 p) {
+  float n = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+  float m = fract(sin(dot(p + 19.19, vec2(12.9898, 78.233))) * 43758.5453);
+  return (n + m - 1.0) / 255.0;
+}
+`;
+
 const blitFrag = /* glsl */ `
 precision highp float;
 uniform sampler2D uTex;
 in vec2 vUv;
 out vec4 fragColor;
+${ditherFn}
 void main() {
   vec4 c = texture(uTex, vUv);
   float a = max(c.a, 1e-4);
   vec3 lin = c.rgb / a;
-  fragColor = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)) * c.a, c.a);
+  // Cloud RT is already tonemapped/sRGB from the material chunks — do not gamma again.
+  vec3 outc = max(lin, vec3(0.0)) + triDither(gl_FragCoord.xy);
+  fragColor = vec4(outc * c.a, c.a);
 }
 `;
 
@@ -66,9 +78,11 @@ precision highp float;
 uniform sampler2D uTex;
 in vec2 vUv;
 out vec4 fragColor;
+${ditherFn}
 void main() {
-  vec3 lin = texture(uTex, vUv).rgb;
-  fragColor = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
+  // Scene RT is already tonemapped/sRGB from materials — copy + dither only.
+  vec3 c = texture(uTex, vUv).rgb + triDither(gl_FragCoord.xy);
+  fragColor = vec4(max(c, vec3(0.0)), 1.0);
 }
 `;
 
@@ -197,6 +211,8 @@ export class CloudRainRenderer {
   private cloudsOn = true;
   private volumeClear = false;
   private lastVolumeMs = 0;
+  /** Bumps when the 3D volume texture is rewritten — LightVolume cache key (not wall-clock). */
+  private volumeRevision = 0;
   private clearScratch = new THREE.Color();
   private spriteView: SpriteView | null = null;
   /** GPU light volume for cloud lighting (MeteoLAB). */
@@ -518,11 +534,12 @@ if(abs(uSurface - 2.0) < 0.5){
       const depth = new THREE.DepthTexture(bw, bh);
       depth.format = THREE.DepthFormat;
       depth.type = THREE.UnsignedIntType;
+      // Half-float keeps night sky gradients above the 8-bit posterization floor.
       this.sceneTarget = new THREE.WebGLRenderTarget(bw, bh, {
         minFilter: THREE.LinearFilter,
         magFilter: THREE.LinearFilter,
         format: THREE.RGBAFormat,
-        type: THREE.UnsignedByteType,
+        type: THREE.HalfFloatType,
         depthTexture: depth,
         depthBuffer: true,
       });
@@ -544,7 +561,7 @@ if(abs(uSurface - 2.0) < 0.5){
           minFilter: THREE.LinearFilter,
           magFilter: THREE.LinearFilter,
           format: THREE.RGBAFormat,
-          type: THREE.UnsignedByteType,
+          type: THREE.HalfFloatType,
           depthBuffer: false,
         });
       this.cloudTarget = half();
@@ -948,6 +965,12 @@ if(abs(uSurface - 2.0) < 0.5){
       g.g * (E[1] / Math.PI * skyGain + NIGHT_BOTTOM[1] * night),
       g.b * (E[2] / Math.PI * skyGain + NIGHT_BOTTOM[2] * night),
     );
+    // Night: coarser march (fewer steps) — translucent night clouds were burning max steps.
+    const nightStep = night > 0.55 ? 1.6 : night > 0.25 ? 1.25 : 1.0;
+    this.cloudMat.setLook({
+      stepSize: DEFAULT_LOOK.stepSize * nightStep,
+      shadowProbes: night > 0.7 ? 0 : this.tune.shadowProbes,
+    });
   }
 
   private applyCloudWind(): void {
@@ -1212,6 +1235,7 @@ if(abs(uSurface - 2.0) < 0.5){
       this.volumeClear = false;
     }
     this.volumeTex.needsUpdate = true;
+    this.volumeRevision++;
     // Wet ground via MeteoLAB ground-state texture (water mm in R, hail cover in G).
     if (this.water && this.groundState && this.groundState.image) {
       const wetMm = Math.min(GROUND_WATER_MM, (rainMax / 0.002) * GROUND_WATER_MM);
@@ -1389,15 +1413,9 @@ if(abs(uSurface - 2.0) < 0.5){
       this.precipitation.update(performance.now());
     }
 
-    // Update MeteoLAB components
+    // Light volume only when the density field or sun moved — never every animation frame.
     if (this.lightVolume) {
-      this.lightVolume.update(this.renderer, this.timeSeconds, this.sunDir);
-    }
-    if (this.flashVolume) {
-      // FlashVolume needs flash points - for now pass empty arrays
-      const emptyPoints: (Float32Array | null)[] = Array(8).fill(null);
-      const emptyChanged = Array(8).fill(false);
-      this.flashVolume.update(this.renderer, emptyPoints, emptyChanged);
+      this.lightVolume.update(this.renderer, this.volumeRevision, this.sunDir);
     }
 
     if (this.cloudMat) {
