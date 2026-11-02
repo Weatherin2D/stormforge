@@ -37,7 +37,10 @@ export class LightVolume {
 
   /** Recomputes the light when the clouds (new model time) or the sun changed. */
   update(renderer: THREE.WebGLRenderer, time: number, sun: THREE.Vector3) {
-    if (time === this.time && sun.distanceToSquared(this.sun) < 1e-5) return
+    // Night: the sun channel is unused. Do not re-render every layer just
+    // because the nocturnal sun vector is still drifting with the clock.
+    const night = sun.y <= -0.02
+    if (time === this.time && (night || sun.distanceToSquared(this.sun) < 1e-5)) return
     this.time = time; this.sun.copy(sun)
     const before = renderer.getRenderTarget()
     for (let k = 0; k < this.layers; k++) { this.material.uniforms.uLayer.value = k; renderer.setRenderTarget(this.target, k); renderer.render(this.scene, this.camera) }

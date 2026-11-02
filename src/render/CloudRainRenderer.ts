@@ -1336,7 +1336,12 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const nz = this.volNz;
     if (!data || !out || !tex || nx < 1 || ny < 1 || nz < 1) return;
 
-    const sunChanged = this.shadowMapSun.distanceToSquared(this.sunDir) > 1e-8;
+    // Below the horizon the sun channel is black. Ignore the sun wobbling
+    // through the night (compressed diurnal clock) — that used to rebuild the
+    // whole map every couple of frames and hitch the sim.
+    const sunBelow = this.sunDir.y <= -0.02;
+    const sunChanged =
+      !sunBelow && this.shadowMapSun.distanceToSquared(this.sunDir) > 1e-6;
     if (!force && this.shadowMapRevision === this.volumeRevision && !sunChanged) {
       return;
     }
