@@ -15,6 +15,11 @@ import { SynopticEditor } from "./SynopticEditor";
 import { TerrainEditor } from "./TerrainEditor";
 import { SynopticSetup } from "../sim/synoptic";
 import type { NestRect } from "../sim/surface";
+import {
+  downloadSave,
+  parseSave,
+  saveFromSetup,
+} from "../sim/SaveFile";
 
 export type RunMode = "live" | "batch";
 export type SimScale = "sandbox" | "mesoscale" | "continental" | "custom";
@@ -252,8 +257,14 @@ export class SetupScreen {
           <div id="sf-perf-warn" class="perf-warn"></div>
           <div class="setup-actions">
             <button class="primary" id="sf-start">Start simulation</button>
+            <button type="button" id="sf-save" title="Save sounding, fronts, land maps, and settings to a .sfz file">Save</button>
+            <label class="file-btn" title="Import a .sfz save (weather, terrain, and settings)">
+              Import
+              <input id="sf-load" type="file" accept=".sfz,.json" hidden />
+            </label>
             <span class="hint" id="sf-start-hint">Edit the sounding, then start</span>
           </div>
+          <p class="hint" id="sf-save-msg" hidden></p>
         </div>
 
         <aside class="setup-card setup-sounding">
@@ -436,6 +447,37 @@ export class SetupScreen {
       this.onStart(values);
     });
 
+    this.root.querySelector("#sf-save")?.addEventListener("click", () => {
+      const values = this.readValues();
+      downloadSave(saveFromSetup(values));
+      this.setSaveMessage(`Saved “${values.name}.sfz”.`, true);
+    });
+
+    const loadInput = this.root.querySelector("#sf-load") as HTMLInputElement | null;
+    loadInput?.addEventListener("change", () => {
+      const file = loadInput.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const save = parseSave(String(reader.result ?? ""));
+          this.applyValues(save.setup);
+          this.setSaveMessage(`Imported “${file.name}”.`, true);
+        } catch (err) {
+          this.setSaveMessage(
+            err instanceof Error ? err.message : String(err),
+            false,
+          );
+        }
+        loadInput.value = "";
+      };
+      reader.onerror = () => {
+        this.setSaveMessage("Could not read that file.", false);
+        loadInput.value = "";
+      };
+      reader.readAsText(file);
+    });
+
     this.syncRunModeUi();
     this.syncScaleUi();
     this.syncExtentLabels();
@@ -542,6 +584,130 @@ export class SetupScreen {
       hydrostatic,
       ...this.terrain.exportSurface(),
     };
+  }
+
+  /** Restore domain, sun, sounding, fronts, and land maps from a save. */
+  applyValues(v: SetupValues): void {
+    const monthNames = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const fmtHour = (h: number) => {
+      const hh = Math.floor(h);
+      const mm = Math.round((h - hh) * 60);
+      return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+    };
+
+    (this.root.querySelector("#sf-name") as HTMLInputElement).value =
+      v.name || "Stormforge Run";
+
+    const runMode = v.runMode === "batch" ? "batch" : "live";
+    for (const radio of this.root.querySelectorAll(
+      'input[name="sf-runmode"]',
+    )) {
+      const input = radio as HTMLInputElement;
+      input.checked = input.value === runMode;
+    }
+
+    const scale: SimScale =
+      v.scale === "mesoscale" ||
+      v.scale === "continental" ||
+      v.scale === "custom" ||
+      v.scale === "sandbox"
+        ? v.scale
+        : "custom";
+    (this.root.querySelector("#sf-scale") as HTMLSelectElement).value = scale;
+
+    const extentX = v.extentXKm ?? (v.dxKm ? v.dxKm * v.nx : 64);
+    const extentY = v.extentYKm ?? (v.dyKm ? v.dyKm * v.ny : extentX);
+    this.writeExtentKm("sf-extentx", extentX);
+    this.writeExtentKm("sf-extenty", extentY);
+    (this.root.querySelector("#sf-lock-square") as HTMLInputElement).checked =
+      Math.abs(extentX - extentY) < 0.5;
+
+    (this.root.querySelector("#sf-nx") as HTMLInputElement).value = String(v.nx);
+    (this.root.querySelector("#sf-ny") as HTMLInputElement).value = String(v.ny);
+    (this.root.querySelector("#sf-nz") as HTMLInputElement).value = String(v.nz);
+    (this.root.querySelector("#sf-ztop") as HTMLInputElement).value = String(v.zTop);
+    (this.root.querySelector("#sf-ztop-val") as HTMLElement).textContent = String(
+      v.zTop,
+    );
+    (this.root.querySelector("#sf-bubble") as HTMLInputElement).value = String(
+      v.bubbleStrength,
+    );
+    (this.root.querySelector("#sf-bubble-val") as HTMLElement).textContent =
+      Number(v.bubbleStrength).toFixed(1);
+
+    const hydro = this.root.querySelector(
+      "#sf-hydrostatic",
+    ) as HTMLInputElement;
+    hydro.checked = v.hydrostatic === true;
+    hydro.dataset.userTouched = "1";
+
+    (this.root.querySelector("#sf-duration") as HTMLInputElement).value = String(
+      v.durationSec,
+    );
+    (this.root.querySelector("#sf-outint") as HTMLInputElement).value = String(
+      v.outputIntervalSec,
+    );
+
+    (this.root.querySelector("#sf-lat") as HTMLInputElement).value = String(
+      v.latitudeDeg,
+    );
+    (this.root.querySelector("#sf-lat-val") as HTMLElement).textContent = String(
+      v.latitudeDeg,
+    );
+    (this.root.querySelector("#sf-month") as HTMLInputElement).value = String(
+      v.month,
+    );
+    (this.root.querySelector("#sf-month-val") as HTMLElement).textContent =
+      monthNames[v.month - 1] ?? String(v.month);
+    (this.root.querySelector("#sf-hour") as HTMLInputElement).value = String(
+      v.startHour,
+    );
+    (this.root.querySelector("#sf-hour-val") as HTMLElement).textContent =
+      fmtHour(v.startHour);
+
+    this.creator.setZTop(v.zTop);
+    this.creator.setLevels(v.sounding);
+    this.sounding = this.creator.getLevels();
+
+    this.terrain.setTerrainCeiling(v.zTop);
+    this.terrain.importSurface(
+      {
+        terrain: v.terrain,
+        water: v.water,
+        kind: v.kind,
+        waterTemp: v.waterTemp,
+        soil: v.soil,
+        veg: v.veg,
+        sstC: v.sstC,
+        nest: v.nest,
+      },
+      { syncMarine: false },
+    );
+
+    const synoptic = {
+      ...v.synoptic,
+      latitudeDeg: v.latitudeDeg,
+    };
+    this.fronts.setSetup(synoptic);
+
+    this.syncRunModeUi();
+    this.updateWarn();
+    requestAnimationFrame(() => {
+      this.creator.resize();
+      this.fronts.resize();
+      this.terrain.resize();
+    });
+  }
+
+  private setSaveMessage(text: string, ok: boolean): void {
+    const el = this.root.querySelector("#sf-save-msg") as HTMLElement | null;
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text;
+    el.style.color = ok ? "var(--ok)" : "var(--danger)";
   }
 
   private gridFromValues(v: SetupValues): Grid3D {

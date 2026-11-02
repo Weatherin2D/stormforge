@@ -16,20 +16,16 @@ import {
   zeroField,
   type NestRect,
 } from "../sim/surface";
+import {
+  downloadTerrain,
+  parseTerrainFile,
+  type SurfaceExport,
+} from "../sim/TerrainFile";
+
+export type { SurfaceExport };
 
 type Tool = "raise" | "lower" | "sea" | "lake" | "land" | "temp" | "soil" | "veg" | "nest";
 type CoverLayer = "terrain" | "water" | "temp" | "soil" | "veg";
-
-export interface SurfaceExport {
-  terrain?: number[];
-  water?: number[];
-  kind?: number[];
-  waterTemp?: number[];
-  soil?: number[];
-  veg?: number[];
-  sstC?: number;
-  nest?: NestRect | null;
-}
 
 interface MapPoint {
   x: number;
@@ -99,6 +95,14 @@ export class TerrainEditor {
         <button type="button" data-preset="lake">Lake basin</button>
         <button type="button" data-preset="forest">Forest</button>
       </div>
+      <div class="front-tools" id="sf-surface-io">
+        <button type="button" id="sf-terrain-save" title="Save land &amp; water maps to a .sft file">Save map</button>
+        <label class="file-btn" title="Load a .sft map or land maps from a .sfz save">
+          Load map
+          <input id="sf-terrain-load" type="file" accept=".sft,.sfz,.json" hidden />
+        </label>
+      </div>
+      <p class="hint" id="sf-terrain-io-msg" hidden></p>
       <label class="surface-field" id="sf-cover-slider">
         <span id="sf-cover-label">Raise per stroke (m)</span>
         <input id="sf-sst" type="range" min="40" max="200" step="20" value="80" />
@@ -167,6 +171,34 @@ export class TerrainEditor {
       this.nest.refinement = Number(this.refineInput.value) >= 3 ? 3 : 2;
       this.draw();
     });
+    this.root.querySelector("#sf-terrain-save")!.addEventListener("click", () => {
+      downloadTerrain(this.exportSurface());
+      this.setIoMessage("Map saved.", true);
+    });
+    const loadInput = this.root.querySelector("#sf-terrain-load") as HTMLInputElement;
+    loadInput.addEventListener("change", () => {
+      const file = loadInput.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const surface = parseTerrainFile(String(reader.result ?? ""));
+          this.importSurface(surface);
+          this.setIoMessage(`Loaded ${file.name}.`, true);
+        } catch (err) {
+          this.setIoMessage(
+            err instanceof Error ? err.message : String(err),
+            false,
+          );
+        }
+        loadInput.value = "";
+      };
+      reader.onerror = () => {
+        this.setIoMessage("Could not read that file.", false);
+        loadInput.value = "";
+      };
+      reader.readAsText(file);
+    });
     this.canvas.addEventListener("pointerdown", (e) => this.onDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.onUp(e));
@@ -224,6 +256,68 @@ export class TerrainEditor {
     if (vegOn) out.veg = Array.from(this.veg);
     if (this.nest) out.nest = { ...this.nest };
     return out;
+  }
+
+  /**
+   * Replace painted maps from a .sft / extracted .sfz surface.
+   * Pass syncMarine: false when a full setup restore will set the fronts checkbox.
+   */
+  importSurface(data: SurfaceExport, opts?: { syncMarine?: boolean }): void {
+    zeroField(this.terrain);
+    zeroField(this.water);
+    zeroField(this.kind);
+    zeroField(this.soil);
+    zeroField(this.veg);
+    this.sstC =
+      typeof data.sstC === "number" && Number.isFinite(data.sstC) ? data.sstC : 22;
+    this.waterTemp.fill(this.sstC);
+    this.nest = null;
+
+    copyField(this.terrain, data.terrain);
+    copyField(this.water, data.water);
+    copyField(this.kind, data.kind);
+    copyField(this.waterTemp, data.waterTemp);
+    copyField(this.soil, data.soil);
+    copyField(this.veg, data.veg);
+
+    for (let i = 0; i < this.terrain.length; i++) {
+      if (this.terrain[i] > this.ceiling) this.terrain[i] = this.ceiling;
+      if (this.kind[i] >= 1.5 || (this.kind[i] < 0.5 && this.water[i] > 0.5)) {
+        this.terrain[i] = 0;
+      }
+    }
+
+    if (data.nest) {
+      this.nest = normalizeNest({
+        ...data.nest,
+        refinement: data.nest.refinement >= 3 ? 3 : 2,
+      });
+      this.refineInput.value = String(this.nest.refinement);
+    }
+
+    if (opts?.syncMarine !== false) {
+      let hasOcean = false;
+      for (let i = 0; i < this.kind.length; i++) {
+        if (this.kind[i] >= 1.5) {
+          hasOcean = true;
+          break;
+        }
+      }
+      this.onMarine?.(hasOcean);
+    }
+    if (this.coverLayer === "temp" || this.coverLayer === "water") {
+      this.valueInput.value = String(Math.round(this.sstC));
+      this.writeValueLabel();
+    }
+    this.draw();
+  }
+
+  private setIoMessage(text: string, ok: boolean): void {
+    const el = this.root.querySelector("#sf-terrain-io-msg") as HTMLElement | null;
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text;
+    el.style.color = ok ? "var(--ok)" : "var(--danger)";
   }
 
   private syncCoverLayer(keepTool = false): void {
@@ -577,5 +671,13 @@ export class TerrainEditor {
     this.ctx.fillText("S", w * 0.5 - 4, h - 8);
     this.ctx.fillText("W", 8, h * 0.5);
     this.ctx.fillText("E", w - 16, h * 0.5);
+  }
+}
+
+function copyField(dst: Float32Array, src: number[] | undefined): void {
+  if (!src || src.length !== dst.length) return;
+  for (let i = 0; i < dst.length; i++) {
+    const v = Number(src[i]);
+    dst[i] = Number.isFinite(v) ? v : 0;
   }
 }

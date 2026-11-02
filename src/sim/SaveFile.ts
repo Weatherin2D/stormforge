@@ -2,13 +2,12 @@
  * Stormforge save-file format.
  *
  * A save is a plain JSON file (*.sfz) that stores:
- *  - the full setup config (grid, sounding, synoptic, radiation)
+ *  - the full setup config (grid, sounding, synoptic, radiation, land maps)
  *  - the display/render preferences
  *  - the sim-time and solar hour at the moment of saving
  *
  * This is enough to reproduce an identical starting environment and restore
  * the viewer to the same look without requiring a binary physics snapshot.
- * Binary field saves are intentionally omitted to keep files small (~20 KB).
  */
 
 import type { SetupValues } from "../setup/SetupScreen";
@@ -62,13 +61,50 @@ export interface StormforgeSave {
   view: SavedView;
 }
 
+/** Defaults used when saving from the setup screen (no live viewer yet). */
+export const DEFAULT_SAVED_VIEW: SavedView = {
+  showClouds: true,
+  showRadar3d: false,
+  showRadar2d: false,
+  showSurfaceWinds: false,
+  showDroplets: true,
+  mapProduct: "refl",
+  simSpeed: 40,
+  cloudLookPreset: "",
+  cloudTune: {
+    gain: 1,
+    sigmaLiquid: 0.08,
+    sigmaRain: 0.18,
+    erosionLiquid: 0.6,
+    erosionIce: 0.25,
+  },
+  lightningFreq: 1,
+  clockPaused: false,
+};
+
+/** Build a .sfz document from setup values (weather, terrain, domain, sun). */
+export function saveFromSetup(
+  setup: SetupValues,
+  view: SavedView = DEFAULT_SAVED_VIEW,
+): StormforgeSave {
+  return {
+    version: 1,
+    created: new Date().toISOString(),
+    name: setup.name,
+    setup,
+    simTime: 0,
+    solarHour: setup.startHour,
+    view: { ...view },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Serialisation helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Trigger a browser download of the save file. */
 export function downloadSave(save: StormforgeSave): void {
-  const json = JSON.stringify(save, null, 2);
+  const json = JSON.stringify(save);
   const blob = new Blob([json], { type: "application/json" });
   const a = document.createElement("a");
   const safeName = save.name.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_") || "stormforge";
