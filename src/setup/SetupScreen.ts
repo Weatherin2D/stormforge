@@ -13,6 +13,7 @@ import { SoundingLevel } from "../sim/thermo";
 import { SoundingCreator } from "../skewt/creator";
 import { SynopticEditor } from "./SynopticEditor";
 import { SynopticSetup } from "../sim/synoptic";
+import type { NestRect } from "../sim/surface";
 
 export type RunMode = "live" | "batch";
 export type SimScale = "sandbox" | "mesoscale" | "continental" | "custom";
@@ -82,6 +83,22 @@ export interface SetupValues {
   dyKm?: number;
   /** Use hydrostatic balance (recommended when Δx > ~5 km). */
   hydrostatic?: boolean;
+  /** Painted height, metres, 128×128. Absent on older saves. */
+  terrain?: number[];
+  /** Painted sea mask, 0–1, 128×128. */
+  water?: number[];
+  /** 0 land, 1 lake, 2 ocean. Absent on older saves. */
+  kind?: number[];
+  /** Painted water temperature, °C, one value per editor cell. */
+  waterTemp?: number[];
+  /** Soil moisture, 0–1, land only. */
+  soil?: number[];
+  /** Vegetation, 0 bare to 1 forest, land only. */
+  veg?: number[];
+  /** Fallback water temperature (°C) when a save has no per-cell field. */
+  sstC?: number;
+  /** One refinement rectangle in normalized parent coordinates. */
+  nest?: NestRect | null;
 }
 
 export class SetupScreen {
@@ -259,6 +276,7 @@ export class SetupScreen {
     };
     this.root.querySelector("#sf-creator-host")!.appendChild(this.creator.root);
     this.fronts.resize();
+    this.fronts.setTerrainCeiling(12000);
 
     const monthNames = [
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -281,6 +299,7 @@ export class SetupScreen {
           const v = (this.root.querySelector("#sf-ztop") as HTMLInputElement).value;
           (this.root.querySelector("#sf-ztop-val") as HTMLElement).textContent = v;
           this.creator.setZTop(Number(v));
+          this.fronts.setTerrainCeiling(Number(v));
         }
         if (id === "sf-bubble") {
           const v = Number(
@@ -487,6 +506,7 @@ export class SetupScreen {
       dxKm,
       dyKm,
       hydrostatic,
+      ...this.fronts.exportSurface(),
     };
   }
 

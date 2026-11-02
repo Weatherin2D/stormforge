@@ -17,6 +17,8 @@
     "smoke-benchmark": "tsx scripts/smoke-benchmark.ts",
     "smoke-fronts": "tsx scripts/smoke-fronts.ts",
     "smoke-map-products": "tsx scripts/smoke-map-products.ts",
+    "smoke-inspect": "tsx scripts/smoke-inspect.ts",
+    "smoke-surface": "tsx scripts/smoke-surface.ts",
     "preview": "vite preview"
   },
   "dependencies": {

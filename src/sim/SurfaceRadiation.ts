@@ -124,6 +124,7 @@ export function buildLandMask(
   nx: number,
   ny: number,
   marine = true,
+  water?: ArrayLike<number> | null,
 ): Float32Array {
   const mask = new Float32Array(nx * ny);
   const scale = Math.max(4, Math.round(Math.min(nx, ny) / 8));
@@ -135,15 +136,21 @@ export function buildLandMask(
     const yn = j / yDen;
     for (let i = 0; i < nx; i++) {
       const land = 0.55 + valueNoise(i / scale, y) * 0.9;
+      const painted = water && water.length === nx * ny ? water[row + i] : -1;
+      if (painted >= 0) {
+        const wet = painted < 0 ? 0 : painted > 1 ? 1 : painted;
+        mask[row + i] = land * (1 - wet) + 0.08 * wet;
+        continue;
+      }
       if (!marine) {
         mask[row + i] = land;
         continue;
       }
       const xn = i / xDen;
-      const water =
+      const sea =
         Math.min(1, Math.max(0, (xn - 0.7) / 0.1)) *
         Math.min(1, Math.max(0, (0.3 - yn) / 0.1));
-      mask[row + i] = land * (1 - water) + 0.08 * water;
+      mask[row + i] = land * (1 - sea) + 0.08 * sea;
     }
   }
   return mask;

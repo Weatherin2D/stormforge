@@ -36,6 +36,22 @@ import {
   stepMarineStratus,
 } from "./stepDynamics";
 import { graupelFallSpeed, stepColdMicrophysics } from "./coldMicrophysics";
+import {
+  bindColumnFloor,
+  bindSurfaceDraw,
+  buildHeights,
+  nestGrid,
+  normalizeNest,
+  orographicW,
+  relaxFactor,
+  oceanMaskOf,
+  sampleCover,
+  setActiveWater,
+  SST_TAU,
+  TERRAIN_TAU,
+  type NestRect,
+  type SurfaceSpec,
+} from "./surface";
 
 export type LightningKind = "negcg" | "poscg" | "spider" | "ic" | "sprite";
 
@@ -125,6 +141,20 @@ export class FluidSolver implements SimBackend {
   /** Integrated domain travel over the ground, metres. */
   private groundEast = 0;
   private groundNorth = 0;
+  /** Column terrain height (m) and sea fraction, both nx·ny. */
+  private heightGrid: Float32Array | null = null;
+  private waterGrid: Float32Array | null = null;
+  private kindGrid: Float32Array | null = null;
+  private tempGrid: Float32Array | null = null;
+  private soilGrid: Float32Array | null = null;
+  private vegGrid: Float32Array | null = null;
+  private openK: Uint16Array | null = null;
+  private sstC = 22;
+  private nestRect: NestRect | null = null;
+  private child: FluidSolver | null = null;
+  /** This solver is the one-way nest; it does not advance the parent clock. */
+  private nestChild = false;
+  private mapDomain: "parent" | "nest" = "parent";
 
   constructor(grid: Grid3D) {
     this.grid = grid;
@@ -184,7 +214,58 @@ export class FluidSolver implements SimBackend {
       this.grid.nx,
       this.grid.ny,
       getActiveSynoptic().marine,
+      this.waterGrid,
     );
+    const soil = this.soilGrid;
+    const veg = this.vegGrid;
+    if (!soil && !veg) return;
+    const kind = this.kindGrid;
+    const n = this.grid.nx * this.grid.ny;
+    for (let s = 0; s < n; s++) {
+      if (kind && kind[s] >= 0.5) continue;
+      const m = soil ? soil[s] : 0;
+      const v = veg ? veg[s] : 0;
+      const shade = Math.max(0.28, 1 - 0.55 * Math.max(m, v * 0.85));
+      this.landMask[s] *= shade;
+    }
+  }
+
+  /** Grid the 3D view draws. The nest, when one is running. */
+  get displayGrid(): Grid3D {
+    return this.child ? this.child.grid : this.grid;
+  }
+
+  get displayFields(): SimFields {
+    return this.child ? this.child.fields : this.fields;
+  }
+
+  /** Grid the current map product is packed from. */
+  get viewGrid(): Grid3D {
+    return this.viewSolver.grid;
+  }
+
+  get viewFields(): SimFields {
+    return this.viewSolver.fields;
+  }
+
+  private get viewSolver(): FluidSolver {
+    return this.mapDomain === "nest" && this.child ? this.child : this;
+  }
+
+  setMapDomain(domain: "parent" | "nest"): void {
+    this.mapDomain = domain;
+  }
+
+  /** Point map and column products at the grid the user is looking at. */
+  prepareView(): void {
+    const s = this.viewSolver;
+    bindColumnFloor(s.openK, s.grid.nx);
+    bindSurfaceDraw(s.heightGrid, s.waterGrid, s.sstC, {
+      kind: s.kindGrid,
+      temp: s.tempGrid,
+      soil: s.soilGrid,
+      veg: s.vegGrid,
+    });
   }
 
   private refreshExner(): void {
@@ -202,7 +283,9 @@ export class FluidSolver implements SimBackend {
     this.groundNorth = 0;
     this.lastBubbleOpts = { ...opts };
     this.allocWork();
+    this.prepareSurface(opts.surface);
     initFromSounding(grid, sounding, this.fields, opts);
+    this.finishSurface(opts.surface, sounding, opts);
     this.refreshLandMask();
     this.refreshExner();
     if (this.followStorm) this.applyFrameToWinds(true);
@@ -215,7 +298,9 @@ export class FluidSolver implements SimBackend {
     this.groundNorth = 0;
     const synoptic = opts.synoptic ?? this.lastBubbleOpts.synoptic;
     this.lastBubbleOpts = { ...opts, synoptic };
+    this.prepareSurface(this.lastBubbleOpts.surface);
     initFromSounding(this.grid, sounding, this.fields, this.lastBubbleOpts);
+    this.finishSurface(this.lastBubbleOpts.surface, sounding, this.lastBubbleOpts);
     this.refreshLandMask();
     this.plumeCooldown.fill(0);
     this.flash.fill(0);
@@ -251,6 +336,11 @@ export class FluidSolver implements SimBackend {
 
   frameOffset(): { east: number; north: number } {
     return { east: this.groundEast, north: this.groundNorth };
+  }
+
+  /** Earth shift for the grid the 3D ground is packed from. */
+  groundCoverOffset(): { east: number; north: number } {
+    return (this.child ?? this).frameOffset();
   }
 
   /** Subtract (enter) or restore (leave) frame velocity on profile + 3D winds. */
@@ -290,6 +380,7 @@ export class FluidSolver implements SimBackend {
     );
     this.radiation.solarHour =
       ((this.radiation.solarHour % 24) + 24) % 24;
+    if (this.child) this.child.setRadiation(this.radiation);
   }
 
   setSolarHour(hour: number): void {
@@ -348,6 +439,7 @@ export class FluidSolver implements SimBackend {
       this.advectVelocity(h);
       if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
       this.project(h);
+      this.applyTerrain(h);
       this.advectScalars(h);
       // Warm rain stays every substep — condensation feeds buoyancy.
       stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
@@ -391,11 +483,12 @@ export class FluidSolver implements SimBackend {
           this.exner,
           this.landMask,
         );
-        advanceSynoptic(slowDt, this.grid.xExtent);
+        if (!this.nestChild) advanceSynoptic(slowDt, this.grid.xExtent);
         this.updateCharge(slowDt);
       }
       this.applySponge(h);
-      if (!this.clockPaused) {
+      this.applyTerrain(h);
+      if (!this.nestChild && !this.clockPaused) {
         this.radiation.solarHour = advanceSolarHour(
           this.radiation.solarHour,
           h,
@@ -411,7 +504,9 @@ export class FluidSolver implements SimBackend {
     }
     // The fronts are a slow relaxation of the pattern onto the fields, so
     // they are put back once per step rather than once per sub-step.
-    stepSynopticForcing(this.grid, this.fields, dt);
+    // A nest receives that pattern through its boundary, not a second copy.
+    if (!this.nestChild) stepSynopticForcing(this.grid, this.fields, dt);
+    this.stepNest(dt);
   }
 
   /** Virtual-θ buoyancy + condensate loading on interior w-faces. */
@@ -1568,12 +1663,16 @@ export class FluidSolver implements SimBackend {
    * Axes match the world box: X = east, Y = up, Z = south (north is −Z,
    * so grid j = ny−1 is texture Z = 0).
    * R = cloud liquid opacity (MeteoLAB cloudOpacity of qc),
-   * G = cold opacity (0.25·ice + 0.08·snow + 0.03·graupel),
+   * G = cold opacity (ice cloud, plus a snow curtain that shows at a few 0.01 g/kg),
    * B = rain ((qr/0.0015)^0.65 → 1.0 so drizzle still curtains).
    * A = hail core (qh / 2 g kg⁻¹, compressed). Particles and the cloud shader
    * read A on its own so hail is not smeared into the ice anvil.
    */
   packVolumeRGBA(out: Uint8Array): void {
+    if (this.child) {
+      this.child.packVolumeRGBA(out);
+      return;
+    }
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
     // MeteoLAB cloudOpacity: soft threshold then rapid saturation to opaque.
@@ -1770,6 +1869,11 @@ export class FluidSolver implements SimBackend {
    * `dt` is wall seconds, so bolts appear at every sim speed.
    * At most four channels per call. A strong +CG can also carry a sprite.
    */
+  /** Flashes for the grid the 3D view is showing. */
+  rollDisplayLightning(dt: number): LightningStrike[] {
+    return (this.child ?? this).rollLightning(dt);
+  }
+
   rollLightning(dt: number): LightningStrike[] {
     if (dt <= 0) return [];
     const { nx, ny, nz, dz } = this.grid;
@@ -2075,14 +2179,251 @@ export class FluidSolver implements SimBackend {
   }
 
   /** Column-max reflectivity (legacy name for 3D radar plane). */
+  private prepareSurface(spec: SurfaceSpec | null | undefined): void {
+    if (this.nestChild) return;
+    setActiveWater(oceanMaskOf(spec ?? null));
+  }
+
+  private finishSurface(
+    spec: SurfaceSpec | null | undefined,
+    sounding: SoundingLevel[],
+    opts: InitOptions,
+  ): void {
+    this.child = null;
+    this.nestRect = null;
+    this.heightGrid = null;
+    this.waterGrid = null;
+    this.kindGrid = null;
+    this.tempGrid = null;
+    this.soilGrid = null;
+    this.vegGrid = null;
+    this.openK = null;
+    if (!spec || this.nestChild) return;
+    this.installHeights(spec, 0, 0, 1, 1);
+    if (!spec.nest) return;
+    const nest = normalizeNest(spec.nest);
+    this.nestRect = nest;
+    const cg = nestGrid(this.grid, nest);
+    const child = new FluidSolver(cg);
+    child.nestChild = true;
+    child.rebuild(cg, sounding, {
+      bubbleStrength: opts.bubbleStrength,
+      synoptic: opts.synoptic,
+    });
+    child.hydrostatic = this.hydrostatic;
+    child.setRadiation(this.radiation);
+    child.installHeights(spec, nest.x0, nest.y0, nest.x1, nest.y1);
+    this.child = child;
+    this.blendChild(true);
+  }
+
+  private installHeights(
+    spec: SurfaceSpec,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+  ): void {
+    this.sstC = spec.sstC ?? 22;
+    const cover = sampleCover(spec, this.grid.nx, this.grid.ny, x0, y0, x1, y1);
+    this.kindGrid = cover.anyWater ? cover.kind : null;
+    this.tempGrid = cover.anyWater ? cover.waterTemp : null;
+    this.soilGrid = cover.anySoil ? cover.soil : null;
+    this.vegGrid = cover.anyVeg ? cover.veg : null;
+    this.waterGrid = cover.anyWater ? cover.water : null;
+    const built = buildHeights(
+      spec.terrain,
+      cover.ocean,
+      this.grid,
+      x0,
+      y0,
+      x1,
+      y1,
+    );
+    this.heightGrid = built.height;
+    this.openK = built.openK;
+    this.refreshLandMask();
+  }
+
+  /** Close columns under the height field and relax the slope's vertical wind. */
+  private applyTerrain(dt: number): void {
+    const height = this.heightGrid;
+    const open = this.openK;
+    if (!height || !open) return;
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny, nz, dx, dy } = g;
+    const aw = relaxFactor(dt, TERRAIN_TAU);
+    const asst = relaxFactor(dt, SST_TAU);
+    const water = this.waterGrid;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const s = i + j * nx;
+        const kOpen = open[s];
+        for (let k = 0; k < kOpen; k++) {
+          f.u[g.uIdx(i, j, k)] = 0;
+          f.u[g.uIdx(i + 1, j, k)] = 0;
+          f.v[g.vIdx(i, j, k)] = 0;
+          f.v[g.vIdx(i, j + 1, k)] = 0;
+          f.w[g.wIdx(i, j, k)] = 0;
+          const id = g.idx(i, j, k);
+          f.qc[id] = 0;
+          f.qr[id] = 0;
+          f.qi[id] = 0;
+          f.qs[id] = 0;
+          f.qg[id] = 0;
+          f.qh[id] = 0;
+          f.ni[id] = 0;
+        }
+        const kWind = kOpen < nz ? kOpen : nz - 1;
+        const target = orographicW(
+          height,
+          nx,
+          ny,
+          i,
+          j,
+          dx,
+          dy,
+          g.uCenter(f.u, i, j, kWind),
+          g.vCenter(f.v, i, j, kWind),
+        );
+        const face = g.wIdx(i, j, kOpen);
+        f.w[face] += (target - f.w[face]) * aw;
+        const kind = this.kindGrid ? this.kindGrid[s] : 0;
+        const wetFrac = water ? Math.min(1, Math.max(0, water[s])) : 0;
+        const onWater = kind >= 0.5 || wetFrac > 0.02;
+        if (onWater && kOpen < nz && asst > 0) {
+          const id = g.idx(i, j, kOpen);
+          const p = f.p0[kOpen];
+          const wet = kind >= 0.5 && kind < 1.5 ? 1 : wetFrac;
+          const tC = this.tempGrid ? this.tempGrid[s] : this.sstC;
+          const th = (tC + 273.15) / exnerFromP(p);
+          f.theta[id] += (th - f.theta[id]) * asst * wet;
+          const tNow = TFromTheta(f.theta[id], p);
+          const qTarget = qsat(tNow, p) * 0.98;
+          const moist = relaxFactor(dt, 600);
+          f.qv[id] += (qTarget - f.qv[id]) * moist * wet;
+        } else if (kOpen < nz && this.soilGrid) {
+          const soil = this.soilGrid[s];
+          const veg = this.vegGrid ? this.vegGrid[s] : 0;
+          const supply = soil * (0.25 + 0.75 * veg);
+          if (supply > 0.04) {
+            const id = g.idx(i, j, kOpen);
+            const p = f.p0[kOpen];
+            const tNow = TFromTheta(f.theta[id], p);
+            const qTarget = qsat(tNow, p) * 0.92;
+            const add = (qTarget - f.qv[id]) * relaxFactor(dt, 700) * supply;
+            if (add > 0) f.qv[id] += add;
+          }
+        }
+      }
+    }
+  }
+
+  private stepNest(dt: number): void {
+    const child = this.child;
+    const nest = this.nestRect;
+    if (!child || !nest || this.nestChild || dt <= 0) return;
+    child.hydrostatic = this.hydrostatic;
+    child.clockPaused = true;
+    child.radiation.solarHour = this.radiation.solarHour;
+    const n = nest.refinement >= 3 ? 3 : 2;
+    const h = dt / n;
+    for (let s = 0; s < n; s++) {
+      this.blendChild(false);
+      child.step(h);
+    }
+    this.blendChild(false);
+  }
+
+  /** One-way sponge: the child's outer cells follow the parent. */
+  private blendChild(full: boolean): void {
+    const child = this.child;
+    const nest = this.nestRect;
+    if (!child || !nest) return;
+    const pg = this.grid;
+    const cg = child.grid;
+    const pf = this.fields;
+    const cf = child.fields;
+    const fx = nest.x1 - nest.x0;
+    const fy = nest.y1 - nest.y0;
+    const keys = ["theta", "qv", "qc", "qr", "qi", "qs", "qg", "qh", "ni", "p"] as const;
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const a = haloWeight(i, j, cg.nx, cg.ny, full);
+        if (a <= 0) continue;
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * fx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * fy;
+        const px = xn * pg.nx - 0.5;
+        const py = yn * pg.ny - 0.5;
+        for (let k = 0; k < cg.nz; k++) {
+          for (const key of keys) {
+            const sample = bilerpPlane(pf[key], pg.nx, pg.ny, px, py, k);
+            const id = cg.idx(i, j, k);
+            cf[key][id] = a >= 1 ? sample : cf[key][id] * (1 - a) + sample * a;
+          }
+        }
+      }
+    }
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i <= cg.nx; i++) {
+        const ic = i >= cg.nx ? cg.nx - 1 : i;
+        const a = haloWeight(ic, j, cg.nx, cg.ny, full);
+        if (a <= 0) continue;
+        const xn = nest.x0 + (i / cg.nx) * fx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * fy;
+        for (let k = 0; k < cg.nz; k++) {
+          const sample = bilerpPlane(pf.u, pg.nx + 1, pg.ny, xn * pg.nx, yn * pg.ny - 0.5, k);
+          const id = cg.uIdx(i, j, k);
+          cf.u[id] = a >= 1 ? sample : cf.u[id] * (1 - a) + sample * a;
+        }
+      }
+    }
+    for (let j = 0; j <= cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const jc = j >= cg.ny ? cg.ny - 1 : j;
+        const a = haloWeight(i, jc, cg.nx, cg.ny, full);
+        if (a <= 0) continue;
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * fx;
+        const yn = nest.y0 + (j / cg.ny) * fy;
+        for (let k = 0; k < cg.nz; k++) {
+          const sample = bilerpPlane(pf.v, pg.nx, pg.ny + 1, xn * pg.nx - 0.5, yn * pg.ny, k);
+          const id = cg.vIdx(i, j, k);
+          cf.v[id] = a >= 1 ? sample : cf.v[id] * (1 - a) + sample * a;
+        }
+      }
+    }
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const a = haloWeight(i, j, cg.nx, cg.ny, full);
+        if (a <= 0) continue;
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * fx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * fy;
+        const px = xn * pg.nx - 0.5;
+        const py = yn * pg.ny - 0.5;
+        for (let k = 0; k <= cg.nz; k++) {
+          const sample = bilerpPlane(pf.w, pg.nx, pg.ny, px, py, k);
+          const id = cg.wIdx(i, j, k);
+          cf.w[id] = a >= 1 ? sample : cf.w[id] * (1 - a) + sample * a;
+        }
+      }
+    }
+  }
+
   packRadarComposite(out: Uint8Array): void {
     this.packMapProduct("refl", out);
   }
 
-  /** Pack a 2D map product into RGBA (nx×ny). */
+  /** Pack a 2D map product into RGBA (nx×ny of the selected domain). */
   packMapProduct(id: MapProductId, out: Uint8Array): void {
+    const view = this.viewSolver;
+    if (view !== this) {
+      view.packMapProduct(id, out);
+      return;
+    }
     const need = this.grid.nx * this.grid.ny * 4;
     if (out.length < need) return;
+    this.prepareView();
     if (id === "ltg") {
       packLightning(this.grid, this.flash, out);
       return;
@@ -2104,4 +2445,39 @@ export class FluidSolver implements SimBackend {
     }
     return { cloudMax, rainMax, cloudMass };
   }
+}
+
+function haloWeight(
+  i: number,
+  j: number,
+  nx: number,
+  ny: number,
+  full: boolean,
+): number {
+  if (full) return 1;
+  const d = Math.min(i, j, nx - 1 - i, ny - 1 - j);
+  if (d >= 4) return 0;
+  return (4 - d) / 4;
+}
+
+function bilerpPlane(
+  src: Float32Array,
+  xStride: number,
+  yCount: number,
+  x: number,
+  y: number,
+  k: number,
+): number {
+  const xMax = xStride - 1;
+  const yMax = yCount - 1;
+  const x0 = x < 0 ? 0 : x > xMax ? xMax : Math.floor(x);
+  const y0 = y < 0 ? 0 : y > yMax ? yMax : Math.floor(y);
+  const x1 = x0 < xMax ? x0 + 1 : x0;
+  const y1 = y0 < yMax ? y0 + 1 : y0;
+  const tx = x - x0 < 0 ? 0 : x - x0 > 1 ? 1 : x - x0;
+  const ty = y - y0 < 0 ? 0 : y - y0 > 1 ? 1 : y - y0;
+  const at = (ix: number, iy: number) => src[ix + xStride * (iy + yCount * k)];
+  const a = at(x0, y0) * (1 - tx) + at(x1, y0) * tx;
+  const b = at(x0, y1) * (1 - tx) + at(x1, y1) * tx;
+  return a * (1 - ty) + b * ty;
 }

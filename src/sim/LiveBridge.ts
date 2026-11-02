@@ -6,6 +6,7 @@ import { SurfaceWindSample } from "./surfaceWinds";
 import type { LightningStrike } from "./FluidSolver";
 import type { DrawnFront, SynopticSetup } from "./synoptic";
 import type { OverlayField } from "../render/fields";
+import type { ColumnProbe, SectionImage, SectionRequest, ProbeRequest } from "./inspect";
 
 export interface LiveState {
   type: "state";
@@ -44,6 +45,10 @@ export interface LiveState {
   frameEast: number;
   frameNorth: number;
   followStorm: boolean;
+  /** Pinned column, when the Maps 2D probe is active. */
+  probe: ColumnProbe | null;
+  /** Vertical curtain, when a cross-section is defined. */
+  section: SectionImage | null;
 }
 
 /** Physics runs off the render thread so the camera stays smooth. */
@@ -67,7 +72,14 @@ export class LiveBridge {
   }
 
   rebuild(payload: {
-    grid: { nx: number; ny: number; nz: number; zTop: number };
+    grid: {
+      nx: number;
+      ny: number;
+      nz: number;
+      zTop: number;
+      xExtent?: number;
+      yExtent?: number;
+    };
     sounding: SoundingLevel[];
     opts: InitOptions;
     radiation: RadiationOptions;
@@ -116,6 +128,9 @@ export class LiveBridge {
     wantColdPool?: boolean;
     fieldMode?: OverlayField;
     wantVortex?: boolean;
+    probe?: ProbeRequest | null;
+    section?: SectionRequest | null;
+    mapDomain?: "parent" | "nest";
   }): boolean {
     if (this.busy || !this.ready) return false;
     this.busy = true;

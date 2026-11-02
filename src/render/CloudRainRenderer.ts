@@ -149,6 +149,13 @@ export class CloudRainRenderer {
   /** Environmental wind, m/s. +east, +north. */
   private envEast = 1;
   private envNorth = 0;
+  private surfaceH: Float32Array | null = null;
+  private surfaceW: Float32Array | null = null;
+  private surfaceKind: Float32Array | null = null;
+  private surfaceSoil: Float32Array | null = null;
+  private surfaceVeg: Float32Array | null = null;
+  private surfaceNx = 0;
+  private surfaceNy = 0;
   private radarTex: THREE.DataTexture | null = null;
   private radarMesh: THREE.Mesh | null = null;
   /** Native grid image, before the view-detail upsample. */
@@ -390,11 +397,28 @@ export class CloudRainRenderer {
     this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.0001);
     this.renderer.setClearColor(0x9fb4c4, 1);
 
-    const groundGeo = new THREE.PlaneGeometry(4, 4);
+    const groundSeg = 64;
+    const groundGeo = new THREE.PlaneGeometry(4, 4, groundSeg, groundSeg);
+    const groundVerts = (groundSeg + 1) * (groundSeg + 1);
+    const coverAttr = () => new THREE.BufferAttribute(new Float32Array(groundVerts), 1);
+    groundGeo.setAttribute("aWater", coverAttr());
+    groundGeo.setAttribute("aCover", coverAttr());
+    groundGeo.setAttribute("aSoil", coverAttr());
+    groundGeo.setAttribute("aVeg", coverAttr());
+    groundGeo.setAttribute("aPaint", coverAttr());
+    const groundColors = new Float32Array(groundVerts * 3);
+    const base = this.groundColor;
+    for (let i = 0; i < groundVerts; i++) {
+      groundColors[i * 3] = base.r;
+      groundColors[i * 3 + 1] = base.g;
+      groundColors[i * 3 + 2] = base.b;
+    }
+    groundGeo.setAttribute("color", new THREE.BufferAttribute(groundColors, 3));
     const groundMat = new THREE.MeshStandardMaterial({
-      color: this.groundColor,
+      color: 0xffffff,
       roughness: 0.96,
       metalness: 0,
+      vertexColors: true,
     });
     this.ground = new THREE.Mesh(groundGeo, groundMat);
     this.ground.rotation.x = -Math.PI / 2;
@@ -418,15 +442,18 @@ export class CloudRainRenderer {
         uAirScale: { value: 0.5 },
       });
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vCloudWorld;")
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vCloudWorld;\nattribute float aWater;\nattribute float aCover;\nattribute float aSoil;\nattribute float aVeg;\nattribute float aPaint;\nvarying float vWater;\nvarying float vCover;\nvarying float vSoil;\nvarying float vVeg;\nvarying float vPaint;",
+        )
         .replace(
           "#include <project_vertex>",
-          "#include <project_vertex>\nvCloudWorld=(modelMatrix*vec4(transformed,1.0)).xyz;",
+          "#include <project_vertex>\nvCloudWorld=(modelMatrix*vec4(transformed,1.0)).xyz;\nvWater=aWater;\nvCover=aCover;\nvSoil=aSoil;\nvVeg=aVeg;\nvPaint=aPaint;",
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          `#include <common>\n${groundSurfacePars}\n${groundShadowPars}`,
+          `#include <common>\nvarying float vWater;\nvarying float vCover;\nvarying float vSoil;\nvarying float vVeg;\nvarying float vPaint;\n${groundSurfacePars}\n${groundShadowPars}`,
         )
         .replace(
           "#include <map_fragment>",
@@ -453,10 +480,11 @@ export class CloudRainRenderer {
     diffuseColor.rgb *= mix(1.0, wet, smoothstep(0.0, 0.3, gWater) * (1.0 - snowCover));
     gSpec = smoothstep(pond, pond * 2.0, gWater) * (1.0 - snowCover);
   }
-  float dust = smoothstep(0.0, 0.1, gSnow);
-  float deep = smoothstep(0.06, 0.88, gSnow);
+  diffuseColor.rgb = vColor * diffuse;
+  float dust = smoothstep(0.0, 0.04, gSnow);
+  float deep = smoothstep(0.02, 0.55, gSnow);
   vec3 snowCol = vec3(0.94, 0.96, 0.98);
-  diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, dust * 0.42);
+  diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, dust * 0.72);
   diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, deep);
   gHailDots = hailStones(q, st.a, st.b);
   vec3 hailCol = mix(vec3(0.78, 0.81, 0.84), vec3(0.98, 0.99, 1.0), smoothstep(0.15, 0.85, st.b));
@@ -470,6 +498,11 @@ if(abs(uSurface - 2.0) < 0.5){
   float U = texture(uWind, groundAt(vCloudWorld)).r * WIND_SCALE / 1.15;
   roughnessFactor = sqrt(sqrt(0.003 + 0.00512 * U));
 } else roughnessFactor = mix(roughnessFactor, 0.15, gSpec);
+if(vPaint > 0.5){
+  float waterR = step(0.5, vCover);
+  float landR = mix(0.72, 0.98, clamp(vVeg, 0.0, 1.0));
+  roughnessFactor = mix(landR, 0.16, waterR);
+}
 float snowPack = smoothstep(0.08, 0.9, gSnow);
 roughnessFactor = mix(roughnessFactor, 0.96, snowPack);
 roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
@@ -478,6 +511,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
           "#include <lights_fragment_end>",
           "#include <lights_fragment_end>\n{vec3 s=cloudShade(vCloudWorld);reflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*s.y+reflectedLight.directDiffuse*s.z;reflectedLight.directDiffuse*=s.x;reflectedLight.directSpecular*=s.x;}",
         )
+        .replace("#include <color_fragment>", "")
         .replace("#include <fog_fragment>", "");
     };
     // needsUpdate is set in setGrid() once shared/ground uniforms exist.
@@ -1385,7 +1419,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.hemi.intensity = Math.max(0.28, 1 - s * 0.62);
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     // Mild global dim — spatial cloud shadows do the real work.
-    groundMat.color.copy(this.groundColor).multiplyScalar(1 - s * 0.22);
+    groundMat.color.setScalar(1 - s * 0.22);
     if (this.cloudMat) {
       this.cloudMat.setLook({
         exposure: DEFAULT_LOOK.exposure * (1 + s * 1.45),
@@ -1401,6 +1435,113 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     else this.cloudMat.setWind(this.envEast, -this.envNorth, spd);
   }
 
+  /** Displace the ground mesh from the run's height field. Called once per run. */
+  setSurface(
+    height: Float32Array | null,
+    water: Float32Array | null,
+    nx: number,
+    ny: number,
+    cover?: { kind: Float32Array; soil: Float32Array; veg: Float32Array } | null,
+  ): void {
+    this.surfaceH = height;
+    this.surfaceW = water;
+    this.surfaceKind = cover?.kind ?? null;
+    this.surfaceSoil = cover?.soil ?? null;
+    this.surfaceVeg = cover?.veg ?? null;
+    this.surfaceNx = nx;
+    this.surfaceNy = ny;
+    this.displaceGround();
+  }
+
+  private displaceGround(): void {
+    const pos = this.ground.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const wet = this.ground.geometry.getAttribute("aWater") as THREE.BufferAttribute | undefined;
+    const cover = this.ground.geometry.getAttribute("aCover") as THREE.BufferAttribute | undefined;
+    const soil = this.ground.geometry.getAttribute("aSoil") as THREE.BufferAttribute | undefined;
+    const veg = this.ground.geometry.getAttribute("aVeg") as THREE.BufferAttribute | undefined;
+    const paint = this.ground.geometry.getAttribute("aPaint") as THREE.BufferAttribute | undefined;
+    const color = this.ground.geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
+    if (!wet || !cover || !soil || !veg || !paint || !color) return;
+    const sx = Math.max(1, this.spanX);
+    const sz = Math.max(1, this.spanZ);
+    const scaleX = this.ground.scale.x || 1;
+    const scaleY = this.ground.scale.y || 1;
+    const h = this.surfaceH;
+    const w = this.surfaceW;
+    const nx = this.surfaceNx;
+    const ny = this.surfaceNy;
+    const sample = (buf: Float32Array | null, u: number, v: number): number => {
+      if (!buf || nx < 2 || ny < 2 || u < 0 || u > 1 || v < 0 || v > 1) return 0;
+      const x = u * (nx - 1);
+      const y = v * (ny - 1);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(nx - 1, x0 + 1);
+      const y1 = Math.min(ny - 1, y0 + 1);
+      const tx = x - x0;
+      const ty = y - y0;
+      const at = (ix: number, iy: number) => buf[ix + nx * iy];
+      const a = at(x0, y0) * (1 - tx) + at(x1, y0) * tx;
+      const b = at(x0, y1) * (1 - tx) + at(x1, y1) * tx;
+      return a * (1 - ty) + b * ty;
+    };
+    const nearest = (buf: Float32Array | null, u: number, v: number): number => {
+      if (!buf || nx < 1 || ny < 1 || u < 0 || u > 1 || v < 0 || v > 1) return 0;
+      const ix = Math.max(0, Math.min(nx - 1, Math.round(u * (nx - 1))));
+      const iy = Math.max(0, Math.min(ny - 1, Math.round(v * (ny - 1))));
+      return buf[ix + nx * iy];
+    };
+    const painted = h != null || w != null || this.surfaceKind != null;
+    for (let i = 0; i < pos.count; i++) {
+      const worldX = pos.getX(i) * scaleX;
+      const worldZ = -pos.getY(i) * scaleY;
+      const u = worldX / sx + 0.5;
+      const v = 0.5 - worldZ / sz;
+      const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+      pos.setZ(i, sample(h, u, v));
+      wet.setX(i, sample(w, u, v));
+      const kind = nearest(this.surfaceKind, u, v);
+      const soilV = sample(this.surfaceSoil, u, v);
+      const vegV = sample(this.surfaceVeg, u, v);
+      cover.setX(i, kind);
+      soil.setX(i, soilV);
+      veg.setX(i, vegV);
+      paint.setX(i, inside && painted ? 1 : 0);
+      const rgb = this.coverColor(inside && painted, kind, soilV, vegV);
+      color.setXYZ(i, rgb[0], rgb[1], rgb[2]);
+    }
+    pos.needsUpdate = true;
+    wet.needsUpdate = true;
+    cover.needsUpdate = true;
+    soil.needsUpdate = true;
+    veg.needsUpdate = true;
+    paint.needsUpdate = true;
+    color.needsUpdate = true;
+    this.ground.geometry.computeVertexNormals();
+  }
+
+  /** Bare ground, wet soil, forest, lake, and ocean. The skirt stays the base green. */
+  private coverColor(
+    painted: boolean,
+    kind: number,
+    soilV: number,
+    vegV: number,
+  ): [number, number, number] {
+    if (!painted) return [this.groundColor.r, this.groundColor.g, this.groundColor.b];
+    if (kind >= 1.5) return [0.05, 0.16, 0.28];
+    if (kind >= 0.5) return [0.25, 0.52, 0.62];
+    const soil = Math.max(0, Math.min(1, soilV));
+    const veg = Math.max(0, Math.min(1, vegV));
+    const bareR = 0.55 + (0.32 - 0.55) * soil;
+    const bareG = 0.46 + (0.26 - 0.46) * soil;
+    const bareB = 0.28 + (0.16 - 0.28) * soil;
+    return [
+      bareR + (0.12 - bareR) * veg,
+      bareG + (0.32 - bareG) * veg,
+      bareB + (0.14 - bareB) * veg,
+    ];
+  }
+
   setGrid(grid: Grid3D): void {
     const height = Math.max(1, grid.zTop);
     const sx = Math.max(1, grid.xExtent);
@@ -1413,6 +1554,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.domainBox.scale.set(sx, height, sz);
     this.ground.scale.set(sx * 1.12, sz * 1.12, 1);
     this.ground.position.y = this.groundY;
+    this.displaceGround();
     if (this.groundFlashMesh) {
       // Local patch under the strike — not a domain-wide wash.
       this.groundFlashMesh.scale.set(9000, 9000, 1);
@@ -1675,7 +1817,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.volumeTex.needsUpdate = true;
     this.volumeRevision++;
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
-    groundMat.color.copy(this.groundColor);
     groundMat.roughness = 0.96;
 
     if (!this.warnedEmpty && !empty) {

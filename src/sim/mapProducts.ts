@@ -9,6 +9,11 @@ import {
 } from "./mapDerived";
 import { surfacePressureBiasHpa } from "./synoptic";
 import {
+  columnBaseK,
+  isSurfaceProduct,
+  packSurfaceProduct,
+} from "./surface";
+import {
   CP,
   LV,
   TFromTheta,
@@ -93,6 +98,11 @@ export type MapProductId =
   | "convtemp"
   | "dcape"
   | "capeshear"
+  | "scp"
+  | "stp"
+  | "ehi"
+  | "ship"
+  | "mburst"
   // ── Derived moisture and surface thermodynamics ───────────────────────────
   | "dptdep"
   | "qsfc"
@@ -139,7 +149,18 @@ export type MapProductId =
   | "coldpool"
   | "pgrad"
   | "tgrad"
-  | "tdgrad";
+  | "tdgrad"
+  | "elev"
+  | "slope"
+  | "aspect"
+  | "orog"
+  | "sst"
+  | "coast"
+  | "wkind"
+  | "soilm"
+  | "vegc"
+  | "albedo"
+  | "rough";
 
 export interface MapScale {
   min: number;
@@ -449,20 +470,20 @@ const ACCUM_STOPS: RgbaStop[] = [
 /** Snow depth — pale blue into white, centimetres of fresh snow. */
 const SNOW_DEPTH_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [1, 70, 96, 128],
-  [4, 132, 164, 190],
-  [10, 186, 208, 222],
-  [20, 224, 234, 240],
-  [40, 248, 250, 252],
+  [0.2, 118, 148, 176],
+  [1, 168, 196, 214],
+  [4, 206, 222, 232],
+  [12, 230, 238, 244],
+  [40, 250, 252, 255],
 ];
 
 /** Hail on the ground — cool gray into bright white, mm liquid equivalent. */
 const HAIL_ACCUM_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.5, 88, 104, 132],
-  [2, 150, 162, 178],
-  [6, 196, 198, 204],
-  [15, 228, 226, 220],
+  [0.05, 110, 124, 150],
+  [0.5, 160, 170, 186],
+  [2, 196, 200, 206],
+  [8, 228, 226, 220],
   [40, 255, 250, 240],
 ];
 
@@ -1034,6 +1055,22 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   convtemp: pm("convtemp", "Convective temperature", "°C", DERIVED_LEGENDS.scalar, 5, 45, [5, 15, 25, 35, 45], ["5", "15", "25", "35", "45"]),
   dcape: pm("dcape", "Downdraft CAPE (DCAPE)", "J/kg", DERIVED_LEGENDS.scalar, 0, 2000, [0, 500, 1000, 2000], ["0", "500", "1000", "2000"]),
   capeshear: pm("capeshear", "CAPE × 0–6 km shear", "J·m/(kg·s)", DERIVED_LEGENDS.scalar, 0, 300000, [0, 75000, 150000, 300000], ["0", "75k", "150k", "300k"]),
+  scp: pm("scp", "Supercell composite parameter", "—", DERIVED_LEGENDS.scalar, 0, 10, [0, 1, 4, 10], ["0", "1", "4", "10"]),
+  stp: pm("stp", "Significant tornado parameter", "—", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 5], ["0", "1", "2", "5"]),
+  ehi: pm("ehi", "Energy–helicity index", "—", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 5], ["0", "1", "2", "5"]),
+  ship: pm("ship", "Significant hail parameter", "—", DERIVED_LEGENDS.scalar, 0, 5, [0, 0.5, 1, 5], ["0", "0.5", "1", "5"]),
+  mburst: pm("mburst", "Microburst index", "—", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 5], ["0", "1", "2", "5"]),
+  elev: pm("elev", "Terrain elevation", "m", DERIVED_LEGENDS.scalar, 0, 4500, [0, 800, 1800, 3000, 4500], ["0", "800", "1800", "3000", "4500"]),
+  slope: pm("slope", "Terrain slope", "°", DERIVED_LEGENDS.scalar, 0, 30, [0, 5, 15, 30], ["0", "5", "15", "30"]),
+  aspect: pm("aspect", "Terrain aspect", "°", DERIVED_LEGENDS.scalar, 0, 360, [0, 90, 180, 270, 360], ["0", "90", "180", "270", "360"]),
+  orog: pm("orog", "Orographic lift", "m/s", DERIVED_LEGENDS.diverging, -5, 5, [-5, 0, 5], ["−5", "0", "+5"]),
+  sst: pm("sst", "Sea-surface temperature", "°C", DERIVED_LEGENDS.scalar, -5, 35, [-5, 5, 15, 25, 35], ["−5", "5", "15", "25", "35"]),
+  coast: pm("coast", "Sea–land temperature contrast", "K", DERIVED_LEGENDS.diverging, -12, 12, [-12, 0, 12], ["−12", "0", "+12"]),
+  wkind: pm("wkind", "Lake versus ocean", "—", DERIVED_LEGENDS.scalar, 0, 2, [0, 1, 2], ["Land", "Lake", "Ocean"]),
+  soilm: pm("soilm", "Soil moisture", "—", DERIVED_LEGENDS.scalar, 0, 1, [0, 0.5, 1], ["0", "0.5", "1"]),
+  vegc: pm("vegc", "Vegetation cover", "—", DERIVED_LEGENDS.scalar, 0, 1, [0, 0.5, 1], ["Bare", "0.5", "Forest"]),
+  albedo: pm("albedo", "Surface albedo", "—", DERIVED_LEGENDS.scalar, 0, 0.4, [0, 0.15, 0.35], ["0", "0.15", "0.35"]),
+  rough: pm("rough", "Surface roughness", "m", DERIVED_LEGENDS.scalar, 0, 1, [0, 0.2, 1], ["0", "0.2", "1"]),
   // ── Derived moisture and surface thermodynamics ───────────────────────────
   dptdep: pm("dptdep", "Surface dew-point depression", "K", DERIVED_LEGENDS.scalar, 0, 30, [0, 10, 20, 30], ["0", "10", "20", "30"]),
   qsfc: pm("qsfc", "Surface specific humidity", "g/kg", DERIVED_LEGENDS.scalar, 0, 25, [0, 5, 10, 15, 25], ["0", "5", "10", "15", "25"]),
@@ -1310,6 +1347,11 @@ export function packMapProduct(
     case "convtemp":
     case "dcape":
     case "capeshear":
+    case "scp":
+    case "stp":
+    case "ehi":
+    case "ship":
+    case "mburst":
     case "dptdep":
     case "qsfc":
     case "mixratio":
@@ -1349,6 +1391,19 @@ export function packMapProduct(
     case "tgrad":
     case "tdgrad":
       packDerivedProduct(id as DerivedProductId, grid, fields, out);
+      break;
+    case "elev":
+    case "slope":
+    case "aspect":
+    case "orog":
+    case "sst":
+    case "coast":
+    case "wkind":
+    case "soilm":
+    case "vegc":
+    case "albedo":
+    case "rough":
+      if (isSurfaceProduct(id)) packSurfaceProduct(id, grid, fields, out);
       break;
   }
 }
@@ -1719,6 +1774,15 @@ export function coldReflectivityMass(f: SimFields, id: number): number {
     2.0 * Math.max(0, f.qg[id]) +
     3.5 * Math.max(0, f.qh[id])
   );
+}
+
+/** Same reflectivity colors as the column-max map. */
+export function writeReflectivityRgba(
+  dbz: number,
+  out: Uint8Array,
+  o: number,
+): void {
+  dbzToRgba(dbz, out, o);
 }
 
 function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
@@ -2589,16 +2653,17 @@ function packHailSize(grid: Grid3D, f: SimFields, out: Uint8Array): void {
  */
 function packMslp(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   const { nx, ny, dz } = grid;
-  const p0 = f.p0[0];
-  const rho0 = f.rho0[0];
-  const zSfc = 0.5 * dz;
   const gOverR = 9.80665 / 287.05;
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);
   for (let j = 0; j < ny; j++) {
     const yn = j / yDen;
     for (let i = 0; i < nx; i++) {
-      const s = i + j * nx;
+      const k = columnBaseK(nx, i, j);
+      const s = grid.idx(i, j, k);
+      const p0 = f.p0[k];
+      const rho0 = f.rho0[k];
+      const zSfc = (k + 0.5) * dz;
       const pSfc = p0 + rho0 * f.p[s];
       const tV =
         TFromTheta(f.theta[s], p0) * (1 + 0.608 * Math.max(0, f.qv[s]));

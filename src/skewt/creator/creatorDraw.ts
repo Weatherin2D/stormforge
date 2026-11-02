@@ -23,6 +23,11 @@ export interface CreatorCss {
   card: string;
 }
 
+export interface DrawOpts {
+  /** Per-level edit handles. Default true so the sounding editor stays unchanged. */
+  markers?: boolean;
+}
+
 export function readCreatorCss(
   el: HTMLElement = document.documentElement,
 ): CreatorCss {
@@ -131,6 +136,7 @@ export function drawSkewT(
   D: Diagnostics,
   sel: ParcelKey,
   css: CreatorCss,
+  opts?: DrawOpts,
 ): void {
   const x = setup(canvas, ST_W, ST_H);
   const gr = css.grid;
@@ -208,10 +214,12 @@ export function drawSkewT(
     PARCEL_W,
     [8, 5],
   );
-  L.forEach((l) => {
-    dot(x, X(l.T, l.p), Y(l.p), "#e5383b");
-    dot(x, X(l.Td, l.p), Y(l.p), "#2fa84f");
-  });
+  if (opts?.markers !== false) {
+    L.forEach((l) => {
+      dot(x, X(l.T, l.p), Y(l.p), "#e5383b");
+      dot(x, X(l.Td, l.p), Y(l.p), "#2fa84f");
+    });
+  }
   x.restore();
   x.fillStyle = mu;
   x.strokeStyle = mu;
@@ -263,6 +271,7 @@ export function drawHodograph(
   D: Diagnostics,
   hR: number,
   css: CreatorCss,
+  opts?: DrawOpts,
 ): void {
   const hs = HODO_SIZE;
   const hc = hs / 2;
@@ -309,16 +318,18 @@ export function drawHodograph(
     x.lineWidth = HODO_W;
     x.stroke();
   }
-  H1.forEach((l) => {
-    const [px, py] = hodoPoint(l, hR, hc);
-    x.beginPath();
-    x.arc(px, py, HODO_R, 0, 7);
-    x.fillStyle = css.card;
-    x.fill();
-    x.strokeStyle = col(l.z ?? 0);
-    x.lineWidth = 3.25;
-    x.stroke();
-  });
+  if (opts?.markers !== false) {
+    H1.forEach((l) => {
+      const [px, py] = hodoPoint(l, hR, hc);
+      x.beginPath();
+      x.arc(px, py, HODO_R, 0, 7);
+      x.fillStyle = css.card;
+      x.fill();
+      x.strokeStyle = col(l.z ?? 0);
+      x.lineWidth = 3.25;
+      x.stroke();
+    });
+  }
   (
     [
       [`RM${D.S ? " anti" : " cyc"}`, D.RM, "#e5383b"],

@@ -724,7 +724,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     productId: "mslp",
     definition: "Pressure reduced to mean sea level.",
     formula: "p_sfc = p₀ + ρ₀·π′; MSLP = p_sfc·exp(g·z_sfc/(R·Tv)) + synoptic bias",
-    assumptions: "Hydrostatic reduction from the lowest model level with a flat terrain assumption; no terrain correction.",
+    assumptions: "Hydrostatic reduction from the lowest open level. That level is the first cell centre above the terrain.",
   }),
   V(S5, "storm", "pressure-gradient", "Pressure gradient", "derived", "surface", "surface", "hPa/km", {
     definition: "Horizontal gradient of surface pressure.",
@@ -798,19 +798,27 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
   V(S5, "storm", "orographic-lift", "Orographic lift", "derived", "surface", "surface", "m/s", {
     definition: "Vertical motion forced by flow over terrain.",
-    assumptions: "Not implemented; the model has no terrain.",
+    productId: "orog",
+    formula: "w = u ∂h/∂x + v ∂h/∂y at the lowest open level.",
+    assumptions: "The height field blocks cells below the surface. The solver relaxes the first open w face toward this value over about 60 s.",
   }),
-  V(S5, "surface", "elevation", "Terrain elevation", "external", "surface", "surface", "m", {
+  V(S5, "surface", "elevation", "Terrain elevation", "derived", "surface", "surface", "m", {
     definition: "Height of the land surface.",
-    assumptions: "Not implemented; the current domain is flat.",
+    productId: "elev",
+    formula: "Painted height, capped at 0.4 × zTop and so that at least 8 levels stay open. Water cells are 0.",
+    assumptions: "A blocked-column height on the flat grid, not a terrain-following coordinate.",
   }),
-  V(S5, "surface", "terrain-slope", "Terrain slope", "external", "surface", "surface", "°", {
+  V(S5, "surface", "terrain-slope", "Terrain slope", "derived", "surface", "surface", "°", {
     definition: "Magnitude of the terrain gradient.",
-    assumptions: "Not implemented; requires an elevation dataset.",
+    productId: "slope",
+    formula: "atan(|∇h|) in degrees, from centred differences of the height field.",
+    assumptions: "Uses the painted height on the model grid.",
   }),
-  V(S5, "surface", "terrain-aspect", "Terrain aspect", "external", "surface", "surface", "°", {
-    definition: "Direction of the terrain gradient.",
-    assumptions: "Not implemented; requires an elevation dataset.",
+  V(S5, "surface", "terrain-aspect", "Terrain aspect", "derived", "surface", "surface", "°", {
+    definition: "Direction of the downhill slope.",
+    productId: "aspect",
+    formula: "atan2(−∂h/∂x, −∂h/∂y), degrees from north.",
+    assumptions: "Flat columns are drawn as 0°.",
   }),
   V(S5, "storm", "ci-tracking", "Convective-initiation tracking", "derived", "time", "time", "—", {
     definition: "Tracked new-convection objects through time.",
@@ -1260,26 +1268,39 @@ export const VIEW_CATALOG: CatalogView[] = [
 
   // ── 9. Severe weather diagnostics ──────────────────────────────────────────
   V(S9, "storm", "scp", "Supercell Composite Parameter (SCP)", "derived", "column", "column", "—", {
-    definition: "Composite favourability for supercells.",
-    formula: "(MUCAPE/1000)·(SRH/50)·(shear/20)",
-    assumptions: "Not implemented; MUCAPE and SRH are not yet available.",
+    productId: "scp",
+    definition: "Fixed-layer composite favourability for supercells.",
+    formula: "(MUCAPE/1000)·(max(0, SRH 0–3 km)/50)·shearTerm. shearTerm is 0 below 10 m/s, otherwise (0–6 km shear)/20, capped at 1.5.",
+    assumptions: "Fixed layers, not an effective-inflow layer. MUCAPE uses the most-unstable parcel in the lowest 3 km. SRH and shear are the domain hodograph, so they do not vary across the map. Environmental only; not a storm detection.",
+    aliases: "supercell composite",
   }),
   V(S9, "storm", "stp", "Significant Tornado Parameter (STP)", "derived", "column", "column", "—", {
-    definition: "Composite favourability for significant tornadoes.",
-    assumptions: "Not implemented. Environmental only; does not predict a tornado.",
+    productId: "stp",
+    definition: "Fixed-layer composite favourability for significant tornadoes.",
+    formula: "(MLCAPE/1500)·(max(0, SRH 0–1 km)/150)·shearTerm·lclTerm·cinTerm. shearTerm is 0 below 12.5 m/s, otherwise (0–6 km shear)/20, capped at 1.5. lclTerm = clamp((2000 − MLLCL)/1000, 0, 1). cinTerm = clamp((200 − MLCIN)/150, 0, 1) with CIN as a positive magnitude.",
+    assumptions: "Effective-STP normalizations on fixed layers (mixed-layer parcel, 0–1 km SRH, 0–6 km shear). No effective inflow layer. Environmental only; does not predict a tornado.",
+    aliases: "significant tornado parameter",
   }),
   V(S9, "storm", "ehi", "Energy–Helicity Index (EHI)", "derived", "column", "column", "—", {
-    definition: "CAPE multiplied by storm-relative helicity.",
-    formula: "EHI = (CAPE × SRH) / 160000",
-    assumptions: "Not implemented.",
+    productId: "ehi",
+    definition: "Surface-based CAPE multiplied by 0–3 km storm-relative helicity.",
+    formula: "EHI = (SBCAPE × max(0, SRH 0–3 km)) / 160000. SBCAPE is the parcel lift from the lowest model level used by the other derived instability products.",
+    assumptions: "SRH is the domain hodograph. Does not use the separate surface-CAPE map integrator.",
+    aliases: "energy helicity index",
   }),
   V(S9, "storm", "sig-hail", "Significant-hail parameter", "derived", "column", "column", "—", {
-    definition: "Composite favourability for large hail.",
-    assumptions: "Not implemented. Requires CAPE, shear, and a freezing-level term.",
+    productId: "ship",
+    definition: "SPC significant-hail parameter from the most-unstable parcel and the 0–6 km shear.",
+    formula: "0 when MUCAPE < 1300 J/kg. Otherwise (MUCAPE · MRmu · LR75 · max(0, −T500) · shear06) / 44000000 after caps: mixing ratio ≤ 13.6 g/kg, 700–500 hPa lapse rate ≥ 5.8 K/km, 500 hPa temperature ≤ −5.5 °C, shear clamped to 7–27 m/s.",
+    assumptions: "Fixed-layer SPC SHIP, not a hail-size forecast. Simulated hail diameter remains the hailsize product. Shear is the domain hodograph.",
+    aliases: "ship significant hail",
   }),
   V(S9, "storm", "microburst", "Microburst composite / downburst index", "derived", "column", "column", "—", {
-    definition: "Composite downdraft-strength index.",
-    assumptions: "Not implemented. DCAPE and evaporative cooling are not available.",
+    productId: "mburst",
+    definition: "Downdraft-environment index from DCAPE and the 0–3 km lapse rate.",
+    formula: "0 when DCAPE < 100 J/kg or the 0–3 km lapse rate ≤ 6.5 K/km. Otherwise (DCAPE/1000) · ((lapse03 − 6.5) / 2).",
+    assumptions: "This composite is not WINDEX and is not a surface-wind forecast. DCAPE is the lowest-θe parcel in the lowest 3 km.",
+    aliases: "microburst downburst",
   }),
   V(S9, "storm", "derecho", "Damaging-wind / derecho environment diagnostic", "derived", "column", "column", "—", {
     definition: "Environment favourable for widespread damaging winds.",
@@ -1351,7 +1372,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Height of the 500 hPa surface.",
     productId: "z500",
     formula: "Hypsometric integral z = ∫ (Rd Tv / g) d ln p from the lowest model level to 500 hPa, plus 0.5 dz.",
-    assumptions: "Uses base-state pressure levels, not the anelastic pressure perturbation; the lowest model level is the lower bound because the model has no terrain.",
+    assumptions: "Uses base-state pressure levels, not the anelastic pressure perturbation. The integral starts at the lowest open level above the terrain.",
   }),
   V(S10, "wind", "jet-stream", "200–300 hPa jet stream", "derived", "200–300 hPa", "pressure", "m/s", {
     definition: "Upper-tropospheric wind maximum.",
@@ -1361,7 +1382,7 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Thickness of the 1000–500 hPa layer.",
     productId: "thickness",
     formula: "z(500 hPa) − z(1000 hPa) from the same hypsometric integral.",
-    assumptions: "Uses the lowest model level as the lower bound when it is below 1000 hPa; base-state pressure levels only.",
+    assumptions: "Uses the lowest open level as the lower bound when it is below 1000 hPa; base-state pressure levels only.",
   }),
   V(S10, "wind", "vort-adv", "Vorticity advection", "derived", "pressure level", "pressure", "s⁻²", {
     definition: "Advection of absolute vorticity by the wind.",
@@ -1420,9 +1441,11 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Sub-surface soil temperature.",
     assumptions: "Not implemented: no soil model.",
   }),
-  V(S11, "surface", "soil-moisture", "Soil moisture", "external", "soil", "profile", "m³/m³", {
-    definition: "Volumetric soil water content.",
-    assumptions: "Not implemented: no soil model.",
+  V(S11, "surface", "soil-moisture", "Soil moisture", "derived", "surface", "surface", "—", {
+    definition: "Painted soil moisture on land, from dry to saturated.",
+    productId: "soilm",
+    formula: "The soil-moisture brush, 0–1, resampled onto land cells. Water cells are 0.",
+    assumptions: "A single surface value. There is no layered soil.",
   }),
   V(S11, "surface", "soil-saturation", "Soil saturation", "external", "soil", "profile", "%", {
     definition: "Soil water content relative to saturation.",
@@ -1436,9 +1459,11 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Fraction of the surface covered by liquid water.",
     assumptions: "Not implemented.",
   }),
-  V(S11, "surface", "vegetation-cover", "Vegetation cover", "external", "surface", "surface", "%", {
-    definition: "Fractional vegetation cover.",
-    assumptions: "Not implemented.",
+  V(S11, "surface", "vegetation-cover", "Vegetation cover", "derived", "surface", "surface", "—", {
+    definition: "Painted vegetation, from bare ground to forest.",
+    productId: "vegc",
+    formula: "The vegetation brush, 0 bare to 1 forest, on land cells. Water cells are 0.",
+    assumptions: "A surface fraction. There is no canopy model.",
   }),
   V(S11, "surface", "vegetation-moisture", "Vegetation moisture", "external", "surface", "surface", "—", {
     definition: "Water content of vegetation.",
@@ -1448,13 +1473,17 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Land-use category per grid cell.",
     assumptions: "Not implemented.",
   }),
-  V(S11, "surface", "roughness", "Surface roughness", "external", "surface", "surface", "m", {
-    definition: "Aerodynamic roughness length.",
-    assumptions: "Not implemented.",
+  V(S11, "surface", "roughness", "Surface roughness", "derived", "surface", "surface", "m", {
+    definition: "Roughness length taken from the painted cover.",
+    productId: "rough",
+    formula: "Ocean and lake 0.0002 m. Land 0.01 + 0.8 × vegetation.",
+    assumptions: "Derived from cover. Not a separate roughness field.",
   }),
-  V(S11, "surface", "albedo", "Surface albedo", "external", "surface", "surface", "—", {
-    definition: "Fraction of incoming solar radiation reflected.",
-    assumptions: "Not implemented.",
+  V(S11, "surface", "albedo", "Surface albedo", "derived", "surface", "surface", "—", {
+    definition: "Fraction of incoming solar radiation reflected, taken from the painted cover.",
+    productId: "albedo",
+    formula: "Ocean 0.06, lake 0.08. Bare ground 0.30 − 0.14 × soil moisture, blended to 0.12 at full forest.",
+    assumptions: "Derived from cover. Not a separate albedo brush. Heating uses moisture and vegetation directly.",
   }),
   V(S11, "surface", "solar-incoming", "Incoming solar radiation", "derived", "surface", "surface", "W/m²", {
     definition: "Downwelling shortwave radiation.",
@@ -1472,13 +1501,23 @@ export const VIEW_CATALOG: CatalogView[] = [
     definition: "Water vapour flux from the surface.",
     assumptions: "Not implemented.",
   }),
-  V(S11, "surface", "sst", "Ocean / sea-surface temperature", "external", "surface", "surface", "°C", {
-    definition: "Temperature of the sea surface.",
-    assumptions: "Not implemented: the domain has no ocean.",
+  V(S11, "surface", "sst", "Ocean / sea-surface temperature", "derived", "surface", "surface", "°C", {
+    definition: "Temperature of lake and ocean cells.",
+    productId: "sst",
+    formula: "The painted water temperature on lake and ocean cells. Land cells show the lowest open-level temperature.",
+    assumptions: "Each water cell keeps the temperature painted on it. An older save with only one SST fills every water cell with that value.",
+  }),
+  V(S11, "surface", "water-kind", "Lake versus ocean", "derived", "surface", "surface", "—", {
+    definition: "Whether a cell is land, a lake, or ocean.",
+    productId: "wkind",
+    formula: "0 land, 1 lake, 2 ocean, from the water brush.",
+    assumptions: "A lake sits on the height already drawn. Ocean paint sets the height to 0 and keeps the marine layer.",
   }),
   V(S11, "surface", "sea-land-contrast", "Sea–land temperature contrast", "derived", "surface", "surface", "K", {
-    definition: "Temperature difference between sea and land.",
-    assumptions: "Not implemented.",
+    definition: "Temperature difference between water and land.",
+    productId: "coast",
+    formula: "Painted water temperature at that cell − (mean temperature of land columns at the lowest open level), shown on water cells.",
+    assumptions: "Land cells are drawn as 0. The land mean is the current model temperature, not a soil temperature.",
   }),
 
   // ── 12. Time evolution and simulation debugging ────────────────────────────

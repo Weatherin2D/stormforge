@@ -80,6 +80,10 @@ export interface SimDiagnostics {
 export interface SimBackend {
   readonly kind: SolverKind;
   readonly grid: Grid3D;
+  /** Grid shown in the 3D view. A nest uses the child grid. */
+  readonly displayGrid: Grid3D;
+  /** Choose which domain a map product is packed from. */
+  setMapDomain?(domain: "parent" | "nest"): void;
   /** Current field snapshot (live arrays on CPU; materialized view on GPU). */
   fields: SimFields;
   time: number;

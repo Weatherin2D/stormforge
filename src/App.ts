@@ -23,6 +23,14 @@ import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
 import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 import { unpackVortexLevels } from "./sim/fieldPack";
+import {
+  buildHeights,
+  nestGrid,
+  normalizeNest,
+  sampleCover,
+  setupNeedsCpu,
+  type SurfaceSpec,
+} from "./sim/surface";
 import type { OverlayField } from "./render/fields";
 
 type SessionMode = "live" | "batching" | "playback";
@@ -114,6 +122,8 @@ export class App {
   private liveVolumeAsk = 0;
   /** Last time we asked the worker for surface winds (ms). */
   private liveWindsAsk = 0;
+  /** Last probe/section edit already sampled while the run was paused. */
+  private inspectSentGen = -1;
   private liveDth: number | null = null;
   private liveCloud: { cloudMax: number; rainMax: number; cloudMass: number } | null = null;
   private outputIntervalSec = 5;
@@ -1136,9 +1146,11 @@ export class App {
         : defaultSounding(values.zTop, Math.max(20, values.nz + 1));
     this.solver = await this.createSolver(grid);
     this.synoptic = values.synoptic;
+    const surface = this.surfaceOf(values);
     this.solver.rebuild(grid, this.sounding, {
       bubbleStrength: values.bubbleStrength,
       synoptic: this.synoptic,
+      surface,
     });
     // If the WebGPU backend could not allocate device-sized buffers
     // (e.g. a continental grid exceeding maxBufferSize), fall back to CPU.
@@ -1150,6 +1162,7 @@ export class App {
       this.solver.rebuild(grid, this.sounding, {
         bubbleStrength: values.bubbleStrength,
         synoptic: this.synoptic,
+        surface,
       });
     }
     this.solver.hydrostatic = values.hydrostatic ? "on" : "off";
@@ -1165,9 +1178,20 @@ export class App {
     this.liveDth = null;
     this.liveCloud = null;
     this.ensureLive().rebuild({
-      grid: { nx: grid.nx, ny: grid.ny, nz: grid.nz, zTop: grid.zTop },
+      grid: {
+        nx: grid.nx,
+        ny: grid.ny,
+        nz: grid.nz,
+        zTop: grid.zTop,
+        xExtent: grid.xExtent,
+        yExtent: grid.yExtent,
+      },
       sounding: this.sounding,
-      opts: { bubbleStrength: values.bubbleStrength, synoptic: this.synoptic },
+      opts: {
+        bubbleStrength: values.bubbleStrength,
+        synoptic: this.synoptic,
+        surface,
+      },
       radiation,
       clockPaused: this.clockPaused,
     });
@@ -1209,13 +1233,19 @@ export class App {
     this.syncSessionControls();
 
     // Wait for CSS layout so canvases/viewport get real non-zero sizes
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => this.mountSimView(grid, values.zTop));
+      requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.mountSimView(grid, values.zTop);
+        this.applyRunSurface(grid, values);
+      });
     });
   }
 
   /** Select the WebGPU backend when available, otherwise the CPU FluidSolver. */
   private async createSolver(grid: Grid3D): Promise<SimBackend> {
+    if (setupNeedsCpu(this.surfaceOf(this.pendingSetup))) {
+      return new FluidSolver(grid);
+    }
     const gpu = new WebGPUBackend();
     await gpu.whenReady();
     if (gpu.available) return gpu;
@@ -1273,6 +1303,78 @@ export class App {
     if (this.sessionMode === "playback") {
       this.showPlaybackFrame(this.playbackIndex);
     }
+  }
+
+  private surfaceOf(values: SetupValues | null): SurfaceSpec | null {
+    if (!values) return null;
+    if (
+      !values.terrain &&
+      !values.water &&
+      !values.kind &&
+      !values.soil &&
+      !values.veg &&
+      !values.nest
+    ) {
+      return null;
+    }
+    return {
+      terrain: values.terrain,
+      water: values.water,
+      kind: values.kind,
+      waterTemp: values.waterTemp,
+      soil: values.soil,
+      veg: values.veg,
+      sstC: values.sstC,
+      nest: values.nest ?? null,
+    };
+  }
+
+  /** Show the nest in 3D, and offer Parent / Nest on the map. */
+  private applyRunSurface(parent: Grid3D, values: SetupValues): void {
+    const nest = values.nest ? normalizeNest(values.nest) : null;
+    const shown = nest ? nestGrid(parent, nest) : parent;
+    if (nest && this.renderer) {
+      this.renderer.setGrid(shown);
+      this.renderer.resize();
+    }
+    const x0 = nest?.x0 ?? 0;
+    const y0 = nest?.y0 ?? 0;
+    const x1 = nest?.x1 ?? 1;
+    const y1 = nest?.y1 ?? 1;
+    const cover = sampleCover(this.surfaceOf(values), shown.nx, shown.ny, x0, y0, x1, y1);
+    const { height } = buildHeights(values.terrain, cover.ocean, shown, x0, y0, x1, y1);
+    let raised = cover.anyWater || cover.anySoil || cover.anyVeg;
+    for (let i = 0; i < height.length; i++) {
+      if (height[i] > 1) raised = true;
+    }
+    this.renderer?.setSurface(
+      raised ? height : null,
+      raised ? cover.water : null,
+      shown.nx,
+      shown.ny,
+      raised ? { kind: cover.kind, soil: cover.soil, veg: cover.veg } : null,
+    );
+    this.radar2d?.setDomains(
+      {
+        nx: parent.nx,
+        ny: parent.ny,
+        xExtent: parent.xExtent,
+        yExtent: parent.yExtent,
+      },
+      nest
+        ? {
+            nx: shown.nx,
+            ny: shown.ny,
+            xExtent: shown.xExtent,
+            yExtent: shown.yExtent,
+            x0: nest.x0,
+            y0: nest.y0,
+            x1: nest.x1,
+            y1: nest.y1,
+          }
+        : null,
+    );
+    if (values.runMode === "batch" && nest) this.radar2d?.selectDomain("nest");
   }
 
   private mountSimView(grid: Grid3D, zTop: number): void {
@@ -1843,6 +1945,12 @@ export class App {
       if (this.showRadar2d && this.radar2d) this.radar2d.updateWinds(st.winds);
       else this.renderer.updateWinds(st.winds);
     }
+    if (st.probe && this.showRadar2d && this.radar2d) {
+      this.radar2d.setProbe(st.probe);
+    }
+    if (st.section && this.showRadar2d && this.radar2d) {
+      this.radar2d.setSection(st.section);
+    }
     if (st.fronts) {
       // The fronts travel east in the simulation: follow them on the map.
       this.simFronts = st.fronts;
@@ -1970,11 +2078,44 @@ export class App {
               ? this.fieldMode
               : "off",
           wantVortex: this.showVortex && !this.showRadar2d,
+          mapDomain: this.radar2d?.mapDomain() ?? "parent",
+          probe:
+            this.showRadar2d && this.radar2d
+              ? this.radar2d.probeRequest()
+              : null,
+          section:
+            this.showRadar2d && this.radar2d
+              ? this.radar2d.sectionRequest()
+              : null,
         })
       ) {
         this.liveDebt = 0;
         if (wantVolume) this.liveVolumeAsk = now;
         if (wantWinds) this.liveWindsAsk = now;
+      }
+    } else if (
+      this.paused &&
+      this.showRadar2d &&
+      this.radar2d &&
+      this.radar2d.inspectGeneration() !== this.inspectSentGen
+    ) {
+      const probe = this.radar2d.probeRequest();
+      const section = this.radar2d.sectionRequest();
+      if (
+        (probe || section) &&
+        this.ensureLive().step({
+          dt: 0,
+          wall: 0,
+          lightning: false,
+          wantVolume: false,
+          map: null,
+          winds: false,
+          probe,
+          section,
+          mapDomain: this.radar2d.mapDomain(),
+        })
+      ) {
+        this.inspectSentGen = this.radar2d.inspectGeneration();
       }
     }
 

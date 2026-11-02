@@ -9,6 +9,7 @@
  */
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
+import { columnBaseK } from "./surface";
 import {
   CP,
   G,
@@ -36,6 +37,11 @@ export type DerivedProductId =
   | "convtemp"
   | "dcape"
   | "capeshear"
+  | "scp"
+  | "stp"
+  | "ehi"
+  | "ship"
+  | "mburst"
   // Moisture and surface thermodynamics
   | "dptdep"
   | "qsfc"
@@ -276,21 +282,26 @@ function buildProfile(
   j: number,
 ): number {
   const nz = grid.nz;
-  ensureProfile(nz);
-  for (let k = 0; k < nz; k++) {
-    const id = grid.idx(i, j, k);
-    profZ[k] = (k + 0.5) * grid.dz;
-    profP[k] = f.p0[k];
-    profT[k] = TFromTheta(f.theta[id], f.p0[k]);
-    profTd[k] = Math.min(profT[k], dewpointAt(f, id, k));
+  const k0 = columnBaseK(grid.nx, i, j);
+  const n = Math.max(1, nz - k0);
+  ensureProfile(n);
+  for (let k = 0; k < n; k++) {
+    const src = k + k0;
+    const id = grid.idx(i, j, src);
+    profZ[k] = (src + 0.5) * grid.dz;
+    profP[k] = f.p0[src];
+    profT[k] = TFromTheta(f.theta[id], f.p0[src]);
+    profTd[k] = Math.min(profT[k], dewpointAt(f, id, src));
     profQv[k] = Math.max(0, f.qv[id]);
   }
-  return nz;
+  return n;
 }
 
 interface ParcelMetrics {
   cape: number;
   cin: number;
+  /** LCL height (m). */
+  lcl: number;
   lfc: number;
   el: number;
   t500: number;
@@ -318,6 +329,7 @@ function parcelMetrics(
   const result: ParcelMetrics = {
     cape: 0,
     cin: 0,
+    lcl: 0,
     lfc: 0,
     el: 0,
     t500: tStart,
@@ -327,6 +339,7 @@ function parcelMetrics(
   const tC = tStart - 273.15;
   const tdC = Math.min(tStart, tdStart) - 273.15;
   const lclZ = profZ[start] + Math.max(0, 125 * (tC - tdC));
+  result.lcl = lclZ;
   const thetaP = tStart * Math.pow(P0 / Math.max(profP[start], 1), RD / CP);
   const pLcl = pressureAtHeight(lclZ);
   const tLcl = thetaP * Math.pow(Math.max(pLcl, 1) / P0, RD / CP);
@@ -675,38 +688,42 @@ function packConvTemp(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   }
 }
 
+/** Downdraft CAPE of the current scratch profile (J/kg, positive). */
+function profileDcape(n: number): number {
+  let start = 0;
+  let best = Infinity;
+  for (let k = 0; k < n && profZ[k] <= 3000; k++) {
+    const T = profT[k];
+    const td = Math.min(T, profTd[k]);
+    const qv = (0.622 * esatFast(td)) / Math.max(profP[k] - esatFast(td), 1);
+    const theta = T * Math.pow(P0 / Math.max(profP[k], 1), RD / CP);
+    const thetaE = theta * Math.exp((LV * qv) / (CP * Math.max(T, 1)));
+    if (thetaE < best) {
+      best = thetaE;
+      start = k;
+    }
+  }
+  let tp = profT[start];
+  let dcape = 0;
+  for (let k = start - 1; k >= 0; k--) {
+    const zUpper = profZ[k + 1];
+    const zMid = 0.5 * (profZ[k] + zUpper);
+    const dz = zUpper - zMid;
+    const pMid = 0.5 * (profP[k] + profP[k + 1]);
+    const tEnv = 0.5 * (profT[k] + profT[k + 1]);
+    tp += moistLapse(tp, pMid) * dz;
+    const b = G * ((tp - tEnv) / Math.max(tEnv, 1));
+    if (b < 0) dcape += -b * dz;
+  }
+  return dcape;
+}
+
 function packDcape(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   const { nx, ny } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const n = buildProfile(grid, f, i, j);
-      // Downdraft parcel: lowest θe in the lowest 3 km.
-      let start = 0;
-      let best = Infinity;
-      for (let k = 0; k < n && profZ[k] <= 3000; k++) {
-        const T = profT[k];
-        const td = Math.min(T, profTd[k]);
-        const qv = (0.622 * esatFast(td)) / Math.max(profP[k] - esatFast(td), 1);
-        const theta = T * Math.pow(P0 / Math.max(profP[k], 1), RD / CP);
-        const thetaE = theta * Math.exp((LV * qv) / (CP * Math.max(T, 1)));
-        if (thetaE < best) {
-          best = thetaE;
-          start = k;
-        }
-      }
-      let tp = profT[start];
-      let dcape = 0;
-      for (let k = start - 1; k >= 0; k--) {
-        const zUpper = profZ[k + 1];
-        const zMid = 0.5 * (profZ[k] + zUpper);
-        const dz = zUpper - zMid;
-        const pMid = 0.5 * (profP[k] + profP[k + 1]);
-        const tEnv = 0.5 * (profT[k] + profT[k + 1]);
-        tp += moistLapse(tp, pMid) * dz;
-        const b = G * ((tp - tEnv) / Math.max(tEnv, 1));
-        if (b < 0) dcape += -b * dz;
-      }
-      paintNorm(dcape, 0, 2000, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
+      paintNorm(profileDcape(n), 0, 2000, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
@@ -1166,7 +1183,7 @@ function packHydrometeorClass(grid: Grid3D, f: SimFields, out: Uint8Array): void
  * Uses the base-state pressure levels rather than the anelastic pressure
  * perturbation: the perturbation is a projection variable, not a measured
  * surface pressure, and adding it to p0 produced physically impossible
- * 500-hPa heights.  The lowest model level sits at 0.5 dz.
+ * 500-hPa heights.  The integral starts at the lowest open level.
  */
 function heightAtPressure(
   grid: Grid3D,
@@ -1176,10 +1193,11 @@ function heightAtPressure(
   targetPa: number,
 ): number {
   const { nz, dz } = grid;
-  if (f.p0[0] <= targetPa) return 0.5 * dz;
-  let z = 0.5 * dz;
+  const k0 = columnBaseK(grid.nx, i, j);
+  if (f.p0[k0] <= targetPa) return (k0 + 0.5) * dz;
+  let z = (k0 + 0.5) * dz;
   let reached = false;
-  for (let k = 0; k < nz - 1; k++) {
+  for (let k = k0; k < nz - 1; k++) {
     const pA = f.p0[k];
     const pB = f.p0[k + 1];
     if (pA <= targetPa) break;
@@ -1324,6 +1342,154 @@ function packSurfaceGradient(
   }
 }
 
+/** Environmental shear and the fixed levels the composites share. */
+interface ShearEnv {
+  srh01: number;
+  srh03: number;
+  shear06: number;
+  k700: number;
+  k500: number;
+  k3: number;
+  dzKm75: number;
+  dzKm03: number;
+}
+
+function shearEnv(grid: Grid3D, f: SimFields): ShearEnv {
+  const { nz, dz } = grid;
+  const k6 = Math.min(nz - 1, Math.max(0, Math.round(6000 / Math.max(dz, 1))));
+  const k3 = Math.min(nz - 1, Math.round(3000 / Math.max(dz, 1)));
+  const k700 = pressureLevelK(f, 70000);
+  const k500 = pressureLevelK(f, 50000);
+  return {
+    srh01: srhForLayer(grid, f, 1000).srh,
+    srh03: srhForLayer(grid, f, 3000).srh,
+    shear06: Math.hypot(f.u0[k6] - f.u0[0], f.v0[k6] - f.v0[0]),
+    k700,
+    k500,
+    k3,
+    dzKm75: Math.max(0.1, ((k500 - k700) * dz) / 1000),
+    dzKm03: Math.max(0.1, (k3 * dz) / 1000),
+  };
+}
+
+/** 0–6 km shear factor for SCP: 0 below 10 m/s, shear/20, capped at 1.5. */
+function scpShearTerm(shear: number): number {
+  if (shear < 10) return 0;
+  return Math.min(1.5, shear / 20);
+}
+
+/** 0–6 km shear factor for STP: 0 below 12.5 m/s, shear/20, capped at 1.5. */
+function stpShearTerm(shear: number): number {
+  if (shear < 12.5) return 0;
+  return Math.min(1.5, shear / 20);
+}
+
+function mixingRatioGkg(td: number, p: number): number {
+  const es = esatFast(td);
+  return Math.max(0, ((0.622 * es) / Math.max(p - es, 1)) * 1000);
+}
+
+/** Fixed-layer severe indices for the column currently in the scratch profile. */
+export interface ColumnIndices {
+  sbcape: number;
+  sbcin: number;
+  sblcl: number;
+  scp: number;
+  stp: number;
+  ehi: number;
+  ship: number;
+  mburst: number;
+}
+
+function indicesFromProfile(n: number, env: ShearEnv): ColumnIndices {
+  const sb = parcelMetrics(n, 0, profT[0], profTd[0]);
+  const mlParcel = mixedLayerParcel(n);
+  const ml = parcelMetrics(n, 0, mlParcel.t, mlParcel.td);
+  const muParcel = mostUnstableParcel(n);
+  const mu = parcelMetrics(n, muParcel.start, muParcel.t, muParcel.td);
+  const lapse75 = (profT[env.k700] - profT[env.k500]) / env.dzKm75;
+  const lapse03 = (profT[0] - profT[env.k3]) / env.dzKm03;
+  const t500C = profT[env.k500] - 273.15;
+  const dcape = profileDcape(n);
+  const srh03 = Math.max(0, env.srh03);
+  const srh01 = Math.max(0, env.srh01);
+
+  const scp = (mu.cape / 1000) * (srh03 / 50) * scpShearTerm(env.shear06);
+  const stp =
+    (ml.cape / 1500) *
+    (srh01 / 150) *
+    stpShearTerm(env.shear06) *
+    clamp((2000 - ml.lcl) / 1000, 0, 1) *
+    clamp((200 - ml.cin) / 150, 0, 1);
+  const ehi = (sb.cape * srh03) / 160000;
+
+  let ship = 0;
+  if (mu.cape >= 1300) {
+    const mr = Math.min(13.6, mixingRatioGkg(muParcel.td, profP[muParcel.start]));
+    const lr = Math.max(5.8, lapse75);
+    const t500 = Math.min(-5.5, t500C);
+    const shr = clamp(env.shear06, 7, 27);
+    ship = (mu.cape * mr * lr * Math.max(0, -t500) * shr) / 44_000_000;
+  }
+
+  const mburst =
+    dcape < 100 || lapse03 <= 6.5 ? 0 : (dcape / 1000) * ((lapse03 - 6.5) / 2);
+
+  const finite = (v: number) => (Number.isFinite(v) ? v : 0);
+  return {
+    sbcape: finite(sb.cape),
+    sbcin: finite(sb.cin),
+    sblcl: finite(sb.lcl),
+    scp: finite(scp),
+    stp: finite(stp),
+    ehi: finite(ehi),
+    ship: finite(ship),
+    mburst: finite(mburst),
+  };
+}
+
+/**
+ * Fixed-layer SCP, STP, EHI, SHIP, and the microburst index for one column.
+ * Shear and SRH are the domain hodograph, matching the map products.
+ */
+export function columnIndices(
+  grid: Grid3D,
+  f: SimFields,
+  i: number,
+  j: number,
+): ColumnIndices {
+  const n = buildProfile(grid, f, i, j);
+  return indicesFromProfile(n, shearEnv(grid, f));
+}
+
+type CompositeKey = "scp" | "stp" | "ehi" | "ship" | "mburst";
+
+const COMPOSITE_SCALE: Record<CompositeKey, number> = {
+  scp: 10,
+  stp: 5,
+  ehi: 5,
+  ship: 5,
+  mburst: 5,
+};
+
+function packComposite(
+  grid: Grid3D,
+  f: SimFields,
+  out: Uint8Array,
+  key: CompositeKey,
+): void {
+  const { nx, ny } = grid;
+  const env = shearEnv(grid, f);
+  const max = COMPOSITE_SCALE[key];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const n = buildProfile(grid, f, i, j);
+      const value = indicesFromProfile(n, env)[key];
+      paintNorm(value, 0, max, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
+    }
+  }
+}
+
 export function packDerivedProduct(
   id: DerivedProductId,
   grid: Grid3D,
@@ -1366,6 +1532,13 @@ export function packDerivedProduct(
       break;
     case "capeshear":
       packCapeShear(grid, f, out);
+      break;
+    case "scp":
+    case "stp":
+    case "ehi":
+    case "ship":
+    case "mburst":
+      packComposite(grid, f, out, id);
       break;
     case "dptdep":
       packDewpointDepression(grid, f, out);

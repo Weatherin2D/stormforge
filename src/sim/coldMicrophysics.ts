@@ -945,7 +945,14 @@ export function stepColdMicrophysics(
     scratch,
     dt,
     f.snowAccum,
-    (q, rho) => snowFallSpeed(q, rho, rhoGround),
+    (q, rho, i, j, k) => {
+      // A flake falls near 1 m/s, slower than the sandbox updraft, so the
+      // anvil never reached the ground and snow accumulation stayed empty.
+      // Aggregates are let down at a few metres per second through the
+      // updraft. Net motion is that fall speed; advection already has w.
+      const vt = Math.max(snowFallSpeed(q, rho, rhoGround), 6);
+      return vt + Math.max(0, grid.wCenter(f.w, i, j, k));
+    },
     (ij, _q, _rho, mm) => {
       // Fresh snow, 100 kg/m³: 1 mm liquid → 1 cm of depth.
       f.snowDepth[ij] += mm / RHO_S;
@@ -1017,10 +1024,11 @@ function meltGroundCover(
       const heat = warm + solar;
       if (heat <= 0) continue;
       if (snow > 0) {
-        f.snowDepth[ij] = Math.max(0, snow - Math.min(snow, heat * 4e-5 * dt));
+        // Hot sun thins a few centimetres over several minutes, not one step.
+        f.snowDepth[ij] = Math.max(0, snow - Math.min(snow, heat * 2.5e-6 * dt));
       }
       if (hail > 0 || count > 0) {
-        const keep = Math.exp(-heat * 0.002 * dt);
+        const keep = Math.exp(-heat * 0.00015 * dt);
         f.hailAccum[ij] = Math.max(0, hail) * keep;
         f.hailCount[ij] = Math.max(0, count) * keep;
         f.hailDiam[ij] = Math.max(0, f.hailDiam[ij]) * (0.55 + 0.45 * keep);

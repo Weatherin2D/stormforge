@@ -50,6 +50,7 @@ import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
 import { WebGPUDevice } from "./WebGPUDevice";
 import type { LightningStrike } from "./FluidSolver";
 import { volumeDisplaySize, copyFullVolumeToDisplay } from "./Grid3D";
+import { bindColumnFloor, bindSurfaceDraw } from "./surface";
 import {
   MapProductId,
   packLightning,
@@ -619,6 +620,9 @@ const KERNELS: Record<string, KernelSpec> = {
 export class WebGPUBackend implements SimBackend {
   readonly kind: SolverKind = "gpu";
   grid: Grid3D;
+  get displayGrid(): Grid3D {
+    return this.grid;
+  }
   fields: SimFields;
   time = 0;
   stepCount = 0;
@@ -1111,6 +1115,8 @@ export class WebGPUBackend implements SimBackend {
   packMapProduct(id: MapProductId, out: Uint8Array): void {
     const need = this.grid.nx * this.grid.ny * 4;
     if (out.length < need) return;
+    bindColumnFloor(null, 0);
+    bindSurfaceDraw(null, null, 22);
     if (id === "ltg") {
       packLightning(this.grid, this.flashField(), out);
       return;

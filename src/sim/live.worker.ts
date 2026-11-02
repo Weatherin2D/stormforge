@@ -17,8 +17,16 @@ import {
   findVortexColumn,
   packVortexLevels,
 } from "./fieldPack";
+import {
+  sampleColumn,
+  sampleSection,
+  type ColumnProbe,
+  type ProbeRequest,
+  type SectionImage,
+  type SectionRequest,
+} from "./inspect";
 
-let solver: SimBackend | null = null;
+let solver: FluidSolver | null = null;
 
 interface StepMsg {
   type: "step";
@@ -32,6 +40,9 @@ interface StepMsg {
   wantColdPool?: boolean;
   fieldMode?: OverlayField;
   wantVortex?: boolean;
+  probe?: ProbeRequest | null;
+  section?: SectionRequest | null;
+  mapDomain?: "parent" | "nest";
 }
 
 function surfaceDth(s: SimBackend): number {
@@ -70,6 +81,8 @@ function publish(extra: {
   fieldMode?: OverlayField | null;
   vortex?: Float32Array | null;
   ground?: Uint8Array | null;
+  probe?: ColumnProbe | null;
+  section?: SectionImage | null;
 }): void {
   if (!solver) return;
   const sun = solver.getSolarStatus();
@@ -82,6 +95,8 @@ function publish(extra: {
   if (extra.field) transfers.push(extra.field.buffer);
   if (extra.vortex) transfers.push(extra.vortex.buffer);
   if (extra.ground) transfers.push(extra.ground.buffer);
+  if (extra.probe) transfers.push(extra.probe.levels.buffer);
+  if (extra.section) transfers.push(extra.section.rgba.buffer);
   const fo = solver.frameOffset();
   const payload = {
     type: "state" as const,
@@ -110,6 +125,8 @@ function publish(extra: {
     frameEast: fo.east,
     frameNorth: fo.north,
     followStorm: solver.getFollowStorm(),
+    probe: extra.probe ?? null,
+    section: extra.section ?? null,
   };
   (self as unknown as { postMessage(message: unknown, transfer: Transferable[]): void }).postMessage(
     payload,
@@ -121,7 +138,14 @@ self.onmessage = (ev: MessageEvent) => {
   const msg = ev.data as
     | {
         type: "rebuild";
-        grid: { nx: number; ny: number; nz: number; zTop: number };
+        grid: {
+          nx: number;
+          ny: number;
+          nz: number;
+          zTop: number;
+          xExtent?: number;
+          yExtent?: number;
+        };
         sounding: SoundingLevel[];
         opts: InitOptions;
         radiation: RadiationOptions;
@@ -170,12 +194,17 @@ self.onmessage = (ev: MessageEvent) => {
     solver.setFollowStorm(!!msg.on);
     return;
   }
-  solver.step(Math.min(2, Math.max(0, msg.dt)));
-  const strikes = msg.lightning ? solver.rollLightning(msg.wall) : [];
+  if (msg.dt > 1e-6) solver.step(Math.min(2, Math.max(0, msg.dt)));
+  solver.setMapDomain(msg.mapDomain === "nest" ? "nest" : "parent");
+  solver.prepareView();
+  const shown = solver.displayGrid;
+  const shownFields = solver.displayFields;
+  const mapped = solver.viewGrid;
+  const mappedFields = solver.viewFields;
+  const strikes = msg.lightning ? solver.rollDisplayLightning(msg.wall) : [];
   let volume: Uint8Array | null = null;
   if (msg.wantVolume) {
-    const g = solver.grid;
-    const d = volumeDisplaySize(g.nx, g.ny, g.nz);
+    const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
     // Display texture is at most 128×128×48. A full-grid buffer is rejected
     // by the renderer, which is why clouds vanished above that size.
     volume = new Uint8Array(d.nx * d.ny * d.nz * 4);
@@ -183,33 +212,39 @@ self.onmessage = (ev: MessageEvent) => {
   }
   let map: Uint8Array | null = null;
   if (msg.map) {
-    map = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
+    map = new Uint8Array(mapped.nx * mapped.ny * 4);
     solver.packMapProduct(msg.map, map);
   }
-  const winds = msg.winds ? sampleSurfaceWinds(solver.grid, solver.fields) : null;
+  const winds = msg.winds ? sampleSurfaceWinds(shown, shownFields) : null;
   let swath: Uint8Array | null = null;
   if (msg.wantSwath) {
-    swath = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
-    packRainSwath(solver.grid, solver.fields, swath);
+    swath = new Uint8Array(shown.nx * shown.ny * 4);
+    packRainSwath(shown, shownFields, swath);
   }
   let coldPool: Uint8Array | null = null;
   if (msg.wantColdPool) {
-    coldPool = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
-    packColdPoolMap(solver.grid, solver.fields, coldPool);
+    coldPool = new Uint8Array(shown.nx * shown.ny * 4);
+    packColdPoolMap(shown, shownFields, coldPool);
   }
   let field: Uint8Array | null = null;
   const fieldMode = msg.fieldMode && msg.fieldMode !== "off" ? msg.fieldMode : null;
   if (fieldMode) {
-    const d = volumeDisplaySize(solver.grid.nx, solver.grid.ny, solver.grid.nz);
+    const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
     field = new Uint8Array(d.nx * d.ny * d.nz * 4);
-    packFieldVolume(fieldMode, solver.grid, solver.fields, field);
+    packFieldVolume(fieldMode, shown, shownFields, field);
   }
   let vortex: Float32Array | null = null;
   if (msg.wantVortex) {
-    vortex = packVortexLevels(findVortexColumn(solver.grid, solver.fields));
+    vortex = packVortexLevels(findVortexColumn(shown, shownFields));
   }
-  const ground = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
-  packGroundCover(solver.grid, solver.fields, ground, solver.frameOffset());
+  const ground = new Uint8Array(shown.nx * shown.ny * 4);
+  packGroundCover(shown, shownFields, ground, solver.groundCoverOffset());
+  const probe = msg.probe
+    ? sampleColumn(mapped, mappedFields, msg.probe.i, msg.probe.j, solver.time)
+    : null;
+  const section = msg.section
+    ? sampleSection(mapped, mappedFields, msg.section)
+    : null;
   publish({
     volume,
     map,
@@ -222,5 +257,7 @@ self.onmessage = (ev: MessageEvent) => {
     fieldMode,
     vortex,
     ground,
+    probe,
+    section,
   });
 };

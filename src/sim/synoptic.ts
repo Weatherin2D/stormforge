@@ -1,5 +1,6 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
+import { marineFractionAt } from "./surface";
 import { TFromTheta, qsat } from "./thermo";
 
 /**
@@ -1097,8 +1098,14 @@ export function backgroundWeights(
     w.dTheta1400 += (c.kind === "low" ? 1.6 : -1.6) * g;
   }
 
-  if (setup.marine) {
-    const coast = smoothstep((xn - 0.7) / 0.1) * smoothstep((0.3 - yn) / 0.1);
+  const painted = marineFractionAt(xn, yn);
+  const coast =
+    painted !== null
+      ? painted
+      : setup.marine
+        ? smoothstep((xn - 0.7) / 0.1) * smoothstep((0.3 - yn) / 0.1)
+        : 0;
+  if (coast > 0) {
     w.dTheta450 += coast * -2.6;
     w.qPull450 += coast * 0.55;
     w.du450 += coast * -5;

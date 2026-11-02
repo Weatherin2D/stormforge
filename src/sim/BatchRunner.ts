@@ -37,7 +37,9 @@ export async function runBatch(
   const duration = Math.max(1, cfg.durationSec);
   const every = Math.max(0.5, cfg.outputIntervalSec);
   const fixedDt = Math.max(0.25, cfg.fixedDt ?? BATCH_FIXED_DT);
-  const { nx, ny, nz } = solver.grid;
+  const shown = solver.displayGrid;
+  const { nx, ny, nz } = shown;
+  solver.setMapDomain?.(shown === solver.grid ? "parent" : "nest");
   const store = new FrameStore(nx, ny, nz);
 
   const capture = (): void => {

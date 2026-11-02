@@ -1131,6 +1131,90 @@ label {
   flex: none;
 }
 
+.radar2d-panel .ibar__tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.radar2d-panel .ibar__tools .btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+}
+
+.radar2d-panel .ibar__tools .btn.active {
+  background: var(--accent, #2f7d86);
+  color: #fff;
+}
+
+.radar2d-panel .map2d-column-hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.radar2d-panel .map2d-chart {
+  width: 100%;
+  height: auto;
+  background: var(--instrument-bg);
+  border-radius: 6px;
+}
+
+.radar2d-panel .map2d-spark {
+  width: 100%;
+  display: block;
+}
+
+.radar2d-panel .map2d-section {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--instrument-bg) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  pointer-events: auto;
+}
+
+.radar2d-panel .map2d-section.hidden {
+  display: none;
+}
+
+.radar2d-panel .map2d-section-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 0.72rem/1 var(--font-mono);
+  color: var(--text-3);
+}
+
+.radar2d-panel .map2d-section-bar .btn {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+}
+
+.radar2d-panel .map2d-section-bar .btn.active {
+  background: var(--accent, #2f7d86);
+  color: #fff;
+}
+
+.radar2d-panel #map2d-curtain {
+  width: 100%;
+  height: 140px;
+  image-rendering: pixelated;
+  background: #0a101c;
+  border-radius: 4px;
+}
+
 .radar2d-panel .ibar__fields {
   display: flex;
   gap: 18px;

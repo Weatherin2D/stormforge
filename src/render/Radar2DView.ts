@@ -19,6 +19,21 @@ import {
 } from "../sim/surfaceWinds";
 import { DrawnFront, FRONT_COLORS } from "../sim/synoptic";
 import type { LightningKind } from "../sim/FluidSolver";
+import type {
+  ColumnProbe,
+  ProbeRequest,
+  SectionImage,
+  SectionRequest,
+  SectionVariable,
+} from "../sim/inspect";
+import {
+  drawHodograph,
+  drawSkewT,
+  readCreatorCss,
+} from "../skewt/creator/creatorDraw";
+import { calcDiagnostics } from "../skewt/creator/creatorPhysics";
+import type { CreatorLevel } from "../skewt/creator/types";
+import { spdDirFromUv } from "../sim/thermo";
 
 /** Instrument chrome colours — read from shared CSS tokens with fallbacks. */
 function instrumentColors(): {
@@ -130,6 +145,26 @@ export class Radar2DView {
   private searchActive = -1;
   private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
   private onKeyDown: ((e: KeyboardEvent) => void) | null = null;
+  private tool: "pan" | "probe" | "section" = "pan";
+  private domain: "parent" | "nest" = "parent";
+  private nestBox: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  private parentGrid = { nx: 1, ny: 1, xExtent: 1, yExtent: 1 };
+  private nestGridInfo: { nx: number; ny: number; xExtent: number; yExtent: number } | null = null;
+  private pin: { i: number; j: number } | null = null;
+  private secA: { i: number; j: number } | null = null;
+  private secB: { i: number; j: number } | null = null;
+  private sectionVar: SectionVariable = "refl";
+  private inspectGen = 0;
+  private seriesKey = "";
+  private series: { t: number; dbz: number; w: number; rain: number }[] = [];
+  private columnEl!: HTMLElement;
+  private columnStats!: HTMLElement;
+  private skewCanvas!: HTMLCanvasElement;
+  private hodoCanvas!: HTMLCanvasElement;
+  private sparkCanvas!: HTMLCanvasElement;
+  private sectionStrip!: HTMLElement;
+  private sectionLenEl!: HTMLElement;
+  private curtainCanvas!: HTMLCanvasElement;
 
   private static readonly PIN_KEY = "stormforge.map2d.pins.v3";
   /** Older pin stores are discarded so the view starts with no stars. */
@@ -148,6 +183,9 @@ export class Radar2DView {
     "rh",
     "vis",
     "ctop",
+    "snowaccum",
+    "hailaccum",
+    "hailsize",
   ];
 
   private static readonly PRODUCT_ORDER: MapProductId[] = [
@@ -174,6 +212,17 @@ export class Radar2DView {
     "frz",
     "pwat",
     "tsfc",
+    "elev",
+    "slope",
+    "aspect",
+    "orog",
+    "sst",
+    "coast",
+    "wkind",
+    "soilm",
+    "vegc",
+    "albedo",
+    "rough",
     "td",
     "rh",
     "thetae",
@@ -200,6 +249,11 @@ export class Radar2DView {
     "vort",
     "mconv",
     "uh25",
+    "scp",
+    "stp",
+    "ehi",
+    "ship",
+    "mburst",
     "cfr",
     "clwc",
     "lwp",
@@ -272,6 +326,16 @@ export class Radar2DView {
       <header class="ibar">
         <span class="ibar__name">STORMFORGE · MAPS 2D</span>
         <span class="ibar__sep"></span>
+        <div class="ibar__tools" role="group" aria-label="Map tool">
+          <button type="button" class="btn tool-btn active" data-tool="pan">Pan</button>
+          <button type="button" class="btn tool-btn" data-tool="probe" title="Click a cell for its sounding">Probe</button>
+          <button type="button" class="btn tool-btn" data-tool="section" title="Click two cells for a vertical slice">Section</button>
+          <button type="button" class="btn" id="map2d-clear" title="Clear the probe and the cross-section">Clear</button>
+        </div>
+        <div class="ibar__tools hidden" id="map2d-domain" role="group" aria-label="Map domain">
+          <button type="button" class="btn domain-btn active" data-domain="parent">Parent</button>
+          <button type="button" class="btn domain-btn" data-domain="nest">Nest</button>
+        </div>
         <span class="ibar__fields">
           <span>PRODUCT <b id="map2d-field-product">Column-max reflectivity</b></span>
           <span>UNITS <b id="map2d-field-units">dBZ</b></span>
@@ -283,6 +347,15 @@ export class Radar2DView {
       <div class="instrument__body">
         <div class="instrument__screen radar2d-canvas-wrap">
           <canvas id="radar2d-canvas"></canvas>
+          <div class="map2d-section hidden" id="map2d-section">
+            <div class="map2d-section-bar">
+              <span id="map2d-section-len">0 km</span>
+              <button type="button" class="btn sec-var active" data-sec="refl">Refl</button>
+              <button type="button" class="btn sec-var" data-sec="thetae">θe</button>
+              <button type="button" class="btn sec-var" data-sec="w">w</button>
+            </div>
+            <canvas id="map2d-curtain"></canvas>
+          </div>
           <div class="screen-caption" id="map2d-caption">
             <span>COLUMN-MAX REFLECTIVITY</span>
             <span>CARTESIAN · N ↑</span>
@@ -325,6 +398,14 @@ export class Radar2DView {
             <h3 class="psec__title">Cursor</h3>
             <dl class="kv" id="map2d-readout"></dl>
           </section>
+          <section class="psec map2d-column hidden" id="map2d-column">
+            <h3 class="psec__title">Column</h3>
+            <p class="map2d-column-hint">Numbers match the maps. The chart uses the sounding editor’s parcel.</p>
+            <dl class="kv" id="map2d-column-stats"></dl>
+            <canvas id="map2d-skewt" class="map2d-chart"></canvas>
+            <canvas id="map2d-hodo" class="map2d-chart"></canvas>
+            <canvas id="map2d-spark" class="map2d-spark"></canvas>
+          </section>
           <details class="map2d-about group" id="map2d-about" open>
             <summary><span class="group__title">About this view</span></summary>
             <div class="map2d-about-body group__body" id="map2d-about-body"></div>
@@ -333,7 +414,7 @@ export class Radar2DView {
       </div>
     `;
     host.appendChild(this.root);
-    this.canvas = this.root.querySelector("canvas") as HTMLCanvasElement;
+    this.canvas = this.root.querySelector("#radar2d-canvas") as HTMLCanvasElement;
     this.ctx = this.canvas.getContext("2d", { alpha: false })!;
     this.ctx.imageSmoothingEnabled = false;
     this.canvas.addEventListener("wheel", (e) => this.onCanvasWheel(e), {
@@ -343,7 +424,7 @@ export class Radar2DView {
     this.canvas.addEventListener("pointermove", (e) => this.onCanvasPointerMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.onCanvasPointerUp(e));
     this.canvas.addEventListener("pointerleave", (e) => {
-      this.onCanvasPointerUp(e);
+      this.onCanvasPointerUp(e, true);
       this.hover = null;
       this.renderReadout();
       this.draw();
@@ -381,6 +462,42 @@ export class Radar2DView {
     this.aboutBodyEl = this.root.querySelector(
       "#map2d-about-body",
     ) as HTMLElement;
+    this.columnEl = this.root.querySelector("#map2d-column") as HTMLElement;
+    this.columnStats = this.root.querySelector("#map2d-column-stats") as HTMLElement;
+    this.skewCanvas = this.root.querySelector("#map2d-skewt") as HTMLCanvasElement;
+    this.hodoCanvas = this.root.querySelector("#map2d-hodo") as HTMLCanvasElement;
+    this.sparkCanvas = this.root.querySelector("#map2d-spark") as HTMLCanvasElement;
+    this.sectionStrip = this.root.querySelector("#map2d-section") as HTMLElement;
+    this.sectionLenEl = this.root.querySelector("#map2d-section-len") as HTMLElement;
+    this.curtainCanvas = this.root.querySelector("#map2d-curtain") as HTMLCanvasElement;
+    this.root.querySelector(".ibar__tools")?.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button");
+      if (!btn || (btn as HTMLButtonElement).disabled) return;
+      const tool = btn.getAttribute("data-tool");
+      if (tool === "pan" || tool === "probe" || tool === "section") {
+        this.setTool(tool);
+      }
+      if (btn.id === "map2d-clear") this.clearInspect();
+    });
+    this.root.querySelector("#map2d-domain")?.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button[data-domain]");
+      if (!btn) return;
+      const domain = btn.getAttribute("data-domain");
+      if (domain !== "parent" && domain !== "nest") return;
+      this.useDomain(domain);
+    });
+    this.sectionStrip.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button[data-sec]");
+      if (!btn) return;
+      const variable = btn.getAttribute("data-sec");
+      if (variable !== "refl" && variable !== "thetae" && variable !== "w") return;
+      if (variable === this.sectionVar) return;
+      this.sectionVar = variable;
+      this.inspectGen++;
+      for (const el of this.sectionStrip.querySelectorAll(".sec-var")) {
+        el.classList.toggle("active", el.getAttribute("data-sec") === variable);
+      }
+    });
     this.loadPins();
     this.buildTabs();
     this.renderReadout();
@@ -813,6 +930,19 @@ export class Radar2DView {
         const id = value as MapProductId;
         if (MAP_PRODUCTS[id]) this.pinned.add(id);
       }
+      // Saved bars predate snow and hail accumulation. Add them once.
+      const added = Radar2DView.PIN_KEY + ".snowhail";
+      if (!localStorage.getItem(added)) {
+        let changed = false;
+        for (const id of ["snowaccum", "hailaccum", "hailsize"] as const) {
+          if (MAP_PRODUCTS[id] && !this.pinned.has(id)) {
+            this.pinned.add(id);
+            changed = true;
+          }
+        }
+        localStorage.setItem(added, "1");
+        if (changed) this.savePins();
+      }
     } catch {
       /* Storage may be unavailable (private mode / tests); pins stay ephemeral. */
     }
@@ -912,7 +1042,54 @@ export class Radar2DView {
     this.recordedOnly = on;
     this.applyRecordedOnly();
     if (!this.searchResultsEl.classList.contains("hidden")) this.renderSearch();
-    if (on) this.setProduct("refl");
+    if (on) {
+      this.setTool("pan");
+      this.clearInspect();
+      this.setProduct("refl");
+    }
+  }
+
+  /** Bumps when the pin, section, or curtain variable changes. */
+  inspectGeneration(): number {
+    return this.inspectGen;
+  }
+
+  probeRequest(): ProbeRequest | null {
+    if (this.recordedOnly || !this.pin) return null;
+    return { i: this.pin.i, j: this.pin.j };
+  }
+
+  sectionRequest(): SectionRequest | null {
+    if (this.recordedOnly || !this.secA || !this.secB) return null;
+    return {
+      i0: this.secA.i,
+      j0: this.secA.j,
+      i1: this.secB.i,
+      j1: this.secB.j,
+      variable: this.sectionVar,
+    };
+  }
+
+  setProbe(sample: ColumnProbe): void {
+    if (!this.pin || sample.i !== this.pin.i || sample.j !== this.pin.j) return;
+    this.columnEl.classList.remove("hidden");
+    this.renderColumnStats(sample);
+    this.pushSeries(sample);
+    this.renderProbeCharts(sample);
+  }
+
+  setSection(image: SectionImage): void {
+    if (image.variable !== this.sectionVar) return;
+    if (!this.secA || !this.secB) return;
+    this.sectionStrip.classList.remove("hidden");
+    this.sectionLenEl.textContent = `${image.lengthKm.toFixed(1)} km`;
+    const canvas = this.curtainCanvas;
+    canvas.width = Math.max(1, image.width);
+    canvas.height = Math.max(1, image.nz);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const copy = new Uint8ClampedArray(image.rgba);
+    ctx.putImageData(new ImageData(copy, image.width, image.nz), 0, 0);
   }
 
   private applyRecordedOnly(): void {
@@ -931,6 +1108,15 @@ export class Radar2DView {
       (btn as HTMLButtonElement).title = allowed
         ? `Show ${btn.textContent ?? ""}`
         : "Not recorded in batch review (reflectivity only)";
+    }
+    for (const btn of this.root.querySelectorAll(".tool-btn")) {
+      const tool = btn.getAttribute("data-tool");
+      const lock = this.recordedOnly && tool !== "pan";
+      (btn as HTMLButtonElement).disabled = lock;
+      if (lock) btn.setAttribute("title", "Available in live runs");
+      else if (tool === "probe") btn.setAttribute("title", "Click a cell for its sounding");
+      else if (tool === "section") btn.setAttribute("title", "Click two cells for a vertical slice");
+      else btn.removeAttribute("title");
     }
   }
 
@@ -994,6 +1180,48 @@ export class Radar2DView {
   setFronts(fronts: DrawnFront[]): void {
     this.fronts = fronts.filter((f) => f.enabled && f.points.length >= 2);
     if (!this.root.classList.contains("hidden")) this.draw();
+  }
+
+  /** Parent map, plus the nest rectangle when a run has one. */
+  setDomains(
+    parent: { nx: number; ny: number; xExtent: number; yExtent: number },
+    nest: {
+      nx: number;
+      ny: number;
+      xExtent: number;
+      yExtent: number;
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
+    } | null,
+  ): void {
+    this.parentGrid = parent;
+    this.nestGridInfo = nest
+      ? { nx: nest.nx, ny: nest.ny, xExtent: nest.xExtent, yExtent: nest.yExtent }
+      : null;
+    this.nestBox = nest ? { x0: nest.x0, y0: nest.y0, x1: nest.x1, y1: nest.y1 } : null;
+    this.root.querySelector("#map2d-domain")?.classList.toggle("hidden", !nest);
+    this.useDomain(this.domain === "nest" && nest ? "nest" : "parent");
+  }
+
+  mapDomain(): "parent" | "nest" {
+    return this.nestGridInfo && this.domain === "nest" ? "nest" : "parent";
+  }
+
+  selectDomain(domain: "parent" | "nest"): void {
+    this.useDomain(domain);
+  }
+
+  private useDomain(domain: "parent" | "nest"): void {
+    const nest = domain === "nest" ? this.nestGridInfo : null;
+    const g = nest ?? this.parentGrid;
+    this.domain = nest ? "nest" : "parent";
+    this.clearInspect();
+    this.setGrid(g.nx, g.ny, g.xExtent, g.yExtent);
+    for (const btn of this.root.querySelectorAll("#map2d-domain button")) {
+      btn.classList.toggle("active", btn.getAttribute("data-domain") === this.domain);
+    }
   }
 
   setGrid(nx: number, ny: number, extentX = 50_000, extentY = 50_000): void {
@@ -1080,7 +1308,8 @@ export class Radar2DView {
     this.renderReadout();
   }
 
-  private onCanvasPointerUp(e?: PointerEvent): void {
+  private onCanvasPointerUp(e?: PointerEvent, fromLeave = false): void {
+    const click = this.isPanning && !this.pointerMoved && !fromLeave && !!e;
     this.isPanning = false;
     if (e) {
       try {
@@ -1088,6 +1317,10 @@ export class Radar2DView {
       } catch {
         /* already released */
       }
+    }
+    if (click && e) {
+      this.updateHover(e.clientX, e.clientY);
+      if (this.hover) this.placeToolPoint(this.hover);
     }
   }
 
@@ -1170,6 +1403,7 @@ export class Radar2DView {
     if (this.fronts.length > 0) this.drawFronts(box);
     if (this.lightning.length > 0) this.drawLightning(box);
     this.drawGrid(box);
+    this.drawInspect(box);
     this.ctx.restore();
 
     this.ctx.strokeStyle = INST.gridStrong;
@@ -1476,6 +1710,232 @@ export class Radar2DView {
     ctx.lineTo(cx, cy + 7);
     ctx.stroke();
     ctx.restore();
+  }
+
+  private setTool(tool: "pan" | "probe" | "section"): void {
+    this.tool = tool;
+    for (const btn of this.root.querySelectorAll(".tool-btn")) {
+      btn.classList.toggle("active", btn.getAttribute("data-tool") === tool);
+    }
+  }
+
+  private clearInspect(): void {
+    this.pin = null;
+    this.secA = null;
+    this.secB = null;
+    this.series = [];
+    this.seriesKey = "";
+    this.columnEl?.classList.add("hidden");
+    this.sectionStrip?.classList.add("hidden");
+    this.inspectGen++;
+    this.draw();
+  }
+
+  private placeToolPoint(cell: { i: number; j: number }): void {
+    if (this.recordedOnly || this.tool === "pan") return;
+    if (this.tool === "probe") {
+      if (!this.pin || this.pin.i !== cell.i || this.pin.j !== cell.j) {
+        this.series = [];
+        this.seriesKey = "";
+      }
+      this.pin = { i: cell.i, j: cell.j };
+      this.columnEl.classList.remove("hidden");
+    } else if (!this.secA || this.secB) {
+      this.secA = { i: cell.i, j: cell.j };
+      this.secB = null;
+      this.sectionStrip.classList.add("hidden");
+    } else {
+      this.secB = { i: cell.i, j: cell.j };
+      this.sectionStrip.classList.remove("hidden");
+    }
+    this.inspectGen++;
+    this.draw();
+  }
+
+  private cellPoint(
+    box: { x: number; y: number; w: number; h: number },
+    i: number,
+    j: number,
+  ): { x: number; y: number } {
+    return {
+      x: box.x + ((i + 0.5) / this.nx) * box.w,
+      y: box.y + ((this.ny - 1 - j + 0.5) / this.ny) * box.h,
+    };
+  }
+
+  private drawInspect(box: { x: number; y: number; w: number; h: number }): void {
+    const ctx = this.ctx;
+    ctx.save();
+    if (this.nestBox && this.domain === "parent") {
+      const b = this.nestBox;
+      const x = box.x + Math.min(b.x0, b.x1) * box.w;
+      const y = box.y + (1 - Math.max(b.y0, b.y1)) * box.h;
+      const w = Math.abs(b.x1 - b.x0) * box.w;
+      const h = Math.abs(b.y1 - b.y0) * box.h;
+      ctx.strokeStyle = "#f4e2a8";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+    }
+    if (this.secA) {
+      const a = this.cellPoint(box, this.secA.i, this.secA.j);
+      ctx.lineCap = "round";
+      if (this.secB) {
+        const b = this.cellPoint(box, this.secB.i, this.secB.j);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = "rgba(6, 12, 22, 0.85)";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.strokeStyle = "#f4f7fb";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        this.drawInspectDot(b.x, b.y);
+      }
+      this.drawInspectDot(a.x, a.y);
+    }
+    if (this.pin) {
+      const p = this.cellPoint(box, this.pin.i, this.pin.j);
+      ctx.strokeStyle = "#071018";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(p.x - 8, p.y - 8, 16, 16);
+      ctx.strokeStyle = "#e8b84a";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(p.x - 8, p.y - 8, 16, 16);
+    }
+    ctx.restore();
+  }
+
+  private drawInspectDot(x: number, y: number): void {
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#f4f7fb";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#071018";
+    ctx.stroke();
+  }
+
+  private renderColumnStats(sample: ColumnProbe): void {
+    const ix = sample.indices;
+    const n = (v: number, d = 0) => (Number.isFinite(v) ? v.toFixed(d) : "—");
+    const rows: [string, string][] = [
+      ["E", `${sample.xKm.toFixed(1)} km`],
+      ["N", `${sample.yKm.toFixed(1)} km`],
+      ["CAPE", `${n(ix.sbcape)} J/kg`],
+      ["CIN", `${n(ix.sbcin)} J/kg`],
+      ["LCL", `${n(ix.sblcl)} m`],
+      ["SCP", n(ix.scp, 2)],
+      ["STP", n(ix.stp, 2)],
+      ["EHI", n(ix.ehi, 2)],
+      ["SHIP", n(ix.ship, 2)],
+      ["Microburst", n(ix.mburst, 2)],
+    ];
+    this.columnStats.innerHTML = rows
+      .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+      .join("");
+  }
+
+  private pushSeries(sample: ColumnProbe): void {
+    const key = `${sample.i},${sample.j}`;
+    if (key !== this.seriesKey) {
+      this.series = [];
+      this.seriesKey = key;
+    }
+    const last = this.series[this.series.length - 1];
+    if (last && last.t === sample.t) {
+      this.drawSparks();
+      return;
+    }
+    this.series.push({
+      t: sample.t,
+      dbz: sample.dbz,
+      w: sample.w,
+      rain: sample.rain,
+    });
+    if (this.series.length > 60) this.series.shift();
+    this.drawSparks();
+  }
+
+  private drawSparks(): void {
+    const c = this.sparkCanvas;
+    if (!c) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(80, c.clientWidth || 280);
+    const h = 84;
+    c.width = Math.floor(w * dpr);
+    c.height = Math.floor(h * dpr);
+    c.style.height = `${h}px`;
+    const x = c.getContext("2d");
+    if (!x) return;
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    x.clearRect(0, 0, w, h);
+    const rows: { label: string; color: string; pick: (s: { t: number; dbz: number; w: number; rain: number }) => number }[] = [
+      { label: "dBZ", color: "#e27b12", pick: (s) => s.dbz },
+      { label: "w", color: "#7eb6ff", pick: (s) => s.w },
+      { label: "rain", color: "#3dbe7a", pick: (s) => s.rain },
+    ];
+    const rowH = h / rows.length;
+    rows.forEach((row, ri) => {
+      const vals = this.series.map(row.pick);
+      const lo = Math.min(0, ...vals, 0);
+      const hi = Math.max(1e-3, ...vals, 0);
+      const y0 = ri * rowH;
+      x.strokeStyle = row.color;
+      x.lineWidth = 1.5;
+      x.beginPath();
+      vals.forEach((v, i) => {
+        const px = vals.length < 2 ? 4 : (i / (vals.length - 1)) * (w - 36);
+        const py = y0 + rowH - 4 - ((v - lo) / (hi - lo)) * (rowH - 8);
+        if (i === 0) x.moveTo(px, py);
+        else x.lineTo(px, py);
+      });
+      if (vals.length) x.stroke();
+      x.fillStyle = "#8fa0b0";
+      x.font = "10px ui-sans-serif, system-ui, sans-serif";
+      x.fillText(row.label, w - 32, y0 + 12);
+    });
+  }
+
+  private renderProbeCharts(sample: ColumnProbe): void {
+    const nz = sample.nz;
+    if (nz < 2) return;
+    const step = Math.max(1, Math.ceil(nz / 32));
+    const levels: CreatorLevel[] = [];
+    for (let k = 0; k < nz; k += step) levels.push(this.creatorLevel(sample, k));
+    if ((nz - 1) % step !== 0) levels.push(this.creatorLevel(sample, nz - 1));
+    const usable = levels.filter((l) => Number.isFinite(l.p) && l.p > 1);
+    if (usable.length < 2) return;
+    let diagnostics;
+    try {
+      diagnostics = calcDiagnostics(usable, "N");
+    } catch {
+      return;
+    }
+    const css = readCreatorCss(this.root);
+    drawSkewT(this.skewCanvas, usable, diagnostics, "SB", css, { markers: false });
+    const maxKt = Math.max(20, ...usable.map((l) => l.s));
+    const hR = Math.max(40, Math.ceil(maxKt / 20) * 20);
+    drawHodograph(this.hodoCanvas, usable, diagnostics, hR, css, { markers: false });
+  }
+
+  private creatorLevel(sample: ColumnProbe, k: number): CreatorLevel {
+    const o = k * 6;
+    const lv = sample.levels;
+    const wind = spdDirFromUv(lv[o + 4] || 0, lv[o + 5] || 0);
+    const t = lv[o + 2];
+    const td = Math.min(t, lv[o + 3]);
+    return {
+      z: lv[o],
+      p: lv[o + 1],
+      T: t,
+      Td: td,
+      d: wind.dir,
+      s: wind.spd * 1.943844,
+      u: lv[o + 4],
+      v: lv[o + 5],
+    };
   }
 
   private updateHover(clientX: number, clientY: number): void {

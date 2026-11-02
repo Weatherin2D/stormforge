@@ -1,4 +1,5 @@
 import { Grid3D } from "./Grid3D";
+import type { SurfaceSpec } from "./surface";
 import { SynopticSetup, applySynopticFeatures } from "./synoptic";
 import {
   SoundingLevel,
@@ -97,6 +98,8 @@ export interface InitOptions {
   bubbleRadiusFrac?: number; // fraction of domain
   /** Drawn fronts, highs, and lows. Omitted runs use the default pattern. */
   synoptic?: SynopticSetup;
+  /** Painted height field, sea mask, SST, and one nest. */
+  surface?: SurfaceSpec | null;
 }
 
 /** Near-surface warm/moist bubble geometry (domain horizontal center). */
