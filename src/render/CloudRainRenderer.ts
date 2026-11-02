@@ -2103,7 +2103,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 192 },
+      quality: { maxSteps: 224 },
     });
     this.volumeMesh = createCloudMesh(this.cloudMat, boxMin, boxMax);
     this.volumeMesh.visible = this.cloudsOn;

@@ -252,7 +252,8 @@ vec3 sampleFieldsSoft(vec3 uvw){
   sum += textureLod(uFields, uvw + vec3(-t2.x, 0.0, -t2.z), 0.0).rgb * 0.7;
   sum += textureLod(uFields, uvw + vec3(0.0, t2.y, 0.0), 0.0).rgb * 0.6;
   sum += textureLod(uFields, uvw - vec3(0.0, t2.y, 0.0), 0.0).rgb * 0.6;
-  return max(sum * (1.0 / 12.6) * uFieldGain, vec3(0.0));
+  // Weights: 3 + 6 + 2.8 + 1.2 = 13
+  return max(sum * (1.0 / 13.0) * uFieldGain, vec3(0.0));
 }
 
 // Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
@@ -493,16 +494,14 @@ void main() {
   vec3 phases = vec3(mlPhase(cosT, 1.0), 0.5 * mlPhase(cosT, 0.5), 0.25 * mlPhase(cosT, 0.25));
   vec3 rainPh = rainPhase(cosT);
 
-  // MeteoLAB march: STEPS coarse samples across the ray, refine to FINE_STEP
-  // inside cloud. No distance LOD shells (those read as concentric rings).
+  // Coarse empty-space steps + fine steps inside cloud (MeteoLAB-style).
+  // Coarse MUST be capped — uncapped pathLen/STEPS skipped thin decks entirely
+  // (clouds went invisible on typical views).
   float pathLen = max(tFar - tNear, 1.0);
-  float coarse = pathLen / float(STEPS);
-  float fine = min(coarse, max(uStepSize, FINE_STEP));
-  // Keep near/medium views dense even on long rays through a big domain.
-  fine = clamp(fine, 20.0, 80.0);
-  coarse = max(coarse, fine);
+  float fine = clamp(max(uStepSize, FINE_STEP), 16.0, 64.0);
+  float coarse = clamp(pathLen / float(STEPS), fine, fine * 5.0);
   float dt = coarse;
-  float t = tNear + coarse * ign(gl_FragCoord.xy + uFrame * 5.588238);
+  float t = tNear + fine * ign(gl_FragCoord.xy + uFrame * 5.588238);
   bool inside = false;
   int clearRun = 0;
 
@@ -521,15 +520,15 @@ void main() {
     vec4 field = textureLod(uFields, uvw, 0.0);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
-    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.001;
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.0008;
 
     if (!inside) {
-      if (cloudy && coarse > fine * 1.02) {
+      if (cloudy && coarse > fine * 1.05) {
         inside = true;
         clearRun = 0;
-        t = max(tNear, t - coarse);
+        // Step back into the slab, then sample on the fine grid.
+        t = max(tNear, t - coarse * 0.95);
         dt = fine;
-        t += dt;
         continue;
       }
     } else if (!cloudy) {
@@ -549,7 +548,7 @@ void main() {
     }
 
     // Keep some billow carve even far away so decks do not collapse to cubes.
-    float detail = max(0.4, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
+    float detail = max(0.35, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
     vec3 sig = sampleSigma(p, detail);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
