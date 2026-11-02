@@ -1,6 +1,6 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { TFromTheta } from "./thermo";
+import { TFromTheta, qsat } from "./thermo";
 
 export interface RadiationOptions {
   enabled: boolean;
@@ -25,6 +25,20 @@ export const DEFAULT_RADIATION: RadiationOptions = {
   solarHour: 12,
   diurnalSpeed: 15,
 };
+
+/** Optional terrain / cover used to shape the surface energy balance. */
+export interface SurfaceRadContext {
+  /** Column terrain height (m), length nx·ny. */
+  height?: Float32Array | null;
+  /** First open level index per column. */
+  openK?: Uint16Array | null;
+  soil?: Float32Array | null;
+  veg?: Float32Array | null;
+  /** 0 land, 1 lake, 2 ocean. */
+  kind?: Float32Array | null;
+  dx?: number;
+  dy?: number;
+}
 
 const DEG2RAD = Math.PI / 180;
 
@@ -185,8 +199,10 @@ export function solarStatus(opts: RadiationOptions): SolarStatus {
 }
 
 /**
- * Near-surface shortwave heating + IR cooling.
- * Updates potential temperature on the lowest few levels.
+ * Near-surface shortwave heating + IR cooling with a simple surface energy
+ * balance: slope/aspect insolation, land/water contrast, and soil/veg Bowen
+ * partitioning into sensible vs latent. Heat starts at each column's open
+ * terrain level so buried cells under hills stay inert.
  *
  * Tendencies are scaled by diurnalSpeed so a compressed sandbox day still
  * produces several K of surface warming / night cooling.
@@ -197,48 +213,109 @@ export function applySurfaceRadiation(
   dt: number,
   opts: RadiationOptions,
   landMask?: Float32Array,
+  ctx?: SurfaceRadContext | null,
 ): void {
   if (!opts.enabled || dt <= 0) return;
 
-  const { nx, ny, nz } = grid;
+  const { nx, ny, nz, dx, dy } = grid;
   const cosZ = cosZenith(opts.latitudeDeg, opts.month, opts.solarHour);
-  const sun = Math.max(0, cosZ);
+  const sunFlat = Math.max(0, cosZ);
+  // Soft optical path: low sun still heats, but less than Lambert flat.
+  const airMass = sunFlat / (sunFlat + 0.12);
+  const sun = sunDirection(opts.latitudeDeg, opts.month, opts.solarHour);
 
-  // Pace with the compressed clock (min 1× so paused-clock noon still heats)
   const pace = Math.max(1, opts.diurnalSpeed);
-
-  // Peak SW ~3.2 K per solar-hour at overhead sun → visible over a short day
-  const swHeatKs = ((3.2 * pace) / 3600) * sun;
-  // IR always on; night net cool ~1.4 K per solar-hour near ground
-  const lwBaseKs = (1.4 * pace) / 3600;
-
-  // Lowest ~4 levels, weight by level index (works for coarse or fine Δz)
-  const kMax = Math.min(nz - 1, 4);
+  // Peak SW ~3.6 K per solar-hour at overhead sun on dry land.
+  const swPeakKs = (3.6 * pace) / 3600;
+  // IR always on; night net cool ~1.6 K per solar-hour over land.
+  const lwLandKs = (1.6 * pace) / 3600;
+  const lwWaterKs = (0.55 * pace) / 3600;
 
   const useMask = landMask !== undefined && landMask.length >= nx * ny;
+  const height = ctx?.height && ctx.height.length >= nx * ny ? ctx.height : null;
+  const openK = ctx?.openK && ctx.openK.length >= nx * ny ? ctx.openK : null;
+  const soil = ctx?.soil && ctx.soil.length >= nx * ny ? ctx.soil : null;
+  const veg = ctx?.veg && ctx.veg.length >= nx * ny ? ctx.veg : null;
+  const kind = ctx?.kind && ctx.kind.length >= nx * ny ? ctx.kind : null;
+  const ddx = ctx?.dx ?? dx;
+  const ddy = ctx?.dy ?? dy;
 
-  for (let k = 0; k < kMax; k++) {
-    const wgt = Math.exp(-k / 1.15);
-    if (wgt < 0.08) continue;
+  const kSpan = Math.min(nz - 1, 6);
 
-    const th0 = fields.theta0[k];
-    const p0 = fields.p0[k];
+  for (let j = 0; j < ny; j++) {
+    const row = j * nx;
+    for (let i = 0; i < nx; i++) {
+      const s = row + i;
+      const k0 = openK ? Math.min(nz - 1, openK[s] | 0) : 0;
+      const land = useMask ? landMask![s] : 1;
+      const isWater = kind ? kind[s] >= 0.5 : land < 0.2;
+      const soilM = soil && !isWater ? Math.min(1, Math.max(0, soil[s])) : 0;
+      const vegM = veg && !isWater ? Math.min(1, Math.max(0, veg[s])) : 0;
 
-    for (let j = 0; j < ny; j++) {
-      const row = j * nx;
-      for (let i = 0; i < nx; i++) {
+      // Slope / aspect: sun · terrain normal (Y-up). Flat → sun.y ≈ cosZ.
+      let slopeSun = sunFlat;
+      if (height && sunFlat > 0.01) {
+        const h = (ii: number, jj: number) =>
+          height[
+            Math.max(0, Math.min(nx - 1, ii)) +
+              nx * Math.max(0, Math.min(ny - 1, jj))
+          ];
+        const dhdx = (h(i + 1, j) - h(i - 1, j)) / (2 * Math.max(1, ddx));
+        const dhdy = (h(i, j + 1) - h(i, j - 1)) / (2 * Math.max(1, ddy));
+        // Outward normal of z = h(x,z_north): n ~ (-dhdx, 1, dhdy) in (+X,+Y,−Z) with j north.
+        const nx_ = -dhdx;
+        const ny_ = 1;
+        const nz_ = dhdy;
+        const nlen = Math.hypot(nx_, ny_, nz_) || 1;
+        slopeSun = Math.max(
+          0,
+          (sun.x * nx_ + sun.y * ny_ + sun.z * nz_) / nlen,
+        );
+      }
+
+      // Bowen-like split: moist / vegetated land evaporates → less sensible heat.
+      const evaporative = isWater
+        ? 0.85
+        : Math.min(0.9, 0.15 + 0.55 * soilM + 0.35 * vegM);
+      const sensibleFrac = 1 - evaporative;
+      const albedo = isWater ? 0.06 : 0.18 + 0.1 * vegM;
+      const swAbs =
+        swPeakKs * slopeSun * airMass * (1 - albedo) * (isWater ? 0.35 : land);
+
+      const Tsurf = TFromTheta(
+        fields.theta[grid.idx(i, j, k0)],
+        fields.p0[k0],
+      );
+      const lwRate = isWater ? lwWaterKs : lwLandKs;
+      const lw =
+        lwRate *
+        (0.8 + 0.2 * Math.max(0, (Tsurf - 273) / 40)) *
+        (isWater ? 1 : Math.max(0.35, land));
+
+      const sensKs = swAbs * sensibleFrac - lw;
+      // Latent: raise qv toward a land/water target instead of dumping into θ.
+      const latFrac = swAbs * evaporative;
+
+      for (let dk = 0; dk < kSpan; dk++) {
+        const k = k0 + dk;
+        if (k >= nz) break;
+        const wgt = Math.exp(-dk / 1.35);
+        if (wgt < 0.07) continue;
         const id = grid.idx(i, j, k);
-        const th = fields.theta[id];
-        const T = TFromTheta(th, p0);
-        const lw =
-          lwBaseKs * (0.85 + 0.15 * Math.max(0, (T - 275) / 40));
-        const land = useMask ? landMask![row + i] : 1;
-        // Day: land-weighted SW − LW; night: −LW (no land contrast)
-        const dTh = (swHeatKs * land - lw) * wgt * dt;
-        const next = th + dTh;
-        const floor = th0 - 9;
-        const ceil = th0 + 11;
-        fields.theta[id] = Math.max(floor, Math.min(ceil, next));
+        const th0 = fields.theta0[k];
+        const p0 = fields.p0[k];
+        const next = fields.theta[id] + sensKs * wgt * dt;
+        fields.theta[id] = Math.max(th0 - 10, Math.min(th0 + 12, next));
+
+        if (latFrac > 1e-8 && dk < 3) {
+          const tNow = TFromTheta(fields.theta[id], p0);
+          const qTarget =
+            qsat(tNow, p0) * (isWater ? 0.98 : 0.75 + 0.2 * soilM);
+          const moistRate = ((latFrac * 0.35) / 3600) * wgt * dt;
+          // Convert a soft “evaporative heating share” into a qv nudge.
+          const add = (qTarget - fields.qv[id]) * Math.min(0.08, moistRate * 40);
+          if (add > 0) fields.qv[id] += add;
+        }
       }
     }
   }

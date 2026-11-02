@@ -1025,7 +1025,7 @@ export class WebGPUBackend implements SimBackend {
     const qrScratch = new Float32Array(g.n);
     const iceScratch = new Float32Array(g.n);
 
-    applySurfaceRadiation(g, f, dt, this.radiation, landMask);
+    applySurfaceRadiation(g, f, dt, this.radiation, landMask, null);
     stepShallowCu(g, f, dt, landMask, new Float32Array(g.nx * g.ny), exner, this.radiation);
     stepMicrophysics(g, f, dt, qrScratch, exner);
     stepColdMicrophysics(
