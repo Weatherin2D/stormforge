@@ -162,7 +162,7 @@ export class App {
           <button type="button" id="btn-sim-menu" class="corner-menu-btn" aria-expanded="false" aria-controls="sim-menu">Menu</button>
           <div id="sim-menu" class="sim-menu hidden">
             <div class="sim-menu-head">
-              <span class="brand">Stormforge</span>
+        <span class="brand">Stormforge</span>
               <button type="button" id="btn-sim-menu-close">Close</button>
             </div>
             <span class="stats" id="sim-stats">ï¿½</span>
@@ -170,10 +170,10 @@ export class App {
             <details class="menu-section" open>
               <summary>Sim</summary>
               <div class="menu-section-body sim-menu-actions">
-                <button id="btn-pause" title="Pause / resume simulation time (Space)">Pause</button>
-                <button id="btn-bubble">Respawn bubble</button>
-                <button id="btn-reset">Reset</button>
-                <button id="btn-menu">Main menu</button>
+        <button id="btn-pause" title="Pause / resume simulation time (Space)">Pause</button>
+        <button id="btn-bubble">Respawn bubble</button>
+        <button id="btn-reset">Reset</button>
+        <button id="btn-menu">Main menu</button>
                 <label class="sim-speed">
                   Simulation speed
                   <select id="sim-speed">
@@ -213,7 +213,7 @@ export class App {
                     <option value="coldpool">Cold pool 3D</option>
                   </select>
                 </label>
-                <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
+        <button id="btn-radar3d" title="Radar plane in the 3D view">Radar 3D</button>
                 <button id="btn-radar2d" title="2D maps overlay">Maps 2D</button>
                 <button id="btn-winds" title="Surface wind arrows">Winds</button>
                 <button id="btn-teleport" title="Open the map and click to move">Teleport</button>
@@ -228,6 +228,7 @@ export class App {
                   Cloud look
                   <select id="cloud-look" title="Sun and erosion matched to a reference photo.">
                     <option value="">Live sun</option>
+                    <option value="E_afternoonHighDeck">3pm AEST high deck</option>
                     <option value="A_towerWithAnvil">Tower with anvil</option>
                     <option value="B_matureAnvil">Mature anvil</option>
                     <option value="C_flatBaseRain">Flat base and rain</option>
@@ -277,37 +278,37 @@ export class App {
             <details class="menu-section">
               <summary>Sun</summary>
               <div class="menu-section-body sun-controls">
-                <span id="sun-clock" class="sun-clock">12:00 ï¿½ day</span>
-                <div id="sun-panel" class="sun-panel">
-                  <label>
-                    Hour
-                    <input id="live-hour" type="range" min="0" max="23.75" step="0.25" value="12" />
-                    <span id="live-hour-val">12:00</span>
-                  </label>
-                  <label>
-                    Latitude
-                    <input id="live-lat" type="range" min="-60" max="60" step="1" value="35" />
-                    <span id="live-lat-val">35ï¿½</span>
-                  </label>
-                  <label>
-                    Month
-                    <input id="live-month" type="range" min="1" max="12" step="1" value="6" />
-                    <span id="live-month-val">Jun</span>
-                  </label>
-                  <label>
-                    Day length
-                    <input id="live-daylen" type="range" min="1" max="10" step="1" value="3" />
-                    <span id="live-daylen-val">~3m</span>
-                  </label>
-                  <label class="pause-time-label">
-                    <input id="live-pause" type="checkbox" />
-                    Pause clock / sun
-                  </label>
-                </div>
-              </div>
+                <span id="sun-clock" class="sun-clock">15:00 · day</span>
+          <div id="sun-panel" class="sun-panel">
+            <label>
+              Hour
+              <input id="live-hour" type="range" min="0" max="23.75" step="0.25" value="15" />
+              <span id="live-hour-val">15:00</span>
+            </label>
+            <label>
+              Latitude
+              <input id="live-lat" type="range" min="-60" max="60" step="1" value="-34" />
+                    <span id="live-lat-val">-34°</span>
+            </label>
+            <label>
+              Month
+              <input id="live-month" type="range" min="1" max="12" step="1" value="11" />
+              <span id="live-month-val">Nov</span>
+            </label>
+            <label>
+              Day length
+              <input id="live-daylen" type="range" min="1" max="10" step="1" value="3" />
+              <span id="live-daylen-val">~3m</span>
+            </label>
+            <label class="pause-time-label">
+              <input id="live-pause" type="checkbox" />
+              Pause clock / sun
+            </label>
+          </div>
+        </div>
             </details>
             <div id="advanced-settings-host"></div>
-          </div>
+      </div>
           <div class="viewport-hint" id="viewport-hint">
             <span id="look-hint">Drag to look ï¿½ scroll to zoom</span>
             <span id="player-where">0.0 km E ï¿½ 0.0 km N ï¿½ 2 m</span>
@@ -363,16 +364,16 @@ export class App {
             <p class="panel-desc" id="panel-desc">Edit the sounding above, fronts below ï¿½ apply to push into the live run.</p>
             <div id="creator-host"></div>
             <div class="sounding-drawer-actions panel-actions">
-              <button id="btn-apply" class="primary">Apply sounding</button>
-              <button id="btn-export">Export</button>
-              <button id="btn-default">Default</button>
-            </div>
+            <button id="btn-apply" class="primary">Apply sounding</button>
+            <button id="btn-export">Export</button>
+            <button id="btn-default">Default</button>
+          </div>
             <div id="fronts-panel" class="fronts-panel fronts-below-sounding">
               <div id="fronts-editor-host"></div>
               <div class="fronts-apply-row">
                 <button id="btn-apply-fronts" class="primary">Apply fronts</button>
                 <span class="hint" id="fronts-status">Applies to the running simulation</span>
-              </div>
+            </div>
             </div>
           </div>
         </aside>
@@ -1179,12 +1180,12 @@ export class App {
       console.warn(
         `WebGPU backend unavailable for this grid: ${this.solver.initFailure}. Falling back to CPU.`,
       );
-      this.solver = new FluidSolver(grid);
-      this.solver.rebuild(grid, this.sounding, {
-        bubbleStrength: values.bubbleStrength,
+    this.solver = new FluidSolver(grid);
+    this.solver.rebuild(grid, this.sounding, {
+      bubbleStrength: values.bubbleStrength,
         synoptic: this.synoptic,
         surface,
-      });
+    });
     }
     this.solver.hydrostatic = values.hydrostatic ? "on" : "off";
     const radiation = {
@@ -1255,7 +1256,7 @@ export class App {
     this.syncSessionControls();
 
     // Wait for CSS layout so canvases/viewport get real non-zero sizes
-      requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         this.mountSimView(grid, values.zTop);
         this.applyRunSurface(grid, values);
@@ -1793,7 +1794,7 @@ export class App {
         this.renderer.updateVolume(
           (out) => {
             if (out.length === frame.volume.length) {
-              out.set(frame.volume);
+          out.set(frame.volume);
             } else if (this.solver) {
               const g = this.solver.grid;
               copyFullVolumeToDisplay(frame.volume, g.nx, g.ny, g.nz, out);
@@ -1858,15 +1859,15 @@ export class App {
     // Domain-mean surface ? anomaly vs sounding (radiation signal)
     let dThSfc = this.liveDth ?? 0;
     if (this.liveDth == null) {
-      let dThSum = 0;
-      let dThN = 0;
-      for (let j = 0; j < g.ny; j++) {
-        for (let i = 0; i < g.nx; i++) {
-          const id = g.idx(i, j, 0);
+    let dThSum = 0;
+    let dThN = 0;
+    for (let j = 0; j < g.ny; j++) {
+      for (let i = 0; i < g.nx; i++) {
+        const id = g.idx(i, j, 0);
           dThSum += this.solver.fields.theta[id] - this.solver.fields.theta0[0];
-          dThN++;
-        }
+        dThN++;
       }
+    }
       dThSfc = dThN ? dThSum / dThN : 0;
     }
     const dT =

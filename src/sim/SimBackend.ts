@@ -118,7 +118,6 @@ export interface SimBackend {
   respawnBubble(opts?: Partial<InitOptions>): void;
   packVolumeRGBA(out: Uint8Array): void;
   /** MeteoLAB column map for cloud bases / mammatus (display nx×ny RGBA). */
-  packCloudColumns(out: Uint8Array): void;
   packMapProduct(id: MapProductId, out: Uint8Array): void;
   cloudRainStats(): { cloudMax: number; rainMax: number; cloudMass: number };
   rollLightning(dt: number): LightningStrike[];

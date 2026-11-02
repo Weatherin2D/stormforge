@@ -21,9 +21,10 @@ export interface RadiationOptions {
 
 export const DEFAULT_RADIATION: RadiationOptions = {
   enabled: true,
-  latitudeDeg: 35,
-  month: 6,
-  solarHour: 12,
+  // Sydney-area afternoon, 2 Nov 2026 ~15:00 AEST (local solar hour).
+  latitudeDeg: -34,
+  month: 11,
+  solarHour: 15,
   diurnalSpeed: 15,
 };
 

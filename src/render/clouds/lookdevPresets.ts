@@ -44,6 +44,25 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunElevationDeg: 35,
     look: { erosionLiquid: 1.0, powder: 0.9 },
   },
+  // Sydney 2 Nov 2026 ~15:00 AEST — 100% high deck, soft diffuse, light drizzle.
+  E_afternoonHighDeck: {
+    description:
+      'Soft high overcast at mid-afternoon AEST: fibrous ice sheet, milky fill light, thin drizzle shafts',
+    sunRelativeAzimuthDeg: 120,
+    sunElevationDeg: 47,
+    look: {
+      erosionLiquid: 0.5,
+      erosionIce: 0.25,
+      iceStretch: [0.25, 0.5, 2.8],
+      powder: 0.6,
+      ambientStrength: 1.25,
+      ambientAtten: 0.7,
+      hazeDensity: 2.8e-5,
+      sigmaRain: 0.00075,
+      shaftMax: 3.2,
+      exposure: 1.0,
+    },
+  },
 };
 
 export function applyLookdevPreset(

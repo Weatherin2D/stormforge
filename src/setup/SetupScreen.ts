@@ -237,18 +237,18 @@ export class SetupScreen {
               <div class="field-row">
                 <label>
                   Latitude
-                  <input id="sf-lat" type="range" min="-60" max="60" step="1" value="35" />
-                  <span class="hint"><span id="sf-lat-val">35</span>°</span>
+                  <input id="sf-lat" type="range" min="-60" max="60" step="1" value="-34" />
+                  <span class="hint"><span id="sf-lat-val">-34</span>°</span>
                 </label>
                 <label>
                   Month
-                  <input id="sf-month" type="range" min="1" max="12" step="1" value="6" />
-                  <span class="hint"><span id="sf-month-val">Jun</span></span>
+                  <input id="sf-month" type="range" min="1" max="12" step="1" value="11" />
+                  <span class="hint"><span id="sf-month-val">Nov</span></span>
                 </label>
                 <label>
                   Start hour
-                  <input id="sf-hour" type="range" min="0" max="23.75" step="0.25" value="12" />
-                  <span class="hint"><span id="sf-hour-val">12:00</span></span>
+                  <input id="sf-hour" type="range" min="0" max="23.75" step="0.25" value="15" />
+                  <span class="hint"><span id="sf-hour-val">15:00</span></span>
                 </label>
               </div>
               <p class="hint sun-hint">Sun heats the near-surface by day; IR cools at night.</p>
