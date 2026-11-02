@@ -58,6 +58,8 @@ export class SynopticEditor {
   private dragging: { id: string; dx: number; dy: number } | null = null;
   private seq = 10;
   private ro: ResizeObserver | null = null;
+  /** When false, fronts are plain colored strokes (no triangles / scallops). */
+  private showSymbols = true;
 
   constructor(opts: SynopticEditorOptions = {}) {
     const compact = opts.compact === true;
@@ -92,6 +94,10 @@ export class SynopticEditor {
         <button type="button" data-tool="high">High</button>
       </div>
         <canvas id="sf-front-canvas"></canvas>
+        <label class="front-marine">
+          <input id="sf-front-symbols" type="checkbox" checked />
+          Front symbols (triangles / scallops)
+        </label>
         <label class="front-marine">
           <input id="sf-front-marine" type="checkbox" checked />
           Southeast sea
@@ -139,6 +145,13 @@ export class SynopticEditor {
     this.strengthInput = this.root.querySelector("#sf-front-hpa") as HTMLInputElement;
     this.deleteBtn = this.root.querySelector("#sf-front-delete") as HTMLButtonElement;
     this.marineInput = this.root.querySelector("#sf-front-marine") as HTMLInputElement;
+    const symbolsInput = this.root.querySelector(
+      "#sf-front-symbols",
+    ) as HTMLInputElement | null;
+    symbolsInput?.addEventListener("change", () => {
+      this.showSymbols = symbolsInput.checked;
+      this.draw();
+    });
     this.synopticToggle = this.root.querySelector("#sf-synoptic-toggle") as HTMLInputElement;
     this.jetstreamToggle = this.root.querySelector("#sf-jetstream-toggle") as HTMLInputElement;
     this.jetstreamRow = this.root.querySelector("#sf-jetstream-row") as HTMLElement;
@@ -700,11 +713,19 @@ export class SynopticEditor {
     if (f.points.length < 1) return;
     const ctx = this.ctx;
     const color = KIND_COLOR[f.kind];
+    const selected = f.id === this.selectedId;
     ctx.save();
     ctx.globalAlpha = f.enabled ? 1 : 0.35;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = f.id === this.selectedId ? 3 : 2;
+    // Plain-line mode uses a heavier stroke so fronts stay readable without barbs.
+    ctx.lineWidth = this.showSymbols
+      ? selected
+        ? 3
+        : 2
+      : selected
+        ? 5
+        : 3.5;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.setLineDash(f.enabled ? [] : [5, 4]);
@@ -717,7 +738,9 @@ export class SynopticEditor {
     }
     ctx.stroke();
     ctx.setLineDash([]);
-    if (!draft && f.points.length >= 2) this.paintSymbols(f, w, h);
+    if (this.showSymbols && !draft && f.points.length >= 2) {
+      this.paintSymbols(f, w, h);
+    }
     ctx.restore();
   }
 
