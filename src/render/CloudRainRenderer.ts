@@ -214,8 +214,11 @@ export class CloudRainRenderer {
   private moveLastMs = 0;
   private readonly moveFwd = new THREE.Vector3();
   private readonly moveRight = new THREE.Vector3();
-  /** Horizontal move speed, m/s. Shift triples it. */
-  private readonly walkSpeed = 55;
+  /**
+   * Base horizontal move speed, m/s. Also scales with domain size so a
+   * mesoscale/continental box stays traversable. Shift multiplies it.
+   */
+  private readonly walkSpeed = 280;
   private moveFast = false;
   private domainBox: THREE.LineSegments;
   private windMesh: THREE.InstancedMesh | null = null;
@@ -975,7 +978,11 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.moveFwd.set(-sy, 0, -cy);
     this.moveRight.set(cy, 0, -sy);
     const len = Math.hypot(ax, az) || 1;
-    const speed = this.walkSpeed * (this.moveFast ? 3.2 : 1) * dt;
+    // ~0.5% of the shorter domain side per second (floored by walkSpeed) so
+    // a 64 km box crosses in a couple of minutes; Shift for a quick sweep.
+    const domainPace = Math.min(this.spanX, this.spanZ) * 0.005;
+    const base = Math.max(this.walkSpeed, domainPace);
+    const speed = base * (this.moveFast ? 4.5 : 1) * dt;
     const dx = ((this.moveRight.x * ax + this.moveFwd.x * az) / len) * speed;
     const dz = ((this.moveRight.z * ax + this.moveFwd.z * az) / len) * speed;
 
