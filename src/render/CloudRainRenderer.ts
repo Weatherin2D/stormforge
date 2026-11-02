@@ -2341,37 +2341,36 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       // Don't invalidate history — keep the last good frame so re-enabling clouds doesn't cold-start
     }
 
-    this.renderer.setRenderTarget(null);
-    this.renderer.autoClear = true;
-    this.renderer.render(this.presentScene, this.overlayCam);
-    if (this.blitMesh.visible) {
-      this.renderer.autoClear = false;
-      this.renderer.render(this.overlay, this.overlayCam);
-    }
+    // Weather that must be occluded by terrain/trees: draw into the scene RT
+    // while its depth buffer is still live (the default FB has none).
+    this.renderer.setRenderTarget(this.sceneTarget);
+    this.renderer.autoClear = false;
     if (this.precipitation.points.visible) {
-      this.renderer.autoClear = false;
       this.renderer.render(this.precipScene, this.camera);
     }
     if (
       this.boltGlows.some((ribbon) => ribbon.visible) ||
       this.boltCores.some((ribbon) => ribbon.visible)
     ) {
-      this.renderer.autoClear = false;
       this.renderer.render(this.boltScene, this.camera);
     }
-
-    // Render MeteoLAB components
-    if (this.lightningView) {
-      this.renderer.autoClear = false;
+    if (this.lightningView?.mesh.visible) {
       this.renderer.render(this.lightningView.mesh, this.camera);
     }
     if (this.spriteView) {
       const dark = Math.max(0, 1 - this.sunFrac);
       this.spriteView.update(this.timeSeconds, dark, this.cloudsOn);
       if (this.spriteView.mesh.visible) {
-        this.renderer.autoClear = false;
         this.renderer.render(this.spriteView.mesh, this.camera);
       }
+    }
+
+    this.renderer.setRenderTarget(null);
+    this.renderer.autoClear = true;
+    this.renderer.render(this.presentScene, this.overlayCam);
+    if (this.blitMesh.visible) {
+      this.renderer.autoClear = false;
+      this.renderer.render(this.overlay, this.overlayCam);
     }
 
     this.renderer.autoClear = true;
@@ -2417,7 +2416,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     geo.setIndex(index);
     const mat = new THREE.ShaderMaterial({
       transparent: true,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       toneMapped: false,

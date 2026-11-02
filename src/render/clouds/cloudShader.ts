@@ -117,18 +117,31 @@ uniform float uShadowProbes;
 
 const float PI = 3.14159265359;
 
-// Distance along the view ray to the opaque scene. Sky (cleared depth) does not clip.
-float groundDistance(vec3 ro, vec3 rd, float tFar) {
-  vec2 uv = gl_FragCoord.xy / uResolution;
+// Distance along the view ray to the opaque scene (terrain, trees, …).
+// Sky / cleared depth does not clip. Uses a 5-tap min so thin canopy edges
+// still hide the volume instead of letting cloud bleed through.
+float depthToHit(vec2 uv, vec3 ro, vec3 rd) {
   float depth = texture(uSceneDepth, uv).r;
-  if (depth >= 0.9995) return tFar;
+  if (depth >= 0.9995) return 1e9;
   vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
   vec4 viewPos = uInvProjection * ndc;
-  viewPos /= viewPos.w;
-  vec4 world = uCameraWorld * viewPos;
-  float tHit = dot(world.xyz - ro, rd);
-  if (tHit <= 0.05) return tFar;
-  return min(tFar, tHit);
+  viewPos /= max(viewPos.w, 1e-6);
+  vec3 world = (uCameraWorld * viewPos).xyz;
+  float tHit = dot(world - ro, rd);
+  return tHit > 0.05 ? tHit : 1e9;
+}
+
+float groundDistance(vec3 ro, vec3 rd, float tFar) {
+  vec2 uv = gl_FragCoord.xy / max(uResolution, vec2(1.0));
+  vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+  float tHit = depthToHit(uv, ro, rd);
+  tHit = min(tHit, depthToHit(uv + vec2(texel.x, 0.0), ro, rd));
+  tHit = min(tHit, depthToHit(uv - vec2(texel.x, 0.0), ro, rd));
+  tHit = min(tHit, depthToHit(uv + vec2(0.0, texel.y), ro, rd));
+  tHit = min(tHit, depthToHit(uv - vec2(0.0, texel.y), ro, rd));
+  if (tHit > 1e8) return tFar;
+  // Pull the clip a few metres toward the camera so opaque surfaces fully win.
+  return min(tFar, max(tHit - 2.5, 0.0));
 }
 
 vec3 flashLight(vec3 p) {

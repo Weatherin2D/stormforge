@@ -137,7 +137,8 @@ export class PrecipitationParticles {
       vertexShader,
       fragmentShader,
       transparent: true,
-      depthTest: false,
+      // Test against the scene depth so drops/hail don't draw through hills/trees.
+      depthTest: true,
       depthWrite: false,
       toneMapped: false,
     });
