@@ -17,7 +17,7 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { CP, LV, RV, esatFast, mixingRatio } from "./thermo";
-import { getAdvanced } from "./AdvancedSettings";
+import { getAdvanced, getToggles } from "./AdvancedSettings";
 
 export const LF = 3.34e5;
 export const LS = LV + LF;
@@ -111,6 +111,7 @@ function qsatLiquid(tc: number, p: number): number {
 /** Crystals per m³ from Cooper (1986), capped at 250 L⁻¹. */
 export function cooperCrystals(tc: number): number {
   if (tc >= NUCLEATION_START) return 0;
+  if (!getToggles().enableIceNucleation) return 0;
   const n = Math.min(MAX_NUCLEATED, 5 * Math.exp(0.304 * -tc));
   return n * getAdvanced().iceNucleation;
 }
@@ -363,7 +364,10 @@ function snowProcesses(
     snow[i] += saci;
     const sacw = Math.min(
       cloud[i],
-      sweep * cloud[i] * dt * getAdvanced().rimingRate,
+      sweep *
+        cloud[i] *
+        dt *
+        (getToggles().enableRiming ? getAdvanced().rimingRate : 0),
     );
     cloud[i] -= sacw;
     snow[i] += sacw;
@@ -573,6 +577,7 @@ function hailProcesses(
   const tc = tk - T0;
   const heat = 1 / (CP * exner);
   let cooling = 0;
+  if (!getToggles().enableHailProcess) return 0;
   const zone = hailGrowthZone(tc) * getAdvanced().hailGrowth;
   const updraft = 0.5 + 0.5 * Math.min(1, Math.max(0, wUp) / 16);
   const grow = zone * updraft;
@@ -657,9 +662,11 @@ function hailProcesses(
     rain[i] += hacw;
     const S = getAdvanced();
     const rate =
-      ((2 * Math.PI * KA * tc * vent) / (rho * LF) +
-        ((CW * tc) / LF) * sweep * (cloud[i] + rain[i])) *
-      S.meltingRate;
+      getToggles().enableMelting
+        ? ((2 * Math.PI * KA * tc * vent) / (rho * LF) +
+            ((CW * tc) / LF) * sweep * (cloud[i] + rain[i])) *
+          S.meltingRate
+        : 0;
     const melt = Math.min(hail[i], rate * dt, (CP * tc) / LF);
     hail[i] -= melt;
     rain[i] += melt;

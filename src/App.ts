@@ -24,8 +24,11 @@ import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
 import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
 import {
   getAdvanced,
+  getToggles,
   mountAdvancedSettingsUI,
   replaceAdvanced,
+  replaceToggles,
+  type AdvancedToggles,
   type AdvancedValues,
 } from "./sim/AdvancedSettings";
 import { unpackVortexLevels } from "./sim/fieldPack";
@@ -1533,10 +1536,11 @@ export class App {
     }
   }
 
-  /** Push the live advanced slider store into renderer (and stored physics knobs). */
+  /** Push the live advanced slider/toggle stores into renderer (physics reads the store). */
   private applyAdvancedSettings(): void {
     const s = getAdvanced();
-    this.renderer?.applyAdvanced(s);
+    const t = getToggles();
+    this.renderer?.applyAdvanced(s, t);
   }
 
   // -- Save / Load -------------------------------------------------------------
@@ -1601,6 +1605,7 @@ export class App {
         lightningFreq: this.lightningFreq,
         clockPaused: this.clockPaused,
         advanced: { ...getAdvanced() },
+        advancedToggles: { ...getToggles() },
       },
     };
 
@@ -1699,8 +1704,9 @@ export class App {
     if (lfVal) lfVal.textContent = Math.round(lf * 100) + "%";
 
     // -- Advanced settings -----------------------------------------------------
-    if (v.advanced) {
-      replaceAdvanced(v.advanced as AdvancedValues);
+    if (v.advanced) replaceAdvanced(v.advanced as AdvancedValues);
+    if (v.advancedToggles) replaceToggles(v.advancedToggles as AdvancedToggles);
+    if (v.advanced || v.advancedToggles) {
       this.advancedSync?.syncFromStore();
       this.applyAdvancedSettings();
     }

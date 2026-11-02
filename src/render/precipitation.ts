@@ -39,6 +39,11 @@ export interface PrecipTune {
   snowSize: number;
   streak: number;
   opacity: number;
+  allowRain: boolean;
+  allowSnow: boolean;
+  allowHail: boolean;
+  softParticles: boolean;
+  depthOcclusion: boolean;
 }
 
 const vertexShader = /* glsl */ `
@@ -143,6 +148,11 @@ export class PrecipitationParticles {
     snowSize: 1,
     streak: 1,
     opacity: 1,
+    allowRain: true,
+    allowSnow: true,
+    allowHail: true,
+    softParticles: true,
+    depthOcclusion: true,
   };
 
   private readonly material: THREE.ShaderMaterial;
@@ -259,6 +269,8 @@ export class PrecipitationParticles {
     Object.assign(this.tune, partial);
     const op = Math.max(0.05, Math.min(2, this.tune.opacity));
     this.material.opacity = Math.min(1, op);
+    this.material.depthTest = this.tune.depthOcclusion;
+    this.material.depthWrite = false;
   }
 
   private meltAt(y: number): number {
@@ -353,28 +365,36 @@ export class PrecipitationParticles {
         rainK = k;
       }
     }
-    if (hailV > 10 && (hailV > snowV || Math.random() < 0.62)) {
+    if (
+      this.tune.allowHail &&
+      hailV > 10 &&
+      (hailV > snowV || Math.random() < 0.62)
+    ) {
       const size = Math.min(
         1,
         Math.max(0.18, (hailV / 255) * (0.7 + Math.random() * 0.6)),
       );
       return { k: hailK, kind: 2, size };
     }
-    if (snowV > PACK_EMPTY && (snowV >= rainV * 0.25 || rainV <= PACK_EMPTY || Math.random() < 0.4)) {
+    if (
+      this.tune.allowSnow &&
+      snowV > PACK_EMPTY &&
+      (snowV >= rainV * 0.25 || rainV <= PACK_EMPTY || Math.random() < 0.4)
+    ) {
       return {
         k: snowK,
         kind: 0,
         size: (0.35 + Math.random() * 0.65) * this.tune.snowSize,
       };
     }
-    if (rainV > PACK_EMPTY) {
+    if (this.tune.allowRain && rainV > PACK_EMPTY) {
       return {
         k: rainK,
         kind: 1,
         size: (0.35 + Math.random() * 0.65) * this.tune.rainSize,
       };
     }
-    if (snowV > PACK_EMPTY) {
+    if (this.tune.allowSnow && snowV > PACK_EMPTY) {
       return {
         k: snowK,
         kind: 0,

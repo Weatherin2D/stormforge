@@ -1210,91 +1210,148 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
   private boltBrightScale = 1;
   private boltLifeScale = 1;
   private boltWidthScale = 1;
+  private cloudTaaOn = true;
+  private groundFlashOn = true;
+  private spritesOn = true;
 
   /** Push advanced display / precip / lightning knobs into the live renderer. */
-  applyAdvanced(s: {
-    exposure: number;
-    hazeDensity: number;
-    ambientStrength: number;
-    ambientAtten: number;
-    powder: number;
-    powderLength: number;
-    stepSize: number;
-    lodDistance: number;
-    detailFadeNear: number;
-    detailFadeFar: number;
-    shadowProbes: number;
-    sigmaIce: number;
-    mammatusDepth: number;
-    mammatusCell: number;
-    shaftMax: number;
-    iceStretchX: number;
-    iceStretchY: number;
-    iceStretchZ: number;
-    phaseLiquidFwd: number;
-    phaseLiquidBack: number;
-    backWeight: number;
-    multiScatterA: number;
-    multiScatterB: number;
-    multiScatterC: number;
-    cloudSoftness: number;
-    anvilOpacity: number;
-    rainShaftOpacity: number;
-    fogStrength: number;
-    groundBrightness: number;
-    precipSpawn: number;
-    rainFallVisual: number;
-    snowFallVisual: number;
-    precipWindDrag: number;
-    meltDepth: number;
-    rainSize: number;
-    snowSize: number;
-    precipStreak: number;
-    dropletOpacity: number;
-    dropletSize: number;
-    boltBrightness: number;
-    boltDuration: number;
-    boltThickness: number;
-  }): void {
+  applyAdvanced(
+    s: {
+      exposure: number;
+      hazeDensity: number;
+      ambientStrength: number;
+      ambientAtten: number;
+      powder: number;
+      powderLength: number;
+      stepSize: number;
+      lodDistance: number;
+      detailFadeNear: number;
+      detailFadeFar: number;
+      shadowProbes: number;
+      sigmaIce: number;
+      mammatusDepth: number;
+      mammatusCell: number;
+      shaftMax: number;
+      iceStretchX: number;
+      iceStretchY: number;
+      iceStretchZ: number;
+      phaseLiquidFwd: number;
+      phaseLiquidBack: number;
+      backWeight: number;
+      multiScatterA: number;
+      multiScatterB: number;
+      multiScatterC: number;
+      cloudSoftness: number;
+      anvilOpacity: number;
+      rainShaftOpacity: number;
+      fogStrength: number;
+      groundBrightness: number;
+      precipSpawn: number;
+      rainFallVisual: number;
+      snowFallVisual: number;
+      precipWindDrag: number;
+      meltDepth: number;
+      rainSize: number;
+      snowSize: number;
+      precipStreak: number;
+      dropletOpacity: number;
+      dropletSize: number;
+      boltBrightness: number;
+      boltDuration: number;
+      boltThickness: number;
+    },
+    t?: {
+      enableFog?: boolean;
+      enableShadowProbes?: boolean;
+      enablePowder?: boolean;
+      enableGroundFlash?: boolean;
+      enableCloudTAA?: boolean;
+      enableDepthOcclusion?: boolean;
+      enableSoftParticles?: boolean;
+      enableSkyHaze?: boolean;
+      enableMammatus?: boolean;
+      enableRainShafts?: boolean;
+      enableIceFibres?: boolean;
+      enableMultiScatter?: boolean;
+      enableAnvilHighlight?: boolean;
+      enableRainParticles?: boolean;
+      enableSnowParticles?: boolean;
+      enableHailParticles?: boolean;
+      enablePrecipWind?: boolean;
+      enableVirga?: boolean;
+      enableSprites?: boolean;
+    },
+  ): void {
+    const tog = t ?? {};
+    this.cloudTaaOn = tog.enableCloudTAA !== false;
+    this.groundFlashOn = tog.enableGroundFlash !== false;
+    this.spritesOn = tog.enableSprites !== false;
+    if (!this.cloudTaaOn) this.historyValid = false;
+
     this.advSoftness = s.cloudSoftness;
     this.advRainShaft = s.rainShaftOpacity;
     this.boltBrightScale = s.boltBrightness;
     this.boltLifeScale = s.boltDuration;
     this.boltWidthScale = s.boltThickness;
-    this.tune.mammatusDepth = s.mammatusDepth;
+
+    const mammatus = tog.enableMammatus === false ? 0 : s.mammatusDepth;
+    const shafts = tog.enableRainShafts === false ? 0 : s.shaftMax;
+    const probes = tog.enableShadowProbes === false ? 0 : s.shadowProbes;
+    const powder = tog.enablePowder === false ? 0 : s.powder;
+    const fogMul = tog.enableFog === false || tog.enableSkyHaze === false ? 0 : s.fogStrength;
+    const iceStretch: [number, number, number] =
+      tog.enableIceFibres === false
+        ? [1, 1, 1]
+        : [s.iceStretchX, s.iceStretchY, s.iceStretchZ];
+    const multi =
+      tog.enableMultiScatter === false
+        ? ([0.15, 0.15, 0.15] as [number, number, number])
+        : ([s.multiScatterA, s.multiScatterB, s.multiScatterC] as [
+            number,
+            number,
+            number,
+          ]);
+    const anvil = tog.enableAnvilHighlight === false ? 0.55 : s.anvilOpacity;
+
+    this.tune.mammatusDepth = mammatus;
     this.tune.mammatusCell = s.mammatusCell;
-    this.tune.shaftMax = s.shaftMax;
-    this.tune.shadowProbes = s.shadowProbes;
+    this.tune.shaftMax = shafts;
+    this.tune.shadowProbes = probes;
     this.precipitation.setTune({
       spawn: s.precipSpawn,
       rainFall: s.rainFallVisual,
       snowFall: s.snowFallVisual,
-      windDrag: s.precipWindDrag,
-      meltDepth: s.meltDepth,
+      windDrag: tog.enablePrecipWind === false ? 0 : s.precipWindDrag,
+      meltDepth: tog.enableVirga === false ? 40 : s.meltDepth,
       rainSize: s.rainSize * s.dropletSize,
       snowSize: s.snowSize * s.dropletSize,
       streak: s.precipStreak,
       opacity: s.dropletOpacity,
+      allowRain: tog.enableRainParticles !== false,
+      allowSnow: tog.enableSnowParticles !== false,
+      allowHail: tog.enableHailParticles !== false,
+      softParticles: tog.enableSoftParticles !== false,
+      depthOcclusion: tog.enableDepthOcclusion !== false,
     });
     this.cloudMat?.setLook({
       exposure: s.exposure,
-      hazeDensity: s.hazeDensity * s.fogStrength,
+      hazeDensity: s.hazeDensity * fogMul,
       ambientStrength: s.ambientStrength,
       ambientAtten: s.ambientAtten,
-      powder: s.powder,
+      powder,
       powderLength: s.powderLength,
       stepSize: s.stepSize,
       lodDistance: s.lodDistance,
       detailFade: [s.detailFadeNear, s.detailFadeFar],
-      shadowProbes: s.shadowProbes,
-      sigmaIce: s.sigmaIce * s.anvilOpacity,
-      mammatusDepth: s.mammatusDepth,
+      shadowProbes: probes,
+      sigmaIce: s.sigmaIce * anvil,
+      mammatusDepth: mammatus,
       mammatusCell: s.mammatusCell,
-      shaftMax: s.shaftMax * s.rainShaftOpacity,
-      iceStretch: [s.iceStretchX, s.iceStretchY, s.iceStretchZ],
+      shaftMax: shafts * s.rainShaftOpacity,
+      iceStretch,
       phaseLiquid: [s.phaseLiquidFwd, s.phaseLiquidBack],
       backWeight: s.backWeight,
-      multiScatter: [s.multiScatterA, s.multiScatterB, s.multiScatterC],
+      multiScatter: multi,
       erosionLiquid: this.tune.erosionLiquid * s.cloudSoftness,
       sigmaRain: this.tune.sigmaRain * s.rainShaftOpacity,
     });
@@ -2419,7 +2476,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       resolve.uniforms.uCurrent.value = this.cloudTarget.texture;
       resolve.uniforms.uHistory.value = this.cloudHistory.texture;
       resolve.uniforms.uDepth.value = this.sceneTarget.depthTexture;
-      resolve.uniforms.uValid.value = this.historyValid ? 1 : 0;
+      resolve.uniforms.uValid.value =
+        this.cloudTaaOn && this.historyValid ? 1 : 0;
       resolve.uniforms.uMix.value = this.lightningMix();
       this.renderer.setRenderTarget(this.cloudResolved);
       this.renderer.clear(true, false, false);
@@ -2619,7 +2677,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
               : 0.7 + Math.random() * 0.5) * this.boltBrightScale,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
-    if (kind === "sprite" && this.spriteView) {
+    if (kind === "sprite" && this.spritesOn && this.spriteView) {
       this.spriteView.add(
         Math.random() < 0.25 ? "halo" : "sprite",
         hit.x,
@@ -2745,7 +2803,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       mat.opacity = Math.min(0.28, groundPulse * 0.16 * night);
       this.groundFlashMesh.position.x = groundX;
       this.groundFlashMesh.position.z = groundZ;
-      this.groundFlashMesh.visible = groundPulse > 0.02;
+      this.groundFlashMesh.visible =
+        this.groundFlashOn && groundPulse > 0.02;
     }
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     groundMat.emissive.copy(this.flashTint).multiplyScalar(groundPulse * 0.06 * night);

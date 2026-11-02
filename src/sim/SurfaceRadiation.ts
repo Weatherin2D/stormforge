@@ -1,7 +1,7 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { TFromTheta, qsat } from "./thermo";
-import { getAdvanced } from "./AdvancedSettings";
+import { getAdvanced, getToggles } from "./AdvancedSettings";
 
 export interface RadiationOptions {
   enabled: boolean;
@@ -217,6 +217,8 @@ export function applySurfaceRadiation(
   ctx?: SurfaceRadContext | null,
 ): void {
   if (!opts.enabled || dt <= 0) return;
+  const toggles = getToggles();
+  if (!toggles.enableRadiation) return;
 
   const { nx, ny, nz, dx, dy } = grid;
   const adv = getAdvanced();
@@ -230,9 +232,14 @@ export function applySurfaceRadiation(
   // Peak SW ~3.6 K per solar-hour at overhead sun on dry land.
   const swPeakKs = ((3.6 * pace) / 3600) * adv.swHeating;
   // IR always on; night net cool ~1.6 K per solar-hour over land.
-  const night = sunFlat < 0.05 ? adv.nightCoolBoost : 1;
-  const lwLandKs = ((1.6 * pace) / 3600) * adv.lwLandCooling * night;
-  const lwWaterKs = ((0.55 * pace) / 3600) * adv.lwWaterCooling * night;
+  const night =
+    toggles.enableNightCooling && sunFlat < 0.05 ? adv.nightCoolBoost : 1;
+  const lwLandKs = toggles.enableNightCooling || sunFlat > 0.02
+    ? ((1.6 * pace) / 3600) * adv.lwLandCooling * night
+    : 0;
+  const lwWaterKs = toggles.enableNightCooling || sunFlat > 0.02
+    ? ((0.55 * pace) / 3600) * adv.lwWaterCooling * night
+    : 0;
 
   const useMask = landMask !== undefined && landMask.length >= nx * ny;
   const height = ctx?.height && ctx.height.length >= nx * ny ? ctx.height : null;
@@ -257,7 +264,7 @@ export function applySurfaceRadiation(
 
       // Slope / aspect: sun · terrain normal (Y-up). Flat → sun.y ≈ cosZ.
       let slopeSun = sunFlat;
-      if (height && sunFlat > 0.01) {
+      if (toggles.enableSlopeAspect && height && sunFlat > 0.01) {
         const h = (ii: number, jj: number) =>
           height[
             Math.max(0, Math.min(nx - 1, ii)) +
@@ -280,19 +287,25 @@ export function applySurfaceRadiation(
       }
 
       // Bowen-like split: moist / vegetated land evaporates → less sensible heat.
-      const evaporative = Math.min(
-        0.95,
-        (isWater
-          ? 0.85
-          : Math.min(0.9, 0.15 + 0.55 * soilM + 0.35 * vegM)) *
-          (isWater ? adv.evaporativeWater : adv.evaporativeLand),
-      );
+      const evaporative = toggles.enableBowenSplit
+        ? Math.min(
+            0.95,
+            (isWater
+              ? 0.85
+              : Math.min(0.9, 0.15 + 0.55 * soilM + 0.35 * vegM)) *
+              (isWater ? adv.evaporativeWater : adv.evaporativeLand),
+          )
+        : 0.35;
       const sensibleFrac = 1 - evaporative;
       const albedo = isWater
         ? adv.waterAlbedo
         : adv.landAlbedo + 0.1 * vegM;
-      const swAbs =
-        swPeakKs * slopeSun * airMass * (1 - albedo) * (isWater ? 0.35 : land);
+      const landMul = toggles.enableLandWaterContrast
+        ? isWater
+          ? 0.35
+          : land
+        : 1;
+      const swAbs = swPeakKs * slopeSun * airMass * (1 - albedo) * landMul;
 
       const Tsurf = TFromTheta(
         fields.theta[grid.idx(i, j, k0)],

@@ -12,7 +12,7 @@
 
 import type { SetupValues } from "../setup/SetupScreen";
 import type { MapProductId } from "./mapProducts";
-import type { AdvancedValues } from "./AdvancedSettings";
+import type { AdvancedToggles, AdvancedValues } from "./AdvancedSettings";
 
 /** Persisted render/display state. */
 export interface SavedView {
@@ -36,6 +36,8 @@ export interface SavedView {
   clockPaused: boolean;
   /** Optional advanced slider bag (additive; older saves omit it). */
   advanced?: Partial<AdvancedValues>;
+  /** Optional advanced feature toggles (additive; older saves omit it). */
+  advancedToggles?: Partial<AdvancedToggles>;
 }
 
 /** Top-level save document. */

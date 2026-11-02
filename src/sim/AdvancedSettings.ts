@@ -1,7 +1,7 @@
 /**
- * Live advanced settings: declarative slider registry + mutable store.
- * Defaults are 1.0 for multipliers so physics match the pre-settings baseline.
- * Values persist under SavedView.advanced (optional / additive).
+ * Live advanced settings: declarative slider + toggle registries and stores.
+ * Slider defaults are 1.0 for multipliers so physics match the pre-settings baseline.
+ * Values persist under SavedView.advanced / advancedToggles (optional / additive).
  */
 
 export type SettingCategory =
@@ -27,6 +27,14 @@ export interface SettingDef {
   /** Short unit / suffix for the value readout. */
   unit?: string;
   decimals?: number;
+}
+
+export interface ToggleDef {
+  id: keyof AdvancedToggles;
+  category: SettingCategory;
+  label: string;
+  default: boolean;
+  hint?: string;
 }
 
 /** Flat numeric bag consumed by sim + render. */
@@ -157,6 +165,89 @@ export interface AdvancedValues {
   frontForce: number;
   followStormGain: number;
   coldPoolStrength: number;
+}
+
+/** Boolean feature gates consumed by sim + render. */
+export interface AdvancedToggles {
+  // Display
+  enableFog: boolean;
+  enableShadowProbes: boolean;
+  enablePowder: boolean;
+  enableGroundFlash: boolean;
+  enableCloudTAA: boolean;
+  enableDepthOcclusion: boolean;
+  enableSoftParticles: boolean;
+  enableSkyHaze: boolean;
+
+  // Clouds
+  enableMammatus: boolean;
+  enableRainShafts: boolean;
+  enableIceFibres: boolean;
+  enableMultiScatter: boolean;
+  enableAnvilHighlight: boolean;
+
+  // Fluid
+  enableBuoyancy: boolean;
+  enableVorticity: boolean;
+  enableSponge: boolean;
+  enableWDamping: boolean;
+  enableRK2Advection: boolean;
+  enableDivergenceDamp: boolean;
+
+  // Precip visual
+  enableRainParticles: boolean;
+  enableSnowParticles: boolean;
+  enableHailParticles: boolean;
+  enablePrecipWind: boolean;
+  enableVirga: boolean;
+
+  // Microphysics
+  enableWarmRain: boolean;
+  enableColdMicro: boolean;
+  enableHailProcess: boolean;
+  enableIceNucleation: boolean;
+  enableMelting: boolean;
+  enableRiming: boolean;
+
+  // Terrain
+  enableTerrainDrag: boolean;
+  enableOrographic: boolean;
+  enableSlopeWinds: boolean;
+  enableSoilMoisture: boolean;
+  enableSST: boolean;
+  enableBuriedReset: boolean;
+  enableLeeWaves: boolean;
+
+  // Radiation
+  enableRadiation: boolean;
+  enableSlopeAspect: boolean;
+  enableBowenSplit: boolean;
+  enableNightCooling: boolean;
+  enableLandWaterContrast: boolean;
+  enableCloudTopCooling: boolean;
+  enableBLMixing: boolean;
+  enableShallowCu: boolean;
+
+  // Speed
+  enableSplitPhysics: boolean;
+  enableCFLClamp: boolean;
+  enablePhysicsPace: boolean;
+
+  // Lightning
+  enableLightning: boolean;
+  enableCharge: boolean;
+  enableCG: boolean;
+  enableIC: boolean;
+  enableSpider: boolean;
+  enableSprites: boolean;
+  enableAnvilLightning: boolean;
+
+  // Storm
+  enableSynoptic: boolean;
+  enableFronts: boolean;
+  enableColdPool: boolean;
+  enableFollowStormGain: boolean;
+  enableBubbleScale: boolean;
 }
 
 export const CATEGORY_LABELS: Record<SettingCategory, string> = {
@@ -299,6 +390,88 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "coldPoolStrength", category: "storm", label: "Cold-pool strength", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
 ];
 
+export const TOGGLE_DEFS: ToggleDef[] = [
+  // Display
+  { id: "enableFog", category: "display", label: "Atmospheric fog", default: true },
+  { id: "enableShadowProbes", category: "display", label: "Cloud shadow probes", default: true },
+  { id: "enablePowder", category: "display", label: "Powder-sugar edges", default: true },
+  { id: "enableGroundFlash", category: "display", label: "Ground CG flash", default: true },
+  { id: "enableCloudTAA", category: "display", label: "Cloud temporal AA", default: true },
+  { id: "enableDepthOcclusion", category: "display", label: "Depth occlusion", default: true },
+  { id: "enableSoftParticles", category: "display", label: "Soft precip particles", default: true },
+  { id: "enableSkyHaze", category: "display", label: "Sky haze", default: true },
+
+  // Clouds
+  { id: "enableMammatus", category: "clouds", label: "Mammatus pouches", default: true },
+  { id: "enableRainShafts", category: "clouds", label: "Rain shafts", default: true },
+  { id: "enableIceFibres", category: "clouds", label: "Ice fibre stretch", default: true },
+  { id: "enableMultiScatter", category: "clouds", label: "Multi-scatter", default: true },
+  { id: "enableAnvilHighlight", category: "clouds", label: "Anvil highlight", default: true },
+
+  // Fluid
+  { id: "enableBuoyancy", category: "fluid", label: "Buoyancy", default: true },
+  { id: "enableVorticity", category: "fluid", label: "Vorticity confinement", default: true },
+  { id: "enableSponge", category: "fluid", label: "Domain sponges", default: true },
+  { id: "enableWDamping", category: "fluid", label: "W damping", default: true },
+  { id: "enableRK2Advection", category: "fluid", label: "RK2 advection", default: true },
+  { id: "enableDivergenceDamp", category: "fluid", label: "Divergence damping", default: true },
+
+  // Precip
+  { id: "enableRainParticles", category: "precip", label: "Rain particles", default: true },
+  { id: "enableSnowParticles", category: "precip", label: "Snow particles", default: true },
+  { id: "enableHailParticles", category: "precip", label: "Hail particles", default: true },
+  { id: "enablePrecipWind", category: "precip", label: "Precip wind drift", default: true },
+  { id: "enableVirga", category: "precip", label: "Virga / melt trail", default: true },
+
+  // Microphysics
+  { id: "enableWarmRain", category: "microphysics", label: "Warm-rain Kessler", default: true },
+  { id: "enableColdMicro", category: "microphysics", label: "Cold microphysics", default: true },
+  { id: "enableHailProcess", category: "microphysics", label: "Hail growth", default: true },
+  { id: "enableIceNucleation", category: "microphysics", label: "Ice nucleation", default: true },
+  { id: "enableMelting", category: "microphysics", label: "Melting", default: true },
+  { id: "enableRiming", category: "microphysics", label: "Riming", default: true },
+
+  // Terrain
+  { id: "enableTerrainDrag", category: "terrain", label: "Surface drag", default: true },
+  { id: "enableOrographic", category: "terrain", label: "Orographic lift", default: true },
+  { id: "enableSlopeWinds", category: "terrain", label: "Slope winds", default: true },
+  { id: "enableSoilMoisture", category: "terrain", label: "Soil moisture flux", default: true },
+  { id: "enableSST", category: "terrain", label: "SST / water relax", default: true },
+  { id: "enableBuriedReset", category: "terrain", label: "Buried-cell reset", default: true },
+  { id: "enableLeeWaves", category: "terrain", label: "Lee-wave depth", default: true },
+
+  // Radiation
+  { id: "enableRadiation", category: "radiation", label: "Surface radiation", default: true },
+  { id: "enableSlopeAspect", category: "radiation", label: "Slope / aspect sun", default: true },
+  { id: "enableBowenSplit", category: "radiation", label: "Bowen evaporative split", default: true },
+  { id: "enableNightCooling", category: "radiation", label: "Night LW cooling", default: true },
+  { id: "enableLandWaterContrast", category: "radiation", label: "Land/water contrast", default: true },
+  { id: "enableCloudTopCooling", category: "radiation", label: "Cloud-top cooling", default: true },
+  { id: "enableBLMixing", category: "radiation", label: "BL mixing", default: true },
+  { id: "enableShallowCu", category: "radiation", label: "Shallow cumulus", default: true },
+
+  // Speed
+  { id: "enableSplitPhysics", category: "speed", label: "Split slow physics", default: true },
+  { id: "enableCFLClamp", category: "speed", label: "CFL substep clamp", default: true },
+  { id: "enablePhysicsPace", category: "speed", label: "Physics pace scale", default: true },
+
+  // Lightning
+  { id: "enableLightning", category: "lightning", label: "Lightning flashes", default: true },
+  { id: "enableCharge", category: "lightning", label: "Charge buildup", default: true },
+  { id: "enableCG", category: "lightning", label: "Cloud-to-ground", default: true },
+  { id: "enableIC", category: "lightning", label: "Intra-cloud", default: true },
+  { id: "enableSpider", category: "lightning", label: "Spider lightning", default: true },
+  { id: "enableSprites", category: "lightning", label: "Sprites / halo", default: true },
+  { id: "enableAnvilLightning", category: "lightning", label: "Anvil-biased flashes", default: true },
+
+  // Storm
+  { id: "enableSynoptic", category: "storm", label: "Synoptic forcing", default: true },
+  { id: "enableFronts", category: "storm", label: "Front forcing", default: true },
+  { id: "enableColdPool", category: "storm", label: "Cold-pool loading", default: true },
+  { id: "enableFollowStormGain", category: "storm", label: "Follow-storm gain", default: true },
+  { id: "enableBubbleScale", category: "storm", label: "Bubble strength scale", default: true },
+];
+
 export function defaultAdvancedValues(): AdvancedValues {
   const out = {} as AdvancedValues;
   for (const d of SETTING_DEFS) out[d.id] = d.default;
@@ -326,11 +499,35 @@ export function formatSettingValue(def: SettingDef, value: number): string {
 }
 
 export const ADVANCED_SETTING_COUNT = SETTING_DEFS.length;
+export const ADVANCED_TOGGLE_COUNT = TOGGLE_DEFS.length;
+
+export function defaultAdvancedToggles(): AdvancedToggles {
+  const out = {} as AdvancedToggles;
+  for (const d of TOGGLE_DEFS) out[d.id] = d.default;
+  return out;
+}
+
+export function mergeAdvancedToggles(
+  partial?: Partial<AdvancedToggles> | null,
+): AdvancedToggles {
+  const base = defaultAdvancedToggles();
+  if (!partial) return base;
+  for (const d of TOGGLE_DEFS) {
+    const v = partial[d.id];
+    if (typeof v === "boolean") base[d.id] = v;
+  }
+  return base;
+}
 
 let store: AdvancedValues = defaultAdvancedValues();
+let toggleStore: AdvancedToggles = defaultAdvancedToggles();
 
 export function getAdvanced(): AdvancedValues {
   return store;
+}
+
+export function getToggles(): AdvancedToggles {
+  return toggleStore;
 }
 
 export function setAdvanced(partial: Partial<AdvancedValues>): AdvancedValues {
@@ -338,13 +535,24 @@ export function setAdvanced(partial: Partial<AdvancedValues>): AdvancedValues {
   return store;
 }
 
+export function setToggles(partial: Partial<AdvancedToggles>): AdvancedToggles {
+  toggleStore = mergeAdvancedToggles({ ...toggleStore, ...partial });
+  return toggleStore;
+}
+
 export function replaceAdvanced(values: AdvancedValues): AdvancedValues {
   store = mergeAdvancedValues(values);
   return store;
 }
 
+export function replaceToggles(values: Partial<AdvancedToggles>): AdvancedToggles {
+  toggleStore = mergeAdvancedToggles(values);
+  return toggleStore;
+}
+
 export function resetAdvanced(): AdvancedValues {
   store = defaultAdvancedValues();
+  toggleStore = defaultAdvancedToggles();
   return store;
 }
 
@@ -383,12 +591,12 @@ export function cloudLookFromAdvanced(
 }
 
 /**
- * Build collapsible category sections of range inputs into `host`.
- * Calls `onChange(id, value)` whenever a slider moves.
+ * Build collapsible category sections (toggles + sliders) into `host`.
+ * Calls `onChange` whenever any control changes.
  */
 export function mountAdvancedSettingsUI(
   host: HTMLElement,
-  onChange: (id: keyof AdvancedValues, value: number) => void,
+  onChange: () => void,
 ): { syncFromStore: () => void } {
   host.replaceChildren();
   host.classList.add("advanced-settings");
@@ -399,47 +607,88 @@ export function mountAdvancedSettingsUI(
     list.push(d);
     byCat.set(d.category, list);
   }
+  const togglesByCat = new Map<SettingCategory, ToggleDef[]>();
+  for (const d of TOGGLE_DEFS) {
+    const list = togglesByCat.get(d.category) ?? [];
+    list.push(d);
+    togglesByCat.set(d.category, list);
+  }
 
   const inputs = new Map<keyof AdvancedValues, HTMLInputElement>();
   const labels = new Map<keyof AdvancedValues, HTMLElement>();
+  const checks = new Map<keyof AdvancedToggles, HTMLInputElement>();
 
   for (const cat of Object.keys(CATEGORY_LABELS) as SettingCategory[]) {
-    const defs = byCat.get(cat);
-    if (!defs?.length) continue;
+    const defs = byCat.get(cat) ?? [];
+    const toggles = togglesByCat.get(cat) ?? [];
+    if (!defs.length && !toggles.length) continue;
     const details = document.createElement("details");
     details.className = "menu-section";
     const summary = document.createElement("summary");
-    summary.textContent = `${CATEGORY_LABELS[cat]} (${defs.length})`;
+    const nToggle = toggles.length;
+    const nSlide = defs.length;
+    summary.textContent = `${CATEGORY_LABELS[cat]} (${nToggle} toggles · ${nSlide} sliders)`;
     details.appendChild(summary);
     const body = document.createElement("div");
-    body.className = "menu-section-body cloud-tune advanced-tune";
-    for (const d of defs) {
-      const label = document.createElement("label");
-      label.title = d.id;
-      const name = document.createElement("span");
-      name.className = "adv-name";
-      name.textContent = d.label;
-      const input = document.createElement("input");
-      input.type = "range";
-      input.min = String(d.min);
-      input.max = String(d.max);
-      input.step = String(d.step);
-      input.value = String(store[d.id]);
-      input.dataset.settingId = d.id;
-      const val = document.createElement("span");
-      val.className = "adv-val";
-      val.textContent = formatSettingValue(d, store[d.id]);
-      input.addEventListener("input", () => {
-        const v = Number(input.value);
-        store = { ...store, [d.id]: v };
-        val.textContent = formatSettingValue(d, v);
-        onChange(d.id, v);
-      });
-      label.append(name, input, val);
-      body.appendChild(label);
-      inputs.set(d.id, input);
-      labels.set(d.id, val);
+    body.className = "menu-section-body";
+
+    if (toggles.length) {
+      const toggleBox = document.createElement("div");
+      toggleBox.className = "advanced-toggles";
+      for (const d of toggles) {
+        const label = document.createElement("label");
+        label.className = "advanced-toggle";
+        label.title = d.hint ?? d.id;
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = toggleStore[d.id];
+        input.dataset.toggleId = d.id;
+        const name = document.createElement("span");
+        name.textContent = d.label;
+        input.addEventListener("change", () => {
+          toggleStore = { ...toggleStore, [d.id]: input.checked };
+          onChange();
+        });
+        label.append(input, name);
+        toggleBox.appendChild(label);
+        checks.set(d.id, input);
+      }
+      body.appendChild(toggleBox);
     }
+
+    if (defs.length) {
+      const slideBox = document.createElement("div");
+      slideBox.className = "cloud-tune advanced-tune";
+      for (const d of defs) {
+        const label = document.createElement("label");
+        label.title = d.id;
+        const name = document.createElement("span");
+        name.className = "adv-name";
+        name.textContent = d.label;
+        const input = document.createElement("input");
+        input.type = "range";
+        input.min = String(d.min);
+        input.max = String(d.max);
+        input.step = String(d.step);
+        input.value = String(store[d.id]);
+        input.dataset.settingId = d.id;
+        const val = document.createElement("span");
+        val.className = "adv-val";
+        val.textContent = formatSettingValue(d, store[d.id]);
+        input.addEventListener("input", () => {
+          const v = Number(input.value);
+          store = { ...store, [d.id]: v };
+          val.textContent = formatSettingValue(d, v);
+          onChange();
+        });
+        label.append(name, input, val);
+        slideBox.appendChild(label);
+        inputs.set(d.id, input);
+        labels.set(d.id, val);
+      }
+      body.appendChild(slideBox);
+    }
+
     details.appendChild(body);
     host.appendChild(details);
   }
@@ -449,7 +698,7 @@ export function mountAdvancedSettingsUI(
   const resetBtn = document.createElement("button");
   resetBtn.type = "button";
   resetBtn.textContent = "Reset advanced";
-  resetBtn.title = "Restore all advanced sliders to defaults";
+  resetBtn.title = "Restore all advanced toggles and sliders to defaults";
   resetBtn.addEventListener("click", () => {
     resetAdvanced();
     for (const d of SETTING_DEFS) {
@@ -457,8 +706,12 @@ export function mountAdvancedSettingsUI(
       const val = labels.get(d.id);
       if (input) input.value = String(store[d.id]);
       if (val) val.textContent = formatSettingValue(d, store[d.id]);
-      onChange(d.id, store[d.id]);
     }
+    for (const d of TOGGLE_DEFS) {
+      const input = checks.get(d.id);
+      if (input) input.checked = toggleStore[d.id];
+    }
+    onChange();
   });
   resetRow.appendChild(resetBtn);
   host.appendChild(resetRow);
@@ -470,6 +723,10 @@ export function mountAdvancedSettingsUI(
         const val = labels.get(d.id);
         if (input) input.value = String(store[d.id]);
         if (val) val.textContent = formatSettingValue(d, store[d.id]);
+      }
+      for (const d of TOGGLE_DEFS) {
+        const input = checks.get(d.id);
+        if (input) input.checked = toggleStore[d.id];
       }
     },
   };

@@ -864,6 +864,33 @@ label {
   text-align: right;
 }
 
+.advanced-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.advanced-toggle input {
+  accent-color: var(--accent, #6aa8ff);
+}
+
+.advanced-toggle span {
+  color: var(--text);
+}
+
 .advanced-tune label {
   grid-template-columns: 108px 1fr auto;
 }
