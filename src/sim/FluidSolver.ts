@@ -19,7 +19,7 @@ import {
   packMapProduct as packMapProductRGBA,
 } from "./mapProducts";
 import { isPlannedProduct, packChargeProduct, packPlannedProduct } from "./mapPlanned";
-import { volumeDisplaySize } from "./Grid3D";
+import { packMeteoLabVolume, packMeteoLabColumns } from "./cloudPack";
 import {
   RadiationOptions,
   DEFAULT_RADIATION,
@@ -2017,108 +2017,25 @@ export class FluidSolver implements SimBackend {
   }
 
   /**
-   * Pack the volumetric-cloud field.
-   * Axes match the world box: X = east, Y = up, Z = south (north is −Z,
-   * so grid j = ny−1 is texture Z = 0).
-   * R = cloud liquid opacity (MeteoLAB cloudOpacity of qc),
-   * G = cold opacity (ice cloud, plus a snow curtain that shows at a few 0.01 g/kg),
-   * B = rain ((qr/0.0015)^0.65 → 1.0 so drizzle still curtains).
-   * A = hail core (qh / 2 g kg⁻¹, compressed). Particles and the cloud shader
-   * read A on its own so hail is not smeared into the ice anvil.
+   * Pack the volumetric-cloud field exactly as MeteoLAB:
+   * R cloud opacity, G shafts, B updraught/20 m/s, A ice share.
+   * Layout: X east, Y up, Z south (north is −Z).
    */
   packVolumeRGBA(out: Uint8Array): void {
     if (this.child) {
       this.child.packVolumeRGBA(out);
       return;
     }
-    const f = this.fields;
-    const { nx, ny, nz, n } = this.grid;
-    // MeteoLAB cloudOpacity: soft threshold then rapid saturation to opaque.
-    const cloudOpacity = (c: number): number =>
-      c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
-    // Ice/snow/graupel/hail extinction weights vs liquid (MeteoLAB ICE/SNOW/RIMER).
-    const coldOpacity = (id: number): number => {
-      const iceCloud = cloudOpacity(0.25 * f.qi[id]);
-      const qs = f.qs[id];
-      const snow = qs > 1e-8 ? Math.min(1, Math.pow(qs / 0.00015, 0.55)) : 0;
-      const graupel = cloudOpacity(0.2 * f.qg[id]);
-      return Math.min(1, iceCloud + snow * 0.85 + graupel);
-    };
-    // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
-    // shaft still packs a transparent curtain instead of vanishing to 0.
-    const rainUnit = 0.0015;
-    const byte01 = (v: number): number => {
-      if (v <= 0) return 0;
-      const x = v * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const rainByte = (qr: number): number => {
-      if (qr <= 0) return 0;
-      const x = Math.pow(qr / rainUnit, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    // Hail core. 2 g/kg reads as a solid core; lighter hail stays translucent.
-    const hailByte = (qh: number): number => {
-      if (qh <= 1e-7) return 0;
-      const x = Math.pow(qh / 0.0008, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const write = (id: number, _k: number, o: number): void => {
-      out[o] = byte01(cloudOpacity(f.qc[id]));
-      out[o + 1] = byte01(coldOpacity(id));
-      out[o + 2] = rainByte(f.qr[id]);
-      out[o + 3] = hailByte(f.qh[id]);
-    };
-    if (out.length >= n * 4) {
-      for (let k = 0; k < nz; k++) {
-        for (let j = 0; j < ny; j++) {
-          const row = k + nz * (ny - 1 - j);
-          for (let i = 0; i < nx; i++) {
-            write(i + nx * (j + ny * k), k, (i + nx * row) * 4);
-          }
-        }
-      }
+    packMeteoLabVolume(this.grid, this.fields, out);
+  }
+
+  /** MeteoLAB column map for flat bases, mammatus, and tower striations. */
+  packCloudColumns(out: Uint8Array): void {
+    if (this.child) {
+      this.child.packCloudColumns(out);
       return;
     }
-    // Max-pool each stride block so a clear neighbour cannot punch a hole
-    // through mottled / thin cloud when the display grid is coarser than sim.
-    const d = volumeDisplaySize(nx, ny, nz);
-    for (let k = 0; k < d.nz; k++) {
-      const k0 = Math.min(nz - 1, k * d.sz);
-      const k1 = Math.min(nz, k0 + d.sz);
-      for (let j = 0; j < d.ny; j++) {
-        const j0 = Math.min(ny - 1, j * d.sy);
-        const j1 = Math.min(ny, j0 + d.sy);
-        const row = k + d.nz * (d.ny - 1 - j);
-        for (let i = 0; i < d.nx; i++) {
-          const i0 = Math.min(nx - 1, i * d.sx);
-          const i1 = Math.min(nx, i0 + d.sx);
-          let bestQc = 0;
-          let bestCold = 0;
-          let bestQr = 0;
-          let bestQh = 0;
-          for (let kk = k0; kk < k1; kk++) {
-            for (let jj = j0; jj < j1; jj++) {
-              const base = nx * (jj + ny * kk);
-              for (let ii = i0; ii < i1; ii++) {
-                const id = ii + base;
-                const liq = cloudOpacity(f.qc[id]);
-                if (liq > bestQc) bestQc = liq;
-                const cold = coldOpacity(id);
-                if (cold > bestCold) bestCold = cold;
-                if (f.qr[id] > bestQr) bestQr = f.qr[id];
-                if (f.qh[id] > bestQh) bestQh = f.qh[id];
-              }
-            }
-          }
-          const o = (i + d.nx * row) * 4;
-          out[o] = byte01(bestQc);
-          out[o + 1] = byte01(bestCold);
-          out[o + 2] = rainByte(bestQr);
-          out[o + 3] = hailByte(bestQh);
-        }
-      }
-    }
+    packMeteoLabColumns(this.grid, this.fields, out, true);
   }
 
   /**

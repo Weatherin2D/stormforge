@@ -1802,6 +1802,9 @@ export class App {
           1,
           1,
           true,
+          this.solver
+            ? (out) => this.solver!.packCloudColumns(out)
+            : undefined,
         );
       }
       if (this.showRadar3d) {
@@ -1954,6 +1957,7 @@ export class App {
     if (st.ground) this.renderer.updateGroundCover(st.ground);
     if (st.volume && this.showClouds && !this.showRadar2d) {
       const vol = st.volume;
+      const cols = st.columns;
       this.renderer.updateVolume(
         (out) => {
           if (out.length === vol.length) out.set(vol);
@@ -1964,6 +1968,14 @@ export class App {
         },
         st.cloudMax,
         st.rainMax,
+        false,
+        cols
+          ? (out) => {
+              if (out.length === cols.length) out.set(cols);
+            }
+          : this.solver
+            ? (out) => this.solver!.packCloudColumns(out)
+            : undefined,
       );
     }
     if (st.map && st.mapId && this.radar2d && this.showRadar2d) {

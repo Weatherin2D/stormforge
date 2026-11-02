@@ -72,8 +72,12 @@ export const DEFAULT_LOOK: CloudLook = {
 };
 
 export interface VolumetricCloudOptions {
-  /** Sim volume. R = cloud liquid, G = cloud ice, B = rain, spanning exactly boxMin..boxMax. */
+  /** MeteoLAB volume: R cloud, G shafts, B updraught, A ice share. */
   fields: THREE.Data3DTexture;
+  /** Column map (nx×ny): R rotation, G anvilBase×presence, B presence, A cloud base. */
+  columns?: THREE.DataTexture;
+  /** Display volume size (nx, nz_up, ny). */
+  grid?: THREE.Vector3;
   /** World-space bounds of the sim domain (Y up, metres). */
   boxMin: THREE.Vector3;
   boxMax: THREE.Vector3;
@@ -82,6 +86,15 @@ export interface VolumetricCloudOptions {
   look?: Partial<CloudLook>;
   /** Compile-time quality settings. */
   quality?: { maxSteps?: number; lightSteps?: number; ambientSteps?: number; msOctaves?: number };
+}
+
+function fallbackColumns(): THREE.DataTexture {
+  const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
+  t.format = THREE.RGBAFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
 }
 
 const v2 = (a: [number, number]) => new THREE.Vector2(a[0], a[1]);
@@ -113,6 +126,8 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       },
       uniforms: {
         uFields: { value: opts.fields },
+        uColumns: { value: opts.columns ?? fallbackColumns() },
+        uGrid: { value: (opts.grid ?? new THREE.Vector3(1, 1, 1)).clone() },
         uShapeNoise: { value: noise },
         uDetailNoise: { value: noise },
         uBoxMin: { value: opts.boxMin.clone() },
@@ -258,6 +273,14 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   /** Swap in a new sim volume (same bounds). */
   setFields(fields: THREE.Data3DTexture): void {
     this.u<THREE.Data3DTexture>('uFields').value = fields;
+  }
+
+  setColumns(columns: THREE.DataTexture): void {
+    this.u<THREE.DataTexture>('uColumns').value = columns;
+  }
+
+  setGrid(nx: number, nzUp: number, ny: number): void {
+    this.u<THREE.Vector3>('uGrid').value.set(nx, nzUp, ny);
   }
 
   /** One multiplier for liquid, ice, and rain. 1 means a packed dense core stays 1. */

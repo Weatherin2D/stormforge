@@ -4,7 +4,7 @@ import * as THREE from "three";
  * Renderer-side precipitation.
  *
  * The live physics runs in `live.worker.ts`, so this only sees the packed
- * volume: G = ice/snow, B = rain, A = hail core. Snow flutters and melts
+ * volume (MeteoLAB): R cloud, G shafts, B updraught, A ice share. Snow flutters and melts
  * through the 0 °C level. Hail is a fast, round stone spawned from the core
  * and barely follows the wind.
  */
@@ -413,7 +413,15 @@ export class PrecipitationParticles {
     const row = k + this.dnz * (this.dny - 1 - j);
     const o = (i + this.dnx * row) * 4;
     if (o < 0 || o + 3 >= data.length) return null;
-    return { cold: data[o + 1], rain: data[o + 2], hail: data[o + 3] };
+    // Shafts in G; ice share × cloud ≈ snow; ice share × shaft ≈ hail cores.
+    const cloud = data[o];
+    const shaft = data[o + 1];
+    const iceShare = data[o + 3];
+    return {
+      cold: ((cloud * iceShare) / 255) | 0,
+      rain: shaft,
+      hail: ((shaft * iceShare) / 255) | 0,
+    };
   }
 
   private advance(dt: number): void {

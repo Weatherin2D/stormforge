@@ -49,7 +49,7 @@ import type { SynopticSetup } from "./synoptic";
 import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
 import { WebGPUDevice } from "./WebGPUDevice";
 import type { LightningStrike } from "./FluidSolver";
-import { volumeDisplaySize, copyFullVolumeToDisplay } from "./Grid3D";
+import { packMeteoLabVolume, packMeteoLabColumns } from "./cloudPack";
 import { bindColumnFloor, bindSurfaceDraw } from "./surface";
 import {
   MapProductId,
@@ -1052,92 +1052,11 @@ export class WebGPUBackend implements SimBackend {
   }
 
   packVolumeRGBA(out: Uint8Array): void {
-    const f = this.fields;
-    const { nx, ny, nz, n } = this.grid;
-    const cloudOpacity = (c: number): number =>
-      c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
-    const coldOpacity = (id: number): number => {
-      const iceCloud = cloudOpacity(0.25 * f.qi[id]);
-      const qs = f.qs[id];
-      const snow = qs > 1e-8 ? Math.min(1, Math.pow(qs / 0.00015, 0.55)) : 0;
-      const graupel = cloudOpacity(0.2 * f.qg[id]);
-      return Math.min(1, iceCloud + snow * 0.85 + graupel);
-    };
-    // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
-    // shaft still packs a transparent curtain instead of vanishing to 0.
-    const rainUnit = 0.0015;
-    const byte01 = (v: number): number => {
-      if (v <= 0) return 0;
-      const x = v * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const rainByte = (qr: number): number => {
-      if (qr <= 0) return 0;
-      const x = Math.pow(qr / rainUnit, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const hailByte = (qh: number): number => {
-      if (qh <= 1e-7) return 0;
-      const x = Math.pow(qh / 0.0008, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const write = (id: number, _k: number, o: number): void => {
-      out[o] = byte01(cloudOpacity(f.qc[id]));
-      out[o + 1] = byte01(coldOpacity(id));
-      out[o + 2] = rainByte(f.qr[id]);
-      out[o + 3] = hailByte(f.qh[id]);
-    };
-    const d = volumeDisplaySize(nx, ny, nz);
-    const need = d.nx * d.ny * d.nz * 4;
-    if (out.length >= n * 4) {
-      for (let k = 0; k < nz; k++) {
-        for (let j = 0; j < ny; j++) {
-          const row = k + nz * (ny - 1 - j);
-          for (let i = 0; i < nx; i++) {
-            write(i + nx * (j + ny * k), k, (i + nx * row) * 4);
-          }
-        }
-      }
-      return;
-    }
-    // Max-pool stride blocks (same as FluidSolver) so thin cloud is not
-    // dropped by nearest-neighbour holes on the display grid.
-    for (let k = 0; k < d.nz; k++) {
-      const k0 = Math.min(nz - 1, k * d.sz);
-      const k1 = Math.min(nz, k0 + d.sz);
-      for (let j = 0; j < d.ny; j++) {
-        const j0 = Math.min(ny - 1, j * d.sy);
-        const j1 = Math.min(ny, j0 + d.sy);
-        const row = k + d.nz * (d.ny - 1 - j);
-        for (let i = 0; i < d.nx; i++) {
-          const i0 = Math.min(nx - 1, i * d.sx);
-          const i1 = Math.min(nx, i0 + d.sx);
-          let bestQc = 0;
-          let bestCold = 0;
-          let bestQr = 0;
-          let bestQh = 0;
-          for (let kk = k0; kk < k1; kk++) {
-            for (let jj = j0; jj < j1; jj++) {
-              const base = nx * (jj + ny * kk);
-              for (let ii = i0; ii < i1; ii++) {
-                const id = ii + base;
-                const liq = cloudOpacity(f.qc[id]);
-                if (liq > bestQc) bestQc = liq;
-                const cold = coldOpacity(id);
-                if (cold > bestCold) bestCold = cold;
-                if (f.qr[id] > bestQr) bestQr = f.qr[id];
-                if (f.qh[id] > bestQh) bestQh = f.qh[id];
-              }
-            }
-          }
-          const o = (i + d.nx * row) * 4;
-          out[o] = byte01(bestQc);
-          out[o + 1] = byte01(bestCold);
-          out[o + 2] = rainByte(bestQr);
-          out[o + 3] = hailByte(bestQh);
-        }
-      }
-    }
+    packMeteoLabVolume(this.grid, this.fields, out);
+  }
+
+  packCloudColumns(out: Uint8Array): void {
+    packMeteoLabColumns(this.grid, this.fields, out, true);
   }
 
   packMapProduct(id: MapProductId, out: Uint8Array): void {
