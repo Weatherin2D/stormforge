@@ -40,9 +40,11 @@ float hailOctave(vec2 q, float scale, float freq, float radKm, float salt){
 // frequency only fills empty sites, and size only grows the stones already there.
 float hailStones(vec2 q, float freq, float size01){
   if(freq < 0.004) return 0.0;
-  float scale = 14.0;
+  // About 2–6 m across. A wider screen pixel must not inflate these into discs.
+  float scale = 48.0;
   float blur = min(length(dFdx(q)), length(dFdy(q)));
-  float radKm = max(mix(0.02, 0.12, clamp(size01, 0.0, 1.0)), blur * 0.55);
+  float radKm = mix(0.0012, 0.0055, clamp(size01, 0.0, 1.0));
+  radKm = max(radKm, min(blur * 0.1, 0.0035));
   float a = hailOctave(q, scale, freq, radKm, 0.0);
   float b = hailOctave(q, scale * 1.7, min(1.0, freq * 1.15), radKm * 0.62, 4.7);
   return clamp(a + b, 0.0, 1.0);

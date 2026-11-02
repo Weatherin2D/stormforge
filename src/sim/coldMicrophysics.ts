@@ -322,6 +322,9 @@ function snowProcesses(
   rho: number,
   rhoGround: number,
   dt: number,
+  snowDepth: Float32Array | null,
+  nxny: number,
+  dz: number,
 ): number {
   const tk = theta[i] * exner;
   const tc = tk - T0;
@@ -385,6 +388,11 @@ function snowProcesses(
     const melt = Math.min(snow[i], rate * dt, (CP * tc) / LF);
     snow[i] -= melt;
     rain[i] += melt;
+    // The flake melts on the way down, but the snow still lands. Ground melt
+    // removes it later where the surface is warm or the sun reaches it.
+    if (melt > 0 && snowDepth && nxny > 0) {
+      snowDepth[i % nxny] += (melt * rho * dz) / RHO_S;
+    }
     theta[i] -= (LF / (CP * exner)) * melt;
     cooling += (LF / (CP * exner)) * melt;
   }
@@ -854,6 +862,9 @@ export function stepColdMicrophysics(
           rho,
           rhoGround,
           dt,
+          f.snowDepth,
+          nxny,
+          grid.dz,
         );
         const rainBefore = f.qr[id];
         graupelProcesses(
