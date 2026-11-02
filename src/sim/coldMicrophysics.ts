@@ -49,7 +49,14 @@ const D_S = 0.25;
 const GAMMA_3D = 2.5493;
 const GAMMA_4D = 8.285;
 const GAMMA_5D2 = 1.8712;
-const ICE_AUTOCONVERSION_THRESHOLD = 0.001;
+/**
+ * Ice above this mixing ratio aggregates into snow.
+ * 0.12 g/kg matches the ice this grid actually reaches; the classic 1 g/kg
+ * gate never opened, so snow, graupel and hail never appeared.
+ */
+const ICE_AUTOCONVERSION_THRESHOLD = 1.2e-4;
+/** Excess ice converted per second. Anvil ice becomes snow within a few minutes. */
+const ICE_AUTOCONVERSION_RATE = 0.035;
 
 export const N0G = 4e4;
 export const RHO_G = 400;
@@ -61,12 +68,17 @@ const BIGG_A = 0.66;
 const GAMMA_45 = 11.6317;
 const GAMMA_35 = 3.3234;
 const GAMMA_275 = 1.6084;
-const SNOW_TO_GRAUPEL_THRESHOLD = 6e-4;
+/**
+ * Rimed snow above this mixing ratio becomes graupel. Low enough that snow
+ * grown in the updraft can feed hail, high enough that the anvil stays snow.
+ */
+const SNOW_TO_GRAUPEL_THRESHOLD = 5e-5;
+const SNOW_TO_GRAUPEL_RATE = 0.05;
 
 export const N0H = 4e4;
 export const RHO_H = 900;
 const CI = 2106;
-const HAIL_CONVERSION_TIME = 60;
+const HAIL_CONVERSION_TIME = 28;
 const HAIL_SAMPLE_VOLUME = 10;
 
 /**
@@ -174,10 +186,16 @@ const hailSlope = (hail: number, rho: number): number =>
 
 export function hailFallSpeed(hail: number, rho: number): number {
   if (!(hail > 1e-9)) return 0;
-  return (
-    (fallCoefficient(rho, RHO_H) * GAMMA_45) / 6 *
-    hailSlope(hail, rho) ** -0.5
-  );
+  const air = Math.max(rho, 0.25);
+  const bulk =
+    (fallCoefficient(air, RHO_H) * GAMMA_45) / 6 *
+    hailSlope(hail, air) ** -0.5;
+  // The spectrum mean stays near 15 m/s, slower than the updraft, so hail
+  // never reached the ground. Stones at the large end of the distribution
+  // fall like a single sphere and leave the updraft.
+  const d = Math.max(hailMaxDiameter(hail, air), 1e-4);
+  const stone = Math.sqrt((4 * 9.81 * d * RHO_H) / (3 * CD * air));
+  return Math.min(46, Math.max(bulk, stone));
 }
 
 /** Diameter of the largest hailstone, m. */
@@ -309,7 +327,7 @@ function snowProcesses(
   const tc = tk - T0;
   if (tc < 0 && ice[i] > 0) {
     const auto =
-      1e-3 *
+      ICE_AUTOCONVERSION_RATE *
       Math.exp(0.025 * tc) *
       Math.max(0, ice[i] - ICE_AUTOCONVERSION_THRESHOLD);
     const moved = Math.min(ice[i], auto * dt);
@@ -406,7 +424,7 @@ function graupelProcesses(
     }
     const auto = Math.min(
       snow[i],
-      1e-3 *
+      SNOW_TO_GRAUPEL_RATE *
         Math.exp(0.09 * tc) *
         Math.max(0, snow[i] - SNOW_TO_GRAUPEL_THRESHOLD) *
         dt,
@@ -781,6 +799,7 @@ export function stepColdMicrophysics(
   dt: number,
   exner: Float32Array,
   scratch: Float32Array,
+  sunFrac = 0,
 ): void {
   const { nx, ny, nz } = grid;
   const nxny = nx * ny;
@@ -903,9 +922,10 @@ export function stepColdMicrophysics(
     }
   }
 
-  // Sedimentation: ice crystals are slow, snow about 1 m/s, graupel ~8 m/s,
-  // hail ~12 m/s. Hail is held in the updraft until its fall speed exceeds w,
-  // so a core can grow aloft and then fall out. Surface loss is accumulation.
+  // Sedimentation: ice crystals are slow, snow about 1 m/s, graupel ~8 m/s.
+  // Hail fall speed is relative to the air until stones reach ~8 mm; larger
+  // stones are then dropped through the updraft so a core still reaches the ground.
+  // Surface loss is accumulation.
   sediment(grid, f, f.qi, scratch, dt, null, () => ICE_FALL_SPEED);
   sediment(
     grid,
@@ -932,8 +952,11 @@ export function stepColdMicrophysics(
     f.hailAccum,
     (q, rho, i, j, k) => {
       const vt = hailFallSpeed(q, rho);
-      const w = grid.wCenter(f.w, i, j, k);
-      return Math.max(0, vt - w);
+      // Pea-sized and larger stones fall at terminal speed. The sandbox
+      // updraft is stronger than the spectrum-mean fall speed, which parked
+      // the whole core aloft and left the ground bare.
+      if (hailMaxDiameter(q, rho) < 0.008) return vt;
+      return vt + Math.max(0, grid.wCenter(f.w, i, j, k));
     },
     (ij, q, rho) => {
       const dMm = hailMaxDiameter(q, rho) * 1000;
@@ -942,4 +965,60 @@ export function stepColdMicrophysics(
       if (stones > 0) f.hailCount[ij] += stones;
     },
   );
+  meltGroundCover(grid, f, dt, exner[0], sunFrac);
+}
+
+/**
+ * Snow and hail already on the ground stay there. They melt where the
+ * surface is warm, and faster where the sun reaches the ground.
+ * Shade under a cloud keeps the cover. A cold night keeps it.
+ */
+function meltGroundCover(
+  grid: Grid3D,
+  f: SimFields,
+  dt: number,
+  exner0: number,
+  sunFrac: number,
+): void {
+  if (!(dt > 0) || !(exner0 > 0)) return;
+  const { nx, ny, nz, dz } = grid;
+  const nxny = nx * ny;
+  const sun = Math.max(0, Math.min(1, sunFrac));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ij = i + j * nx;
+      const snow = f.snowDepth[ij];
+      const hail = f.hailAccum[ij];
+      const count = f.hailCount[ij];
+      if (snow <= 0 && hail <= 0 && count <= 0) continue;
+      let waterPath = 0;
+      for (let k = 0; k < nz; k++) {
+        const id = ij + k * nxny;
+        waterPath +=
+          (f.qc[id] + f.qi[id] + 0.5 * (f.qs[id] + f.qg[id])) *
+          f.rho0[k] *
+          dz;
+      }
+      const direct = sun * Math.exp(-waterPath / 0.2);
+      const tC = f.theta[ij] * exner0 - T0;
+      const warm = Math.max(0, tC) / 6;
+      const solar = direct * (tC > -3 ? 1 : 0.25);
+      const heat = warm + solar;
+      if (heat <= 0) continue;
+      if (snow > 0) {
+        f.snowDepth[ij] = Math.max(0, snow - Math.min(snow, heat * 4e-5 * dt));
+      }
+      if (hail > 0 || count > 0) {
+        const keep = Math.exp(-heat * 0.002 * dt);
+        f.hailAccum[ij] = Math.max(0, hail) * keep;
+        f.hailCount[ij] = Math.max(0, count) * keep;
+        f.hailDiam[ij] = Math.max(0, f.hailDiam[ij]) * (0.55 + 0.45 * keep);
+        if (f.hailCount[ij] < 0.5 && f.hailAccum[ij] < 1e-3) {
+          f.hailCount[ij] = 0;
+          f.hailDiam[ij] = 0;
+          f.hailAccum[ij] = 0;
+        }
+      }
+    }
+  }
 }

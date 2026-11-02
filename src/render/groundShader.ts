@@ -36,13 +36,15 @@ float hailOctave(vec2 q, float scale, float freq, float radKm, float salt){
 }
 
 // freq (0–1) sets how many stones; size01 (0–1) sets how large each stone is.
+// The lattice is fixed in kilometres, so stones stay where they fell. A higher
+// frequency only fills empty sites, and size only grows the stones already there.
 float hailStones(vec2 q, float freq, float size01){
   if(freq < 0.004) return 0.0;
-  float scale = mix(5.0, 26.0, freq);
+  float scale = 14.0;
   float blur = min(length(dFdx(q)), length(dFdy(q)));
-  float radKm = max(mix(0.015, 0.11, clamp(size01, 0.0, 1.0)), blur * 0.5);
+  float radKm = max(mix(0.02, 0.12, clamp(size01, 0.0, 1.0)), blur * 0.55);
   float a = hailOctave(q, scale, freq, radKm, 0.0);
-  float b = hailOctave(q, scale * 1.85, freq * 0.72, radKm * 0.72, 4.7);
+  float b = hailOctave(q, scale * 1.7, min(1.0, freq * 1.15), radKm * 0.62, 4.7);
   return clamp(a + b, 0.0, 1.0);
 }
 

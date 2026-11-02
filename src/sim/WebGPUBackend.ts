@@ -30,6 +30,7 @@ import {
   RadiationOptions,
   DEFAULT_RADIATION,
   applySurfaceRadiation,
+  solarStatus,
   SolarStatus,
   buildLandMask,
 } from "./SurfaceRadiation";
@@ -1023,7 +1024,14 @@ export class WebGPUBackend implements SimBackend {
     applySurfaceRadiation(g, f, dt, this.radiation, landMask);
     stepShallowCu(g, f, dt, landMask, new Float32Array(g.nx * g.ny), exner, this.radiation);
     stepMicrophysics(g, f, dt, qrScratch, exner);
-    stepColdMicrophysics(g, f, dt, exner, iceScratch);
+    stepColdMicrophysics(
+      g,
+      f,
+      dt,
+      exner,
+      iceScratch,
+      solarStatus(this.radiation).sunFrac,
+    );
     stepCloudTopCooling(g, f, dt, exner);
     stepBLMixing(g, f, dt, exner);
     stepSynopticOmega(g, f, dt);
@@ -1044,9 +1052,11 @@ export class WebGPUBackend implements SimBackend {
     const cloudOpacity = (c: number): number =>
       c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
     const coldOpacity = (id: number): number => {
-      const cold =
-        0.25 * f.qi[id] + 0.08 * f.qs[id] + 0.03 * f.qg[id];
-      return cloudOpacity(cold);
+      const iceCloud = cloudOpacity(0.25 * f.qi[id]);
+      const qs = f.qs[id];
+      const snow = qs > 1e-8 ? Math.min(1, Math.pow(qs / 0.00015, 0.55)) : 0;
+      const graupel = cloudOpacity(0.2 * f.qg[id]);
+      return Math.min(1, iceCloud + snow * 0.85 + graupel);
     };
     // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
     // shaft still packs a transparent curtain instead of vanishing to 0.
@@ -1063,7 +1073,7 @@ export class WebGPUBackend implements SimBackend {
     };
     const hailByte = (qh: number): number => {
       if (qh <= 1e-7) return 0;
-      const x = Math.pow(qh / 0.002, 0.72) * 255;
+      const x = Math.pow(qh / 0.0008, 0.65) * 255;
       return x >= 255 ? 255 : x | 0;
     };
     const write = (id: number, _k: number, o: number): void => {

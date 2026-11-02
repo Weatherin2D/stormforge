@@ -209,7 +209,7 @@ self.onmessage = (ev: MessageEvent) => {
     vortex = packVortexLevels(findVortexColumn(solver.grid, solver.fields));
   }
   const ground = new Uint8Array(solver.grid.nx * solver.grid.ny * 4);
-  packGroundCover(solver.grid, solver.fields, ground);
+  packGroundCover(solver.grid, solver.fields, ground, solver.frameOffset());
   publish({
     volume,
     map,

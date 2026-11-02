@@ -19,8 +19,8 @@ const SPAWN_RATE = 2800;
 const PACK_EMPTY = 1;
 /** Vertical distance over which snow melts, metres (MeteoLAB MELT_DEPTH). */
 const MELT_DEPTH = 600;
-/** Snowflake fall speed, m/s. Aggregates are near 1 m/s; size scales it. */
-const SNOW_FALL = 1.15;
+/** Snowflake fall speed, m/s. Fast enough to drift across the view; still slower than rain. */
+const SNOW_FALL = 8;
 /**
  * Rain terminal fall speed at melt=1, m/s.
  * Kessler-class rain is ~6–8; bumped for clearer streaks.
@@ -46,8 +46,8 @@ void main(){
   vSeed = aSeed;
   if(aKind < 0.0){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  float px = mix(1.3, 2.6, aSize);
-  if(aKind > 1.5) px = mix(1.15, 3.6, aSize);
+  float px = mix(4.5, 9.0, aSize);
+  if(aKind > 1.5) px = mix(3.2, 8.0, aSize);
   else if(aKind > 0.5) px = mix(0.55, 0.85, aMelt);
   gl_PointSize = clamp(px * uScale / -mv.z, 2.0, 40.0);
 }
@@ -74,8 +74,8 @@ void main(){
     float ang = vSeed * 6.2831853;
     float cs = cos(ang), sn = sin(ang);
     vec2 cr = vec2(c.x * cs - c.y * sn, c.x * sn + c.y * cs);
-    float arms = pow(abs(cos(3.0 * atan(cr.y, cr.x))), mix(6.0, 16.0, vSeed));
-    float snow = clamp(smoothstep(1.0, 0.28, r) * arms + smoothstep(0.38, 0.05, r), 0.0, 1.0);
+    float arms = pow(abs(cos(3.0 * atan(cr.y, cr.x))), mix(2.5, 6.0, vSeed));
+    float snow = clamp(smoothstep(1.0, 0.2, r) * (0.62 + 0.38 * arms), 0.0, 1.0);
     float stretch = mix(3.5, 5.2, vMelt);
     float rain = smoothstep(1.0, 0.45, length(vec2(c.x * stretch, c.y)));
     float m = vKind > 0.5 ? 1.0 : clamp(vMelt, 0.0, 1.0);
@@ -137,6 +137,7 @@ export class PrecipitationParticles {
       vertexShader,
       fragmentShader,
       transparent: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     });
@@ -239,7 +240,7 @@ export class PrecipitationParticles {
 
   /** 0 snow, 1 rain, 2 hail. */
   private fallSpeed(kind: number, size: number, melt: number): number {
-    if (kind >= 2) return 8 + 14 * size;
+    if (kind >= 2) return 22 + 28 * size;
     if (kind === 1) return RAIN_FALL;
     const snow = SNOW_FALL * (0.65 + 0.7 * size);
     return snow + (RAIN_FALL - snow) * melt;
@@ -258,50 +259,11 @@ export class PrecipitationParticles {
     while (attempts-- > 0) {
       const i = (Math.random() * dnx) | 0;
       const j = (Math.random() * dny) | 0;
-      let k = (Math.random() * dnz) | 0;
-      // Prefer the lower half of the column so shafts read as curtains.
-      if (Math.random() < 0.55) k = (Math.random() * (dnz * 0.55)) | 0;
-      let found = this.cellHasPrecip(data, i, j, k);
-      if (!found) {
-        for (let s = k + 1; s < dnz; s++) {
-          if (this.cellHasPrecip(data, i, j, s)) {
-            k = s;
-            found = true;
-            break;
-          }
-        }
-      }
-      if (!found) {
-        for (let s = k - 1; s >= 0; s--) {
-          if (this.cellHasPrecip(data, i, j, s)) {
-            k = s;
-            found = true;
-            break;
-          }
-        }
-      }
-      if (!found) continue;
-
-      const sample = this.sampleCell(data, i, j, k);
-      if (!sample) continue;
+      const pick = this.pickColumn(data, i, j);
+      if (!pick) continue;
+      const { k, kind, size } = pick;
       const y = this.groundY + ((k + 0.5) / dnz) * this.height;
-      const melt0 = this.meltAt(y);
-      let kind = 1;
-      let size = 0.4 + Math.random() * 0.6;
-      if (sample.hail > 16 && Math.random() < 0.72) {
-        kind = 2;
-        size = Math.min(1, Math.max(0.12, (sample.hail / 255) * (0.65 + Math.random() * 0.7)));
-      } else if (sample.cold > sample.rain && sample.cold > PACK_EMPTY) {
-        kind = melt0 > 0.85 ? 1 : 0;
-        size = 0.25 + Math.random() * 0.75;
-      } else if (sample.rain > PACK_EMPTY) {
-        kind = 1;
-      } else if (sample.cold > PACK_EMPTY) {
-        kind = melt0 > 0.85 ? 1 : 0;
-        size = 0.25 + Math.random() * 0.75;
-      } else {
-        continue;
-      }
+      const melt0 = kind === 0 ? this.meltAt(y) : kind === 2 ? 0 : 1;
 
       const p = this.cursor;
       this.cursor = (this.cursor + 1) % PARTICLE_CAPACITY;
@@ -313,7 +275,7 @@ export class PrecipitationParticles {
       this.positions[o + 1] = y;
       this.positions[o + 2] = z;
       this.age[p] = 0;
-      const fall0 = this.fallSpeed(kind, size, kind === 0 ? melt0 : kind === 2 ? 0 : 1);
+      const fall0 = this.fallSpeed(kind, size, melt0);
       const drop = Math.max(80, y - (this.groundY + 1));
       this.life[p] = drop / Math.max(fall0, 0.4) + 1.2 + Math.random() * 2.5;
       this.alive[p] = 1;
@@ -322,6 +284,61 @@ export class PrecipitationParticles {
       this.seed[p] = Math.random();
       this.melt[p] = kind === 0 ? melt0 : kind === 2 ? 0 : 1;
     }
+  }
+
+  /**
+   * Hail from the hail core, snow from the coldest cell at or above the
+   * freezing level, rain from the shaft. A low rain cell no longer hides
+   * the snow and hail above it.
+   */
+  private pickColumn(
+    data: Uint8Array,
+    i: number,
+    j: number,
+  ): { k: number; kind: number; size: number } | null {
+    let hailK = -1;
+    let hailV = 0;
+    let snowK = -1;
+    let snowV = 0;
+    let rainK = -1;
+    let rainV = 0;
+    const freezeK =
+      this.freezeWorldY === null
+        ? 0
+        : ((this.freezeWorldY - this.groundY) / this.height) * this.dnz;
+    for (let k = 0; k < this.dnz; k++) {
+      const sample = this.sampleCell(data, i, j, k);
+      if (!sample) continue;
+      if (sample.hail > hailV) {
+        hailV = sample.hail;
+        hailK = k;
+      }
+      if (sample.cold > snowV && k + 0.5 >= freezeK) {
+        snowV = sample.cold;
+        snowK = k;
+      }
+      if (sample.rain > rainV) {
+        rainV = sample.rain;
+        rainK = k;
+      }
+    }
+    if (hailV > 10 && (hailV > snowV || Math.random() < 0.62)) {
+      const size = Math.min(
+        1,
+        Math.max(0.18, (hailV / 255) * (0.7 + Math.random() * 0.6)),
+      );
+      return { k: hailK, kind: 2, size };
+    }
+    if (snowV > PACK_EMPTY && (snowV >= rainV * 0.25 || rainV <= PACK_EMPTY || Math.random() < 0.4)) {
+      return { k: snowK, kind: 0, size: 0.35 + Math.random() * 0.65 };
+    }
+    if (rainV > PACK_EMPTY) {
+      return { k: rainK, kind: 1, size: 0.35 + Math.random() * 0.65 };
+    }
+    if (snowV > PACK_EMPTY) {
+      return { k: snowK, kind: 0, size: 0.35 + Math.random() * 0.65 };
+    }
+    return null;
   }
 
   private sampleCell(
@@ -334,21 +351,6 @@ export class PrecipitationParticles {
     const o = (i + this.dnx * row) * 4;
     if (o < 0 || o + 3 >= data.length) return null;
     return { cold: data[o + 1], rain: data[o + 2], hail: data[o + 3] };
-  }
-
-  private cellHasPrecip(
-    data: Uint8Array,
-    i: number,
-    j: number,
-    k: number,
-  ): boolean {
-    const sample = this.sampleCell(data, i, j, k);
-    if (!sample) return false;
-    return (
-      sample.cold > PACK_EMPTY ||
-      sample.rain > PACK_EMPTY ||
-      sample.hail > PACK_EMPTY
-    );
   }
 
   private advance(dt: number): void {

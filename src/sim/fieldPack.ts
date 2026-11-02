@@ -34,7 +34,7 @@ export function packRainSwath(
   }
 }
 
-const SNOW_FULL_M = 0.35;
+const SNOW_FULL_M = 0.1;
 const HAIL_DIAM_FULL_MM = 80;
 const RAIN_FULL_MM = 16;
 /** Stones/m² that fill the ground with hail dots. Logarithmic so light and heavy swaths both show. */
@@ -46,27 +46,43 @@ function coverByte(x: number): number {
   return (x * 255) | 0;
 }
 
+function wrapIndex(i: number, n: number): number {
+  return ((i % n) + n) % n;
+}
+
 /**
  * Per-column ground cover for the 3D surface.
  * Layout matches the ground shader: index i + j·nx is south-to-north (j = 0 at V = 0).
  * R = rain wetness, G = snow depth, B = hail diameter, A = hail frequency.
+ * `shift` is how far the domain has travelled (metres). Deposits are written
+ * at the earth coordinate, so they stay on the ground they fell on.
  */
 export function packGroundCover(
   grid: Grid3D,
   f: SimFields,
   out: Uint8Array,
+  shift?: { east: number; north: number },
 ): void {
-  const n = grid.nx * grid.ny;
+  const { nx, ny } = grid;
+  const n = nx * ny;
   if (out.length < n * 4) return;
-  for (let s = 0; s < n; s++) {
-    const o = s * 4;
-    const count = Math.max(0, f.hailCount[s] || 0);
-    const freq =
-      count > 0 ? Math.log10(1 + count) / Math.log10(1 + HAIL_COUNT_FULL) : 0;
-    out[o] = coverByte(Math.max(0, f.rainAccum[s] || 0) / RAIN_FULL_MM);
-    out[o + 1] = coverByte(Math.max(0, f.snowDepth[s] || 0) / SNOW_FULL_M);
-    out[o + 2] = coverByte(Math.max(0, f.hailDiam[s] || 0) / HAIL_DIAM_FULL_MM);
-    out[o + 3] = coverByte(freq);
+  const ox = shift && grid.xExtent > 0 ? shift.east / grid.xExtent : 0;
+  const oy = shift && grid.yExtent > 0 ? shift.north / grid.yExtent : 0;
+  const shiftI = Math.floor(ox * nx);
+  const shiftJ = Math.floor(oy * ny);
+  for (let j = 0; j < ny; j++) {
+    const tj = wrapIndex(j + shiftJ, ny);
+    for (let i = 0; i < nx; i++) {
+      const s = i + j * nx;
+      const o = (wrapIndex(i + shiftI, nx) + tj * nx) * 4;
+      const count = Math.max(0, f.hailCount[s] || 0);
+      const freq =
+        count > 0 ? Math.log10(1 + count) / Math.log10(1 + HAIL_COUNT_FULL) : 0;
+      out[o] = coverByte(Math.max(0, f.rainAccum[s] || 0) / RAIN_FULL_MM);
+      out[o + 1] = coverByte(Math.max(0, f.snowDepth[s] || 0) / SNOW_FULL_M);
+      out[o + 2] = coverByte(Math.max(0, f.hailDiam[s] || 0) / HAIL_DIAM_FULL_MM);
+      out[o + 3] = coverByte(freq);
+    }
   }
 }
 

@@ -284,8 +284,9 @@ export class CloudRainRenderer {
   private readonly fieldView = new FieldView();
   /** Rain swath, cold-pool shade, fronts, vortex rings. */
   private readonly groundOverlays = new GroundOverlays();
-  /** Renderer-side rain/snow particles spawned from the packed volume. */
+  /** Renderer-side rain/snow/hail, drawn after the clouds so flakes and stones stay visible. */
   private precipitation: PrecipitationParticles;
+  private readonly precipScene = new THREE.Scene();
   private timeSeconds = 0;
   private liveBolts: {
     i: number;
@@ -431,11 +432,11 @@ export class CloudRainRenderer {
           "#include <map_fragment>",
           `#include <map_fragment>
 {
-  // Land pattern scrolls with the earth. Snow and hail stay on the model columns.
+  // Land, snow and hail share earth coordinates, so a deposit stays on the
+  // ground it fell on while the domain follows the storm.
   vec2 gScroll = groundAt(vCloudWorld);
-  vec2 gDomain = gScroll - uGroundOffset;
   vec2 q = gScroll * uGroundSize;
-  vec4 st = texture(uGround, gDomain);
+  vec4 st = texture(uGround, gScroll);
   gWater = st.r * GROUND_WATER;
   gSnow = st.g;
   gHailDots = 0.0;
@@ -457,7 +458,7 @@ export class CloudRainRenderer {
   vec3 snowCol = vec3(0.94, 0.96, 0.98);
   diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, dust * 0.42);
   diffuseColor.rgb = mix(diffuseColor.rgb, snowCol, deep);
-  gHailDots = hailStones(gDomain * uGroundSize, st.a, st.b);
+  gHailDots = hailStones(q, st.a, st.b);
   vec3 hailCol = mix(vec3(0.78, 0.81, 0.84), vec3(0.98, 0.99, 1.0), smoothstep(0.15, 0.85, st.b));
   diffuseColor.rgb = mix(diffuseColor.rgb, hailCol, gHailDots);
 }`,
@@ -587,7 +588,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     // Will initialize after cloud material is created
     this.spriteView = null;
     this.precipitation = new PrecipitationParticles();
-    this.scene.add(this.precipitation.points);
+    this.precipScene.add(this.precipitation.points);
     this.scene.add(this.fieldView.group);
     this.scene.add(this.groundOverlays.group);
 
@@ -1434,7 +1435,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     // Ground cover: R rain wetness, G snow depth, B hail diameter, A hail frequency.
     this.groundState = new THREE.DataTexture(new Uint8Array(nx * ny * 4), nx, ny, THREE.RGBAFormat);
     this.groundState.magFilter = this.groundState.minFilter = THREE.LinearFilter;
-    this.groundState.wrapS = this.groundState.wrapT = THREE.ClampToEdgeWrapping;
+    this.groundState.wrapS = this.groundState.wrapT = THREE.RepeatWrapping;
     this.groundState.colorSpace = THREE.NoColorSpace;
     this.groundState.needsUpdate = true;
     
@@ -1916,6 +1917,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.renderer.autoClear = false;
       this.renderer.render(this.overlay, this.overlayCam);
     }
+    if (this.precipitation.points.visible) {
+      this.renderer.autoClear = false;
+      this.renderer.render(this.precipScene, this.camera);
+    }
     if (
       this.boltGlows.some((ribbon) => ribbon.visible) ||
       this.boltCores.some((ribbon) => ribbon.visible)
@@ -2373,7 +2378,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.disposeWinds();
     this.boltFieldFallback.dispose();
     this.precipitation.dispose();
-    this.scene.remove(this.precipitation.points);
+    this.precipScene.remove(this.precipitation.points);
 
     // Dispose MeteoLAB components
     if (this.lightVolume) {
