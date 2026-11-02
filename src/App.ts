@@ -243,8 +243,8 @@ export class App {
                   </label>
                   <label>
                     Base darkness
-                    <input id="cloud-sigma" type="range" min="0.0005" max="0.008" step="0.0001" value="0.0028" />
-                    <span id="cloud-sigma-val">0.0028</span>
+                    <input id="cloud-sigma" type="range" min="0.0005" max="0.008" step="0.0001" value="0.0035" />
+                    <span id="cloud-sigma-val">0.0035</span>
                   </label>
                   <label>
                     Liquid billow
@@ -1552,8 +1552,8 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.0028,
-      sigmaRain: 0.0013,
+      sigmaLiquid: 0.0035,
+      sigmaRain: 0.0014,
       erosionLiquid: 1,
       erosionIce: 1,
     };

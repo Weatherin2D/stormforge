@@ -1968,9 +1968,10 @@ export class FluidSolver implements SimBackend {
     }
     const f = this.fields;
     const { nx, ny, nz, n } = this.grid;
-    // MeteoLAB cloudOpacity: soft threshold then rapid saturation to opaque.
+    // Softer saturation than stock MeteoLAB so neighbouring cells blend in the
+    // volume texture instead of packing as hard 0/1 cubes.
     const cloudOpacity = (c: number): number =>
-      c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
+      c > 2e-5 ? 1 - Math.exp(-(c - 2e-5) / 9e-4) : 0;
     // Ice/snow/graupel/hail extinction weights vs liquid (MeteoLAB ICE/SNOW/RIMER).
     const coldOpacity = (id: number): number => {
       const iceCloud = cloudOpacity(0.25 * f.qi[id]);

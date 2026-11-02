@@ -43,10 +43,10 @@ export interface CloudLook {
  * (Afternoon high-deck soft look lives in lookdev preset E_afternoonHighDeck.)
  */
 export const DEFAULT_LOOK: CloudLook = {
-  // Slightly above MeteoLAB 2.2/km so Uint8-packed volumes still go opaque.
-  sigmaLiquid: 0.0028,
-  sigmaIce: 0.00065,
-  sigmaRain: 0.0013,
+  // Above MeteoLAB 2.2/km so Uint8-packed decks go solid rather than milky.
+  sigmaLiquid: 0.0035,
+  sigmaIce: 0.0007,
+  sigmaRain: 0.0014,
   erosionLiquid: 1.0,
   erosionIce: 0.85,
   iceStretch: [0.55, 2.8, 0.55],
@@ -63,7 +63,7 @@ export const DEFAULT_LOOK: CloudLook = {
   exposure: 1.05,
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
-  stepSize: 24,
+  stepSize: 40,
   lodDistance: 22000,
   detailFade: [4500, 24000],
   mammatusDepth: 600,
@@ -108,7 +108,9 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       vertexShader: cloudVertexShader,
       fragmentShader: cloudFragmentShader,
       defines: {
-        MAX_STEPS: q.maxSteps ?? 128,
+        STEPS: q.maxSteps ? Math.max(64, Math.min(128, Math.floor(q.maxSteps * 0.5))) : 96,
+        MAX_STEPS: q.maxSteps ?? 192,
+        FINE_STEP: 48.0,
         LIGHT_STEPS: q.lightSteps ?? 6,
         AMBIENT_STEPS: q.ambientSteps ?? 2,
         MS_OCTAVES: q.msOctaves ?? 4,

@@ -697,8 +697,9 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const present = this.sceneBlit.material as THREE.ShaderMaterial;
       present.uniforms.uTex.value = this.sceneTarget.texture;
     }
-    const hw = Math.max(1, Math.floor(bw * 0.5));
-    const hh = Math.max(1, Math.floor(bh * 0.5));
+    // 3/4 res keeps edges sharper than half-res (less voxel/moire after upscale).
+    const hw = Math.max(1, Math.floor(bw * 0.75));
+    const hh = Math.max(1, Math.floor(bh * 0.75));
     if (
       !this.cloudTarget ||
       this.cloudTarget.width !== hw ||
@@ -1180,13 +1181,13 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (partial.sigmaLiquid != null) {
       this.tune.sigmaLiquid =
         partial.sigmaLiquid > 0.01
-          ? partial.sigmaLiquid * (0.0028 / 0.08)
+          ? partial.sigmaLiquid * (0.0035 / 0.08)
           : partial.sigmaLiquid;
     }
     if (partial.sigmaRain != null) {
       this.tune.sigmaRain =
         partial.sigmaRain > 0.02
-          ? partial.sigmaRain * (0.0013 / 0.18)
+          ? partial.sigmaRain * (0.0014 / 0.18)
           : partial.sigmaRain;
     }
     if (partial.erosionLiquid != null) this.tune.erosionLiquid = partial.erosionLiquid;
@@ -2102,7 +2103,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 96 },
+      quality: { maxSteps: 192 },
     });
     this.volumeMesh = createCloudMesh(this.cloudMat, boxMin, boxMax);
     this.volumeMesh.visible = this.cloudsOn;
@@ -2948,6 +2949,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     tex.type = THREE.UnsignedByteType;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = tex.wrapR = THREE.ClampToEdgeWrapping;
     tex.unpackAlignment = 1;
     tex.generateMipmaps = false;
     tex.flipY = false;

@@ -29,7 +29,7 @@ const ANVIL_OPACITY = 0.05;
 const ROTATION_SCALE = 0.02;
 
 export const cloudOpacity = (c: number): number =>
-  c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
+  c > 2e-5 ? 1 - Math.exp(-(c - 2e-5) / 9e-4) : 0;
 
 const clamp01 = (v: number): number => (v <= 0 ? 0 : v >= 1 ? 1 : v);
 const byte01 = (v: number): number => {

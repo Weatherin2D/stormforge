@@ -135,10 +135,10 @@ export class Grid3D {
 }
 
 /** GPU cloud texture caps. Physics stays on the full grid. */
-const VOLUME_DISP_NX = 128;
-const VOLUME_DISP_NY = 128;
+const VOLUME_DISP_NX = 160;
+const VOLUME_DISP_NY = 160;
 /** Extra vertical samples — coarse Z made towers look like stacked blocks. */
-const VOLUME_DISP_NZ = 64;
+const VOLUME_DISP_NZ = 72;
 
 /** Stride-sampled volume size, at most 128×128×48. */
 export function volumeDisplaySize(
