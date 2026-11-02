@@ -412,7 +412,10 @@ export function sampleCover(
       if (water[s] < ocean[s]) water[s] = ocean[s];
       anyWater = true;
     } else {
+      // Nearest-kind land wins over bilinear water bleed so coasts match
+      // the jagged elevation / cover mask instead of a soft wet fringe.
       ocean[s] = 0;
+      water[s] = 0;
     }
     if (soil[s] > 0.02) anySoil = true;
     if (veg[s] > 0.02) anyVeg = true;

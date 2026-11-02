@@ -1,6 +1,7 @@
 import { Grid3D, volumeDisplaySize } from "./Grid3D";
 import type { SimFields } from "./InitFromSounding";
 import { qsat, TFromTheta } from "./thermo";
+import { columnBaseK } from "./surface";
 import {
   type OverlayField,
   FIELD_INFO,
@@ -93,11 +94,12 @@ export function packColdPoolMap(
   f: SimFields,
   out: Uint8Array,
 ): void {
-  const { nx, ny } = grid;
-  const th0 = f.theta0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const deficit = Math.max(0, th0 - f.theta[grid.idx(i, j, 0)]);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const th0 = f.theta0[k];
+      const deficit = Math.max(0, th0 - f.theta[grid.idx(i, j, k)]);
       const t = clamp01(deficit / 8);
       const o = (i + j * nx) * 4;
       // Cool blue over cold air; transparent when warm.

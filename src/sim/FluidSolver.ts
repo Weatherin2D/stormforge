@@ -511,6 +511,9 @@ export class FluidSolver implements SimBackend {
         ? this.vorticityStrength * Math.max(0, adv.vorticityBoost)
         : 0;
       if (vort > 0) this.applyVorticityConfinement(h, vort);
+      // Kinematic terrain BC must hold going into the projection so hills
+      // force a divergence-free response instead of a post-hoc divergent nudge.
+      this.applyTerrainKinematics(h);
       this.project(h);
       this.applyTerrain(h);
       this.advectScalars(h);
@@ -623,6 +626,7 @@ export class FluidSolver implements SimBackend {
   private applyBuoyancy(dt: number): void {
     const { nx, ny, nz } = this.grid;
     const f = this.fields;
+    const open = this.openK;
     const g = G * getAdvanced().buoyancyScale;
     const coldPool = getToggles().enableColdPool
       ? getAdvanced().coldPoolStrength
@@ -636,6 +640,8 @@ export class FluidSolver implements SimBackend {
       const thv0 = 0.5 * (th0a * (1 + 0.608 * qv0a) + th0b * (1 + 0.608 * qv0b));
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
+          // Face k sits between cells k-1 and k; skip until both are free air.
+          if (open && k <= open[i + j * nx]) continue;
           const ida = this.grid.idx(i, j, k - 1);
           const idb = this.grid.idx(i, j, k);
           const tha = f.theta[ida];
@@ -905,6 +911,17 @@ export class FluidSolver implements SimBackend {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i <= nx; i++) {
           const id = g.uIdx(i, j, k);
+          if (open) {
+            const iL = i > 0 ? i - 1 : 0;
+            const iR = i < nx ? i : nx - 1;
+            const kL = open[iL + j * nx];
+            const kR = open[iR + j * nx];
+            // Face is solid if either adjacent column buries this level.
+            if (k < kL || k < kR) {
+              this.tmpU[id] = 0;
+              continue;
+            }
+          }
           // Face position in cell-index space: (i-0.5, j, k)
           let uc = f.u[id];
           let vc =
@@ -974,6 +991,16 @@ export class FluidSolver implements SimBackend {
       for (let j = 0; j <= ny; j++) {
         for (let i = 0; i < nx; i++) {
           const id = g.vIdx(i, j, k);
+          if (open) {
+            const jB = j > 0 ? j - 1 : 0;
+            const jT = j < ny ? j : ny - 1;
+            const kB = open[i + jB * nx];
+            const kT = open[i + jT * nx];
+            if (k < kB || k < kT) {
+              this.tmpV[id] = 0;
+              continue;
+            }
+          }
           let vc = f.v[id];
           let uc =
             j === 0
@@ -1034,15 +1061,33 @@ export class FluidSolver implements SimBackend {
     }
 
     // --- w faces ---
+    const height = this.heightGrid;
     for (let k = 0; k <= nz; k++) {
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           const id = g.wIdx(i, j, k);
-          if (k === 0 || k === nz) {
+          if (k === nz) {
             this.tmpW[id] = 0;
             continue;
           }
-          if (open && k <= open[i + j * nx]) {
+          if (k === 0) {
+            // Domain floor stays sealed except where sub-grid terrain needs
+            // a kinematic flux (openK == 0 but height > 0).
+            const s = i + j * nx;
+            if (
+              open &&
+              open[s] === 0 &&
+              height &&
+              height[s] > 1e-3
+            ) {
+              this.tmpW[id] = f.w[id];
+            } else {
+              this.tmpW[id] = 0;
+            }
+            continue;
+          }
+          // openK is the first free cell; face k==openK carries orographic w.
+          if (open && k < open[i + j * nx]) {
             this.tmpW[id] = 0;
             continue;
           }
@@ -1326,12 +1371,18 @@ export class FluidSolver implements SimBackend {
   private setLids(): void {
     const { nx, ny, nz } = this.grid;
     const w = this.fields.w;
+    const open = this.openK;
+    const height = this.heightGrid;
     const nxny = nx * ny;
     for (let j = 0; j < ny; j++) {
       const row = j * nx;
       const top = nz * nxny + row;
       for (let i = 0; i < nx; i++) {
-        w[row + i] = 0;
+        const s = row + i;
+        // Preserve kinematic floor flux over unresolved terrain slopes.
+        if (!open || open[s] > 0 || !height || height[s] <= 1e-3) {
+          w[row + i] = 0;
+        }
         w[top + i] = 0;
       }
     }
@@ -1343,6 +1394,7 @@ export class FluidSolver implements SimBackend {
     const { nx, ny, nz, dx, dy, dz } = g;
     const f = this.fields;
     const div = this.div;
+    const open = this.openK;
     const nxny = nx * ny;
     const nu = nx + 1;
     const nv = ny + 1;
@@ -1367,6 +1419,10 @@ export class FluidSolver implements SimBackend {
         const jw1 = kw1 + j * nx;
         const row = kBase + j * nx;
         for (let i = 0; i < nx; i++) {
+          if (open && k < open[i + j * nx]) {
+            div[row + i] = 0;
+            continue;
+          }
           const du = rho * (f.u[ju + i + 1] - f.u[ju + i]) * invDx;
           const dv = rho * (f.v[jv1 + i] - f.v[jv + i]) * invDy;
           const dw = (rhowT * f.w[jw1 + i] - rhowB * f.w[jw + i]) * invDz;
@@ -1598,6 +1654,7 @@ export class FluidSolver implements SimBackend {
     const { nx, ny, nz, dx, dy, dz } = g;
     const f = this.fields;
     const p = f.p;
+    const open = this.openK;
     const nxny = nx * ny;
     const nu = nx + 1;
     const nv = ny + 1;
@@ -1612,6 +1669,10 @@ export class FluidSolver implements SimBackend {
         const row = kBase + j * nx;
         const ju = ku + j * nu;
         for (let i = 1; i < nx; i++) {
+          if (open && (k < open[i + j * nx] || k < open[i - 1 + j * nx])) {
+            f.u[ju + i] = 0;
+            continue;
+          }
           f.u[ju + i] -= (p[row + i] - p[row + i - 1]) * invDx;
         }
       }
@@ -1620,6 +1681,10 @@ export class FluidSolver implements SimBackend {
         const rowB = row - nx;
         const jv = kv + j * nx;
         for (let i = 0; i < nx; i++) {
+          if (open && (k < open[i + j * nx] || k < open[i + (j - 1) * nx])) {
+            f.v[jv + i] = 0;
+            continue;
+          }
           f.v[jv + i] -= (p[row + i] - p[rowB + i]) * invDy;
         }
       }
@@ -1633,10 +1698,16 @@ export class FluidSolver implements SimBackend {
         const rb = rowB + j * nx;
         const wj = kw + j * nx;
         for (let i = 0; i < nx; i++) {
+          // Face at openK is the terrain surface — leave its kinematic value.
+          if (open && k <= open[i + j * nx]) {
+            if (k < open[i + j * nx]) f.w[wj + i] = 0;
+            continue;
+          }
           f.w[wj + i] -= (p[rj + i] - p[rb + i]) * invDz;
         }
       }
     }
+    this.sealBuriedVelocity();
   }
 
   /**
@@ -2481,6 +2552,99 @@ export class FluidSolver implements SimBackend {
     this.heightGrid = built.height;
     this.openK = built.openK;
     this.refreshLandMask();
+    this.sealBuriedVelocity();
+    this.clearBuriedScalars();
+  }
+
+  /** Zero winds inside the terrain mask (solid cells and their faces). */
+  private sealBuriedVelocity(): void {
+    const open = this.openK;
+    if (!open) return;
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny } = g;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const kOpen = open[i + j * nx];
+        for (let k = 0; k < kOpen; k++) {
+          f.u[g.uIdx(i, j, k)] = 0;
+          f.u[g.uIdx(i + 1, j, k)] = 0;
+          f.v[g.vIdx(i, j, k)] = 0;
+          f.v[g.vIdx(i, j + 1, k)] = 0;
+          f.w[g.wIdx(i, j, k)] = 0;
+        }
+      }
+    }
+  }
+
+  /** Reset hydrometeors / θ / qv under terrain so buried air cannot leak. */
+  private clearBuriedScalars(): void {
+    const open = this.openK;
+    if (!open || !getToggles().enableBuriedReset) return;
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny } = g;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const kOpen = open[i + j * nx];
+        for (let k = 0; k < kOpen; k++) {
+          const id = g.idx(i, j, k);
+          f.qc[id] = 0;
+          f.qr[id] = 0;
+          f.qi[id] = 0;
+          f.qs[id] = 0;
+          f.qg[id] = 0;
+          f.qh[id] = 0;
+          f.ni[id] = 0;
+          f.theta[id] = f.theta0[k];
+          f.qv[id] = f.qv0[k];
+        }
+      }
+    }
+  }
+
+  /**
+   * Hard kinematic terrain BC applied before projection:
+   * seal buried faces and set surface w = u·∇h (plus a short lee-wave stack).
+   */
+  private applyTerrainKinematics(dt: number): void {
+    const height = this.heightGrid;
+    const open = this.openK;
+    if (!height || !open) return;
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny, nz, dx, dy } = g;
+    const S = getAdvanced();
+    const T = getToggles();
+    this.sealBuriedVelocity();
+    if (!T.enableOrographic && !T.enableLeeWaves) return;
+    const aw = relaxFactor(dt, TERRAIN_TAU / Math.max(0.3, S.terrainTau));
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const kOpen = open[i + j * nx];
+        if (kOpen >= nz) continue;
+        const uSurf = g.uCenter(f.u, i, j, kOpen);
+        const vSurf = g.vCenter(f.v, i, j, kOpen);
+        const target0 = T.enableOrographic
+          ? orographicW(height, nx, ny, i, j, dx, dy, uSurf, vSurf) *
+            S.orographicLift
+          : 0;
+        const waveLayers = T.enableLeeWaves
+          ? Math.max(1, Math.min(6, Math.round(4 * S.leeWaveDepth)))
+          : target0 !== 0
+            ? 1
+            : 0;
+        for (let dk = 0; dk < waveLayers && kOpen + dk < nz; dk++) {
+          const k = kOpen + dk;
+          const face = g.wIdx(i, j, k);
+          const decay = Math.exp(-dk * (0.85 / Math.max(0.5, S.leeWaveDepth)));
+          const tgt = target0 * decay;
+          // Surface face is a hard BC; aloft uses the usual terrain relax.
+          if (dk === 0) f.w[face] = tgt;
+          else f.w[face] += (tgt - f.w[face]) * aw * 0.55 * decay;
+        }
+      }
+    }
   }
 
   /**

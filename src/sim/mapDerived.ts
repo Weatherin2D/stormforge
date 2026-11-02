@@ -742,43 +742,46 @@ function packCapeShear(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 }
 
 function packDewpointDepression(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
-      const t = TFromTheta(f.theta[id], p);
-      const td = dewpointAt(f, id, 0);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const t = TFromTheta(f.theta[id], f.p0[k]);
+      const td = dewpointAt(f, id, k);
       paintNorm(t - td, 0, 30, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packSpecificHumidity(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const qv = Math.max(0, f.qv[grid.idx(i, j, 0)]);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const qv = Math.max(0, f.qv[grid.idx(i, j, k)]);
       paintNorm((qv / (1 + qv)) * 1000, 0, 25, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packMixingRatio(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      paintNorm(Math.max(0, f.qv[grid.idx(i, j, 0)]) * 1000, 0, 25, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      paintNorm(Math.max(0, f.qv[grid.idx(i, j, k)]) * 1000, 0, 25, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packMoistureFlux(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const qv = Math.max(0, f.qv[grid.idx(i, j, 0)]);
-      const spd = Math.hypot(grid.uCenter(f.u, i, j, 0), grid.vCenter(f.v, i, j, 0));
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const qv = Math.max(0, f.qv[grid.idx(i, j, k)]);
+      const spd = Math.hypot(grid.uCenter(f.u, i, j, k), grid.vCenter(f.v, i, j, k));
       paintNorm(qv * spd * 1000, 0, 400, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
@@ -806,34 +809,42 @@ function packDryIntrusion(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 
 function packBlHumidity(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   const { nx, ny, nz, dz } = grid;
-  const k1 = Math.min(nz - 1, Math.max(1, Math.round(1000 / Math.max(dz, 1))));
+  const depth = Math.max(1, Math.round(1000 / Math.max(dz, 1)));
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k0 = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const k1 = Math.min(nz - 1, k0 + depth);
       let sum = 0;
-      for (let k = 0; k <= k1; k++) sum += rhAt(f, grid.idx(i, j, k), k);
-      paintNorm(sum / (k1 + 1), 0, 100, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
+      let n = 0;
+      for (let k = k0; k <= k1; k++) {
+        sum += rhAt(f, grid.idx(i, j, k), k);
+        n++;
+      }
+      paintNorm(n > 0 ? sum / n : 0, 0, 100, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packWetBulb(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
-      const tC = TFromTheta(f.theta[id], f.p0[0]) - 273.15;
-      paintNorm(wetBulbC(tC, rhAt(f, id, 0)), -15, 40, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const tC = TFromTheta(f.theta[id], f.p0[k]) - 273.15;
+      paintNorm(wetBulbC(tC, rhAt(f, id, k)), -15, 40, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packEvapPotential(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
-      const T = TFromTheta(f.theta[id], f.p0[0]);
-      const deficit = Math.max(0, qsat(T, f.p0[0]) - Math.max(0, f.qv[id]));
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const T = TFromTheta(f.theta[id], f.p0[k]);
+      const deficit = Math.max(0, qsat(T, f.p0[k]) - Math.max(0, f.qv[id]));
       paintNorm(deficit * 1000, 0, 20, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
@@ -1050,13 +1061,14 @@ function packComponent(
   out: Uint8Array,
   component: "u" | "v",
 ): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
       const value =
         component === "u"
-          ? grid.uCenter(f.u, i, j, 0)
-          : grid.vCenter(f.v, i, j, 0);
+          ? grid.uCenter(f.u, i, j, k)
+          : grid.vCenter(f.v, i, j, k);
       paintSigned(value, 30, out, mapPix(i, j, nx, ny));
     }
   }
@@ -1064,7 +1076,8 @@ function packComponent(
 
 /** Liquid fraction of the precipitating mass at the lowest hydrometeor level. */
 function liquidFraction(f: SimFields, grid: Grid3D, i: number, j: number): number {
-  for (let k = 0; k < grid.nz; k++) {
+  const k0 = Math.min(grid.nz - 1, columnBaseK(grid.nx, i, j));
+  for (let k = k0; k < grid.nz; k++) {
     const id = grid.idx(i, j, k);
     const liquid = Math.max(0, f.qr[id]) + Math.max(0, f.qc[id]);
     const frozen =
@@ -1076,7 +1089,8 @@ function liquidFraction(f: SimFields, grid: Grid3D, i: number, j: number): numbe
       return clamp(liquid / (liquid + frozen), 0, 1);
     }
   }
-  const tSfc = tempAt(f, grid.idx(i, j, 0), 0) - 273.15;
+  const kSfc = Math.min(grid.nz - 1, columnBaseK(grid.nx, i, j));
+  const tSfc = tempAt(f, grid.idx(i, j, kSfc), kSfc) - 273.15;
   if (tSfc > 2) return 1;
   if (tSfc < 0) return 0;
   return clamp(tSfc / 2, 0, 1);
@@ -1299,12 +1313,13 @@ function packVortAdv(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 }
 
 function packColdPool(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const exner = Math.pow(f.p0[0] / P0, RD / CP);
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
-      const deficit = (f.theta0[0] - f.theta[id]) * exner;
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const exner = Math.pow(f.p0[k] / P0, RD / CP);
+      const deficit = (f.theta0[k] - f.theta[id]) * exner;
       paintNorm(Math.max(0, deficit), 0, 10, SCALAR_RAMP, out, mapPix(i, j, nx, ny));
     }
   }
@@ -1317,8 +1332,7 @@ function packSurfaceGradient(
   kind: "p" | "t" | "td",
   max: number,
 ): void {
-  const { nx, ny, dx, dy } = grid;
-  const p = f.p0[0];
+  const { nx, ny, nz, dx, dy } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const ip = Math.min(nx - 1, i + 1);
@@ -1326,10 +1340,11 @@ function packSurfaceGradient(
       const jp = Math.min(ny - 1, j + 1);
       const jm = Math.max(0, j - 1);
       const value = (ii: number, jj: number): number => {
-        const id = grid.idx(ii, jj, 0);
-        if (kind === "p") return (f.p[id] * f.rho0[0]) / 100;
-        if (kind === "t") return TFromTheta(f.theta[id], p);
-        return dewpointAt(f, id, 0);
+        const k = Math.min(nz - 1, columnBaseK(nx, ii, jj));
+        const id = grid.idx(ii, jj, k);
+        if (kind === "p") return (f.p[id] * f.rho0[k]) / 100;
+        if (kind === "t") return TFromTheta(f.theta[id], f.p0[k]);
+        return dewpointAt(f, id, k);
       };
       const dvDx =
         (value(ip, j) - value(im, j)) /

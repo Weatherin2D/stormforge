@@ -1650,8 +1650,9 @@ function packFreezingLevel(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       let height = 0;
-      let prevT = TFromTheta(f.theta[grid.idx(i, j, 0)], f.p0[0]);
-      for (let k = 1; k < nz; k++) {
+      const k0 = Math.min(nz - 1, columnBaseK(nx, i, j));
+      let prevT = TFromTheta(f.theta[grid.idx(i, j, k0)], f.p0[k0]);
+      for (let k = k0 + 1; k < nz; k++) {
         const T = TFromTheta(f.theta[grid.idx(i, j, k)], f.p0[k]);
         if (prevT > 273.15 && T <= 273.15) {
           const frac = (prevT - 273.15) / Math.max(1e-6, prevT - T);
@@ -1666,23 +1667,24 @@ function packFreezingLevel(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 }
 
 function packSurfaceT(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p0 = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const th = f.theta[grid.idx(i, j, 0)];
-      const tC = TFromTheta(th, p0) - 273.15;
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const th = f.theta[grid.idx(i, j, k)];
+      const tC = TFromTheta(th, f.p0[k]) - 273.15;
       tempToRgba(tC, out, mapPix(i, j, nx, ny));
     }
   }
 }
 
 function packDewpoint(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p0 = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const qv = Math.max(0, f.qv[grid.idx(i, j, 0)]);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const qv = Math.max(0, f.qv[grid.idx(i, j, k)]);
+      const p0 = f.p0[k];
       const e = (qv * p0) / (0.622 + qv);
       const tdC = dewpointFromE(Math.max(1, e));
       dewToRgba(tdC, out, mapPix(i, j, nx, ny));
@@ -1691,12 +1693,13 @@ function packDewpoint(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 }
 
 function packWindSpeed(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
       const spd = Math.hypot(
-        grid.uCenter(f.u, i, j, 0),
-        grid.vCenter(f.v, i, j, 0),
+        grid.uCenter(f.u, i, j, k),
+        grid.vCenter(f.v, i, j, k),
       );
       speedToRgba(spd, out, mapPix(i, j, nx, ny));
     }
@@ -1705,13 +1708,14 @@ function packWindSpeed(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 
 /** Anelastic π' at the surface, scaled as a pressure perturbation in hPa. */
 function packSurfacePressure(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const scale = f.rho0[0] / 100;
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const scale = f.rho0[k] / 100;
       const xn = i / Math.max(1, nx - 1);
       const yn = j / Math.max(1, ny - 1);
-      const hPa = f.p[grid.idx(i, j, 0)] * scale + surfacePressureBiasHpa(xn, yn);
+      const hPa = f.p[grid.idx(i, j, k)] * scale + surfacePressureBiasHpa(xn, yn);
       divergingToRgba(hPa, -12, 12, out, mapPix(i, j, nx, ny));
     }
   }
@@ -1965,11 +1969,12 @@ function surfaceTdC(f: SimFields, id: number, p0: number): number {
 }
 
 function packSurfaceRh(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const p = f.p0[k];
       const T = TFromTheta(f.theta[id], p);
       const qs = qsat(T, p);
       const rh = qs > 1e-12 ? (Math.max(0, f.qv[id]) / qs) * 100 : 0;
@@ -1979,11 +1984,12 @@ function packSurfaceRh(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 }
 
 function packSurfaceThetaE(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const p = f.p0[k];
       const T = TFromTheta(f.theta[id], p);
       const qv = Math.max(0, f.qv[id]);
       const thetaE = f.theta[id] * Math.exp((LV * qv) / (CP * Math.max(T, 1)));
@@ -2000,11 +2006,12 @@ function packSurfaceThetaE(grid: Grid3D, f: SimFields, out: Uint8Array): void {
 
 /** LCL from the surface parcel: 125 m per °C of T−Td (rough estimate). */
 function packLcl(grid: Grid3D, f: SimFields, out: Uint8Array): void {
-  const { nx, ny } = grid;
-  const p = f.p0[0];
+  const { nx, ny, nz } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const id = grid.idx(i, j, 0);
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
+      const id = grid.idx(i, j, k);
+      const p = f.p0[k];
       const tC = TFromTheta(f.theta[id], p) - 273.15;
       const tdC = surfaceTdC(f, id, p);
       const lcl = clamp(125 * (tC - tdC), 0, 4000);
@@ -2019,7 +2026,8 @@ function packPwat(grid: Grid3D, f: SimFields, out: Uint8Array): void {
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       let pw = 0;
-      for (let k = 0; k < nz; k++) {
+      const k0 = Math.min(nz - 1, columnBaseK(nx, i, j));
+      for (let k = k0; k < nz; k++) {
         const id = grid.idx(i, j, k);
         pw += f.rho0[k] * Math.max(0, f.qv[id]) * dz;
       }
@@ -2190,18 +2198,19 @@ function packSurfaceConvergence(
   out: Uint8Array,
   convergentPositive = true,
 ): void {
-  const { nx, ny, dx, dy } = grid;
+  const { nx, ny, nz, dx, dy } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
       const ip = Math.min(nx - 1, i + 1);
       const im = Math.max(0, i - 1);
       const jp = Math.min(ny - 1, j + 1);
       const jm = Math.max(0, j - 1);
       const duDx =
-        (grid.uCenter(f.u, ip, j, 0) - grid.uCenter(f.u, im, j, 0)) /
+        (grid.uCenter(f.u, ip, j, k) - grid.uCenter(f.u, im, j, k)) /
         Math.max(1e-3, (ip - im) * dx);
       const dvDy =
-        (grid.vCenter(f.v, i, jp, 0) - grid.vCenter(f.v, i, jm, 0)) /
+        (grid.vCenter(f.v, i, jp, k) - grid.vCenter(f.v, i, jm, k)) /
         Math.max(1e-3, (jp - jm) * dy);
       const conv = -(duDx + dvDy) * 1e4;
       const val = convergentPositive ? conv : -conv;
@@ -2223,18 +2232,19 @@ function packSurfaceVorticity(
   f: SimFields,
   out: Uint8Array,
 ): void {
-  const { nx, ny, dx, dy } = grid;
+  const { nx, ny, nz, dx, dy } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
       const ip = Math.min(nx - 1, i + 1);
       const im = Math.max(0, i - 1);
       const jp = Math.min(ny - 1, j + 1);
       const jm = Math.max(0, j - 1);
       const dvDx =
-        (grid.vCenter(f.v, ip, j, 0) - grid.vCenter(f.v, im, j, 0)) /
+        (grid.vCenter(f.v, ip, j, k) - grid.vCenter(f.v, im, j, k)) /
         Math.max(1e-3, (ip - im) * dx);
       const duDy =
-        (grid.uCenter(f.u, i, jp, 0) - grid.uCenter(f.u, i, jm, 0)) /
+        (grid.uCenter(f.u, i, jp, k) - grid.uCenter(f.u, i, jm, k)) /
         Math.max(1e-3, (jp - jm) * dy);
       const zeta = (dvDx - duDy) * 1e4;
       divergingToRgba(
@@ -2254,24 +2264,25 @@ function packMoistureConvergence(
   f: SimFields,
   out: Uint8Array,
 ): void {
-  const { nx, ny, dx, dy } = grid;
+  const { nx, ny, nz, dx, dy } = grid;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
+      const k = Math.min(nz - 1, columnBaseK(nx, i, j));
       const ip = Math.min(nx - 1, i + 1);
       const im = Math.max(0, i - 1);
       const jp = Math.min(ny - 1, j + 1);
       const jm = Math.max(0, j - 1);
-      const qip = Math.max(0, f.qv[grid.idx(ip, j, 0)]);
-      const qim = Math.max(0, f.qv[grid.idx(im, j, 0)]);
-      const qjp = Math.max(0, f.qv[grid.idx(i, jp, 0)]);
-      const qjm = Math.max(0, f.qv[grid.idx(i, jm, 0)]);
+      const qip = Math.max(0, f.qv[grid.idx(ip, j, k)]);
+      const qim = Math.max(0, f.qv[grid.idx(im, j, k)]);
+      const qjp = Math.max(0, f.qv[grid.idx(i, jp, k)]);
+      const qjm = Math.max(0, f.qv[grid.idx(i, jm, k)]);
       const dquDx =
-        (qip * grid.uCenter(f.u, ip, j, 0) -
-          qim * grid.uCenter(f.u, im, j, 0)) /
+        (qip * grid.uCenter(f.u, ip, j, k) -
+          qim * grid.uCenter(f.u, im, j, k)) /
         Math.max(1e-3, (ip - im) * dx);
       const dqvDy =
-        (qjp * grid.vCenter(f.v, i, jp, 0) -
-          qjm * grid.vCenter(f.v, i, jm, 0)) /
+        (qjp * grid.vCenter(f.v, i, jp, k) -
+          qjm * grid.vCenter(f.v, i, jm, k)) /
         Math.max(1e-3, (jp - jm) * dy);
       const mconv = -(dquDx + dqvDy) * 1e6;
       divergingToRgba(
