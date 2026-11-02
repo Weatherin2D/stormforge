@@ -196,18 +196,31 @@ float billow(vec3 x){
   return abs(o.r * 2.0 - 1.0) * 0.6 + abs(o.g * 2.0 - 1.0) * 0.28 + o.b * 0.12;
 }
 
-// The billows rise with the updraught (w): two copies half a period apart cross-fade,
-// so the towers never stretch (a flow map). Positions are metres → km for MeteoLAB noise scale.
+// The billows rise with the updraught (w in km/s, MeteoLAB): two copies half a
+// period apart cross-fade so towers never stretch. p is metres → km via *0.0009.
 const float BILLOW_PERIOD = 240.0;
-float risingBillow(vec3 p, float w){
+float risingBillow(vec3 p, float wKm){
   float a = fract(uTime / BILLOW_PERIOD), b = fract(uTime / BILLOW_PERIOD + 0.5);
-  float rise = 0.5 * w * BILLOW_PERIOD;
+  float rise = 0.5 * wKm * BILLOW_PERIOD;
   vec3 q = p * 0.0009;
   return mix(
-    billow(q - vec3(0.0, rise * a * 0.0009, 0.0)),
-    billow(q - vec3(0.0, rise * b * 0.0009, 0.0) + vec3(5.2, 1.3, 7.9)),
+    billow(q - vec3(0.0, rise * a * 0.9, 0.0)),
+    billow(q - vec3(0.0, rise * b * 0.9, 0.0) + vec3(5.2, 1.3, 7.9)),
     abs(2.0 * a - 1.0)
   );
+}
+
+// Soft 5-tap filter on the packed volume — breaks stair-stepped voxel faces
+// before billow noise carves the cauliflower.
+vec3 sampleFieldsSoft(vec3 uvw){
+  ivec3 sz = textureSize(uFields, 0);
+  vec3 texel = 1.0 / max(vec3(sz), vec3(1.0));
+  vec3 sum = textureLod(uFields, uvw, 0.0).rgb;
+  sum += textureLod(uFields, uvw + vec3(texel.x, 0.0, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw - vec3(texel.x, 0.0, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw + vec3(0.0, texel.y, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw - vec3(0.0, texel.y, 0.0), 0.0).rgb;
+  return max(sum * 0.2 * uFieldGain, vec3(0.0));
 }
 
 // Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
@@ -273,7 +286,10 @@ vec3 rainPhase(float c){
 // detail in 0..1 blends the noise erosion in (0 = raw sim field, used for cheap light/ambient samples).
 vec3 sampleSigma(vec3 p, float detail) {
   vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
-  vec3 f = max(textureLod(uFields, uvw, 0.0).rgb * uFieldGain, vec3(0.0));
+  // Soft field sample when carving detail — raw for cheap light probes.
+  vec3 f = detail > 0.01
+    ? sampleFieldsSoft(uvw)
+    : max(textureLod(uFields, uvw, 0.0).rgb * uFieldGain, vec3(0.0));
   float liq = f.x;
   float ice = f.y;
   float rain = f.z;
@@ -302,23 +318,34 @@ vec3 sampleSigma(vec3 p, float detail) {
     vec3 rel = p + uNoiseOffset;
     vec4 sh = textureLod(uShapeNoise, rel * uShapeFreq, 0.0);
 
-    // Liquid: round billows (cauliflower). Where the billow noise is low the sim density is eroded away.
+    // Liquid: MeteoLAB cloudDensity-style carve — rising cauliflower billows with
+    // a soft puff edge so the sim grid does not read as stacked blocks.
     if (liq > 0.002) {
+      float vigor = smoothstep(0.05, 0.42, liq);
+      float iceShare = smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3));
+      iceShare *= 1.0 - vigor;
+
+      // Soft cumulus fbm (p in metres → ~km via 0.00115).
+      float n = fbm(p * 0.00115 + vec3(0.0, -uTime * 1.5e-6, 0.0));
       float billowLow = sh.g * 0.625 + sh.b * 0.25 + sh.a * 0.125;
       vec4 dt = textureLod(uDetailNoise, rel * uDetailFreq, 0.0);
       float billowHigh = dt.r * 0.625 + dt.g * 0.25 + dt.b * 0.125;
-      float bill = mix(billowLow, billowHigh, 0.5 * detail);
-      float largeScale = sh.r;
-      bill = mix(bill, largeScale, 0.3 * detail);
+      float bill = mix(billowLow, billowHigh, 0.55 * detail);
+      bill = mix(bill, sh.r, 0.22 * detail);
 
-      // Rising billows: the cauliflower churns upward where the cloud is dense (strong updraft proxy).
-      float vigor = min(1.0, liq * 2.0);
-      float rb = risingBillow(p, vigor * 10.0);
-      bill = mix(bill, rb, vigor * 0.5);
+      if (vigor > 0.0) {
+        // w ≈ 0.02 km/s at full vigor (MeteoLAB: f.b * 0.02 with B = updraught).
+        float tower = min(1.0, risingBillow(p, vigor * 0.02) * 1.55);
+        tower = mix(tower, bill, 0.4);
+        n = mix(n, tower, vigor);
+      }
 
-      float thr = (1.0 - bill) * uErosionLiquid * detail;
-      liq = clamp((liq - thr) / max(1.0 - thr, 1e-3), 0.0, 1.0);
-      liq *= mix(0.7, 1.0, smoothstep(0.1, 0.5, bill));
+      // Stronger erosion in vigorous towers, gentler in ice-dominated air.
+      float erode = mix(mix(0.42, 0.78, vigor), 0.28, iceShare) * uErosionLiquid * detail;
+      float d = liq * 1.4 - (1.0 - n) * erode * (1.0 - liq * 0.55);
+      liq = clamp(d * (1.0 + 3.6 * vigor) * mix(1.0, 0.75, iceShare), 0.0, 1.0);
+      // Soft outer lobe — kills hard voxel silhouettes.
+      liq = smoothstep(0.015, 0.22, liq) * mix(0.55, 1.0, smoothstep(0.15, 0.65, n));
     }
 
     // Ice: stretched along the wind, so it reads as smooth fibres and streaks instead of lumps.
@@ -329,12 +356,13 @@ vec3 sampleSigma(vec3 p, float detail) {
       vec4 fi = textureLod(uShapeNoise, q, 0.0);
       float fibre = fi.g * 0.5 + fi.b * 0.3 + fi.a * 0.2;
       vec4 dt2 = textureLod(uDetailNoise, rel * uDetailFreq * 1.5, 0.0);
-      fibre = mix(fibre, dt2.r * 0.6 + dt2.g * 0.4, 0.3 * detail);
-      float thrI = (1.0 - fibre) * uErosionIce * detail;
-      ice = clamp((ice - thrI) / max(1.0 - thrI, 1e-3), 0.0, 1.0);
-      ice *= mix(0.8, 1.0, smoothstep(0.2, 0.6, fibre));
-      // Translucent anvil: MeteoLAB ice density * mix(1, 0.75, ice).
+      fibre = mix(fibre, dt2.r * 0.6 + dt2.g * 0.4, 0.35 * detail);
+      // Soft fibrous carve (gentler than liquid so anvils stay smooth).
+      float erodeI = (1.0 - fibre) * uErosionIce * detail * 0.85;
+      ice = clamp(ice * 1.15 - erodeI * (1.0 - ice * 0.5), 0.0, 1.0);
+      ice *= mix(0.75, 1.0, smoothstep(0.15, 0.7, fibre));
       ice *= mix(1.0, 0.75, smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3)));
+      ice = smoothstep(0.01, 0.16, ice) * ice;
 
       // Mammatus: rounded pouches hanging under the anvil base.
       if (anvilPresence > 0.02) {
