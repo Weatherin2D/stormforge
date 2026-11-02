@@ -243,8 +243,8 @@ export class App {
                   </label>
                   <label>
                     Base darkness
-                    <input id="cloud-sigma" type="range" min="0.015" max="0.12" step="0.005" value="0.08" />
-                    <span id="cloud-sigma-val">0.080</span>
+                    <input id="cloud-sigma" type="range" min="0.0005" max="0.008" step="0.0001" value="0.0028" />
+                    <span id="cloud-sigma-val">0.0028</span>
                   </label>
                   <label>
                     Liquid billow
@@ -258,8 +258,8 @@ export class App {
                   </label>
                   <label>
                     Rain shaft thickness
-                    <input id="cloud-sigma-rain" type="range" min="0.005" max="0.3" step="0.005" value="0.18" />
-                    <span id="cloud-sigma-rain-val">0.180</span>
+                    <input id="cloud-sigma-rain" type="range" min="0.0002" max="0.006" step="0.0001" value="0.0013" />
+                    <span id="cloud-sigma-rain-val">0.0013</span>
                   </label>
                   <label>
                     Lightning frequency
@@ -845,8 +845,8 @@ export class App {
       erosionEl.value = String(tune.erosionLiquid);
       erosionIceEl.value = String(tune.erosionIce);
       (q("#cloud-gain-val") as HTMLElement).textContent = tune.gain.toFixed(2);
-      (q("#cloud-sigma-val") as HTMLElement).textContent = tune.sigmaLiquid.toFixed(3);
-      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = tune.sigmaRain.toFixed(3);
+      (q("#cloud-sigma-val") as HTMLElement).textContent = tune.sigmaLiquid.toFixed(4);
+      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = tune.sigmaRain.toFixed(4);
       (q("#cloud-erosion-val") as HTMLElement).textContent = tune.erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = tune.erosionIce.toFixed(2);
     };
@@ -858,8 +858,8 @@ export class App {
       const erosionIce = Number(erosionIceEl.value);
       this.renderer?.setCloudTune({ gain, sigmaLiquid, sigmaRain, erosionLiquid, erosionIce });
       (q("#cloud-gain-val") as HTMLElement).textContent = gain.toFixed(2);
-      (q("#cloud-sigma-val") as HTMLElement).textContent = sigmaLiquid.toFixed(3);
-      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = sigmaRain.toFixed(3);
+      (q("#cloud-sigma-val") as HTMLElement).textContent = sigmaLiquid.toFixed(4);
+      (q("#cloud-sigma-rain-val") as HTMLElement).textContent = sigmaRain.toFixed(4);
       (q("#cloud-erosion-val") as HTMLElement).textContent = erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = erosionIce.toFixed(2);
     };
@@ -1552,8 +1552,8 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.08,
-      sigmaRain: 0.18,
+      sigmaLiquid: 0.0028,
+      sigmaRain: 0.0013,
       erosionLiquid: 1,
       erosionIce: 1,
     };
@@ -1693,8 +1693,8 @@ export class App {
       if (span) span.textContent = val.toFixed(decimals);
     };
     setSlider("#cloud-gain", ct.gain, 2);
-    setSlider("#cloud-sigma", ct.sigmaLiquid, 3);
-    setSlider("#cloud-sigma-rain", ct.sigmaRain, 3);
+    setSlider("#cloud-sigma", ct.sigmaLiquid, 4);
+    setSlider("#cloud-sigma-rain", ct.sigmaRain, 4);
     setSlider("#cloud-erosion", ct.erosionLiquid, 2);
     setSlider("#cloud-erosion-ice", ct.erosionIce, 2);
     const lf = v.lightningFreq ?? 1;

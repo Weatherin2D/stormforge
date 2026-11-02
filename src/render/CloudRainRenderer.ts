@@ -1175,8 +1175,20 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     erosionIce?: number;
   }): void {
     if (partial.gain != null) this.tune.gain = partial.gain;
-    if (partial.sigmaLiquid != null) this.tune.sigmaLiquid = partial.sigmaLiquid;
-    if (partial.sigmaRain != null) this.tune.sigmaRain = partial.sigmaRain;
+    // Pre-MeteoLAB UI/saves used ~0.08 liquid / ~0.18 rain. Map those into
+    // today's 1/m extinction so old presets do not blow out or ghost.
+    if (partial.sigmaLiquid != null) {
+      this.tune.sigmaLiquid =
+        partial.sigmaLiquid > 0.01
+          ? partial.sigmaLiquid * (0.0028 / 0.08)
+          : partial.sigmaLiquid;
+    }
+    if (partial.sigmaRain != null) {
+      this.tune.sigmaRain =
+        partial.sigmaRain > 0.02
+          ? partial.sigmaRain * (0.0013 / 0.18)
+          : partial.sigmaRain;
+    }
     if (partial.erosionLiquid != null) this.tune.erosionLiquid = partial.erosionLiquid;
     if (partial.erosionIce != null) this.tune.erosionIce = partial.erosionIce;
     this.applyTune();

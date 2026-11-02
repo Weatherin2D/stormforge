@@ -78,8 +78,8 @@ export const DEFAULT_SAVED_VIEW: SavedView = {
   cloudLookPreset: "",
   cloudTune: {
     gain: 1,
-    sigmaLiquid: 0.08,
-    sigmaRain: 0.18,
+    sigmaLiquid: 0.0028,
+    sigmaRain: 0.0013,
     erosionLiquid: 1,
     erosionIce: 1,
   },

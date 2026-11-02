@@ -227,17 +227,19 @@ float risingBillow(vec3 pKm, float wKm){
   );
 }
 
-// Soft 5-tap filter on the packed volume — breaks stair-stepped voxel faces
+// Soft 3D filter on the packed volume — breaks stair-stepped voxel faces
 // before billow noise carves the cauliflower.
 vec3 sampleFieldsSoft(vec3 uvw){
   ivec3 sz = textureSize(uFields, 0);
   vec3 texel = 1.0 / max(vec3(sz), vec3(1.0));
-  vec3 sum = textureLod(uFields, uvw, 0.0).rgb;
+  vec3 sum = textureLod(uFields, uvw, 0.0).rgb * 2.0;
   sum += textureLod(uFields, uvw + vec3(texel.x, 0.0, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw - vec3(texel.x, 0.0, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw + vec3(0.0, texel.y, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw - vec3(0.0, texel.y, 0.0), 0.0).rgb;
-  return max(sum * 0.2 * uFieldGain, vec3(0.0));
+  sum += textureLod(uFields, uvw + vec3(0.0, 0.0, texel.z), 0.0).rgb;
+  sum += textureLod(uFields, uvw - vec3(0.0, 0.0, texel.z), 0.0).rgb;
+  return max(sum * (1.0 / 8.0) * uFieldGain, vec3(0.0));
 }
 
 // Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
@@ -481,11 +483,11 @@ void main() {
   float pathLen = max(tFar - tNear, 1.0);
   // Fine steps stay near uStepSize. Do NOT inflate to pathLen/MAX_STEPS —
   // that made horizon rays use kilometre steps and miss thin decks as rings.
-  float fineStep = max(uStepSize, 12.0);
-  float coarseStep = max(fineStep * 2.5, min(pathLen / float(MAX_STEPS), fineStep * 6.0));
-  float lodScale = max(uLodDistance, 4000.0);
-  float jitter0 = ign(gl_FragCoord.xy + uFrame * 5.588238);
-  float t = tNear + coarseStep * jitter0;
+  float fineStep = clamp(uStepSize, 12.0, 48.0);
+  float coarseStep = min(max(fineStep * 2.75, pathLen / float(MAX_STEPS)), fineStep * 5.0);
+  float lodScale = max(uLodDistance, 8000.0);
+  // Start jitter only — large per-step jitter washed OD into grainy transparency.
+  float t = tNear + fineStep * ign(gl_FragCoord.xy + uFrame * 5.588238);
   bool inside = false;
   int clearRun = 0;
 
@@ -496,20 +498,15 @@ void main() {
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
 
   for (int i = 0; i < MAX_STEPS; i++) {
-    if (t >= tFar || T < 0.02) break;
+    if (t >= tFar || T < 0.015) break;
 
     // Soft distance LOD, hard-capped so sample shells stay dense enough to
     // hit a flat cloud layer seen edge-on (the classic concentric rings).
-    float lod = 1.0 + 0.28 * (t / lodScale);
-    float dtNom = (inside ? fineStep : coarseStep) * lod;
-    dtNom = min(dtNom, fineStep * 8.0);
-
-    // Per-step jitter breaks coherent spherical shells around the camera.
-    float j = ign(gl_FragCoord.xy + vec2(float(i) * 19.19 + uFrame * 7.1, float(i) * 3.7));
-    float dt = dtNom;
-    float tSample = t + (j - 0.5) * dtNom * 0.9;
-    if (tSample < tNear) tSample = tNear;
-    if (tSample > tFar) tSample = tFar;
+    float lod = 1.0 + 0.22 * (t / lodScale);
+    float dt = min((inside ? fineStep : coarseStep) * lod, fineStep * 6.0);
+    // Tiny stratified offset breaks shells without under-sampling OD.
+    float j = ign(gl_FragCoord.xy + vec2(float(i) * 13.17, uFrame * 2.3));
+    float tSample = clamp(t + (j - 0.5) * dt * 0.22, tNear, tFar);
     vec3 p = ro + rd * tSample;
 
     // cheap empty-space probe: one fetch of the raw field, no noise
@@ -517,9 +514,7 @@ void main() {
     vec4 field = textureLod(uFields, uvw, 0.0);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
-    // Low threshold so thin stratus / drizzle decks are not treated as empty
-    // and coarse-skipped into holes.
-    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.001;
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.0015;
 
     // MeteoLAB-style refine: step back into the slab with fine steps so a
     // distant thin deck is not skipped between coarse samples.
@@ -527,11 +522,11 @@ void main() {
       if (cloudy && coarseStep > fineStep * 1.05) {
         inside = true;
         clearRun = 0;
-        t = max(tNear, t - coarseStep * 0.85);
+        t = max(tNear, t - coarseStep * 0.9);
         continue;
       }
       if (!cloudy) {
-        t += dt * 1.75;
+        t += dt * 1.6;
         continue;
       }
     } else if (!cloudy) {
@@ -569,7 +564,7 @@ void main() {
       }
 
       float powder = 1.0 - exp(-cloudSig * uPowderLength);
-      powder = mix(0.6, 1.0, powder);
+      powder = mix(0.55, 1.0, powder);
       float h = clamp((p.y - uBoxMin.y) / boxH * 1.3, 0.0, 1.0);
 
       float odUp, odDown;
@@ -578,9 +573,9 @@ void main() {
       // cores stay dark-grey (readable) instead of pure black voids.
       float skyVis = exp(-odUp * uAmbientAtten);
       vec3 ambientBottom = uGroundColor + uSunColor * sunThrough(odSun) * 0.15;
-      vec3 ambient = mix(ambientBottom, uSkyColor, h) * mix(0.36, 1.0, skyVis) * uAmbientStrength;
+      vec3 ambient = mix(ambientBottom, uSkyColor, h) * mix(0.32, 1.0, skyVis) * uAmbientStrength;
       // Soft multi-scatter fill that never fully dies in deep OD.
-      vec3 coreFill = (uSkyColor * 0.55 + uGroundColor * 0.45) * 0.14;
+      vec3 coreFill = (uSkyColor * 0.55 + uGroundColor * 0.45) * 0.12;
 
       // Cloud colour: MeteoLAB cloudCol mix.
       vec3 cloudCol = uSunColor * sunlight(odSun, phases) * powder * 0.55 + ambient * 0.9 + coreFill;
@@ -606,8 +601,7 @@ void main() {
         S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
       }
 
-      // Integrate with the nominal step so jitter does not bias optical depth.
-      float stepT = exp(-sigT * dtNom);
+      float stepT = exp(-sigT * dt);
       float w = T * (1.0 - stepT);
       col += S * w;
       distAcc += tSample * w;

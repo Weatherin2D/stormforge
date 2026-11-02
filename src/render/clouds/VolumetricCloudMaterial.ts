@@ -38,40 +38,39 @@ export interface CloudLook {
 }
 
 /**
- * Default look matched to Sydney ~15:00 AEST on 2 Nov 2026:
- * full high-cloud overcast, soft diffuse light, light drizzle, ~47° sun.
+ * Default look: opaque MeteoLAB-style extinction so cores read solid, with
+ * enough soft fill that shaded bases stay grey rather than black.
+ * (Afternoon high-deck soft look lives in lookdev preset E_afternoonHighDeck.)
  */
 export const DEFAULT_LOOK: CloudLook = {
-  sigmaLiquid: 0.0018,
-  sigmaIce: 0.00042,
-  sigmaRain: 0.00085,
-  // Softer carve — layered high deck, not harsh cauliflower towers.
-  erosionLiquid: 0.55,
-  erosionIce: 0.28,
-  // Fibrous cirrus / high ice sheet.
-  iceStretch: [0.28, 0.55, 2.6],
-  phaseLiquid: [0.7, 0.2],
-  phaseIce: [0.65, 0.22],
-  phaseRain: [0.8, 0.22],
-  backWeight: 0.35,
-  multiScatter: [0.55, 0.55, 0.5],
-  powder: 0.65,
-  powderLength: 1800,
-  // Diffuse-heavy fill (direct ≈ diffuse at that hour).
-  ambientStrength: 1.2,
-  ambientAtten: 0.75,
-  hazeDensity: 2.6e-5,
-  exposure: 1.0,
+  // Slightly above MeteoLAB 2.2/km so Uint8-packed volumes still go opaque.
+  sigmaLiquid: 0.0028,
+  sigmaIce: 0.00065,
+  sigmaRain: 0.0013,
+  erosionLiquid: 1.0,
+  erosionIce: 0.85,
+  iceStretch: [0.55, 2.8, 0.55],
+  phaseLiquid: [0.75, 0.15],
+  phaseIce: [0.75, 0.15],
+  phaseRain: [0.85, 0.2],
+  backWeight: 0.3,
+  multiScatter: [0.5, 0.5, 0.5],
+  powder: 0.9,
+  powderLength: 1500,
+  ambientStrength: 0.95,
+  ambientAtten: 1.0,
+  hazeDensity: 1.5e-5,
+  exposure: 1.05,
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
-  stepSize: 28,
+  stepSize: 24,
   lodDistance: 22000,
   detailFade: [4500, 24000],
-  mammatusDepth: 400,
-  mammatusCell: 1800,
-  shaftMax: 3.5,
-  freezing: 4200,
-  shadowProbes: 1,
+  mammatusDepth: 600,
+  mammatusCell: 1600,
+  shaftMax: 6,
+  freezing: 4000,
+  shadowProbes: 2,
 };
 
 export interface VolumetricCloudOptions {
