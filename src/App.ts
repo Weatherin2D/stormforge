@@ -1194,6 +1194,7 @@ export class App {
       },
       radiation,
       clockPaused: this.clockPaused,
+      hydrostatic: values.hydrostatic ? "on" : "off",
     });
     if (this.followStorm) {
       this.solver.setFollowStorm(true);
@@ -2031,19 +2032,30 @@ export class App {
     if (this.solver && !this.paused) {
       this.liveDebt += wall;
       const live = this.ensureLive();
-      // Target rate is wall × speed. Cap each message at 2 s of sim so the
-      // worker stays free for the next frame; leftover debt is dropped so
-      // lag does not compound into multi-second physics jobs.
-      const simDt = Math.min(2, this.liveDebt * this.simSpeed);
-      const now = performance.now();
-      // Pack the 3D volume less often as the grid grows ? physics still runs
-      // every accepted step; only the texture upload backs off.
+      // Target rate is wall × speed. Coarse / hydrostatic grids can take a
+      // larger catch-up chunk (solver CFL-splits); fine grids stay at 2 s so
+      // the worker frees up for the next frame.
       const cells =
         (this.solver.grid.nx | 0) *
         (this.solver.grid.ny | 0) *
         (this.solver.grid.nz | 0);
+      const minH = Math.min(this.solver.grid.dx, this.solver.grid.dy);
+      const catchUp =
+        minH > 5000 ? 8 : cells > 700_000 ? 4 : cells > 400_000 ? 3 : 2;
+      const simDt = Math.min(catchUp, this.liveDebt * this.simSpeed);
+      const now = performance.now();
+      // Pack the 3D volume less often as the grid grows ? physics still runs
+      // every accepted step; only the texture upload backs off.
       const volumeMs =
-        cells > 700_000 ? 250 : cells > 300_000 ? 150 : cells > 180_000 ? 100 : 50;
+        cells > 1_000_000
+          ? 400
+          : cells > 700_000
+            ? 300
+            : cells > 300_000
+              ? 150
+              : cells > 180_000
+                ? 100
+                : 50;
       const wantVolume =
         this.showClouds &&
         !this.showRadar2d &&

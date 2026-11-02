@@ -84,6 +84,8 @@ export class LiveBridge {
     opts: InitOptions;
     radiation: RadiationOptions;
     clockPaused: boolean;
+    /** Match the setup hydrostatic switch on the live worker. */
+    hydrostatic?: "on" | "off" | "auto";
   }): void {
     this.ready = false;
     this.busy = true;

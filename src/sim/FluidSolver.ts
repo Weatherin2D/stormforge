@@ -408,33 +408,59 @@ export class FluidSolver implements SimBackend {
   step(dt: number): void {
     const { dx, dy, dz } = this.grid;
     const f = this.fields;
-    let maxSpd = 1;
+    const horiz = Math.min(dx, dy);
+    const isHydrostatic =
+      this.hydrostatic === "on" ||
+      (this.hydrostatic === "auto" && horiz > 5000);
+    let maxHorz = 1;
+    let maxVert = 1;
     for (let i = 0; i < f.u.length; i++) {
       const a = Math.abs(f.u[i]);
-      if (a > maxSpd) maxSpd = a;
+      if (a > maxHorz) maxHorz = a;
     }
     for (let i = 0; i < f.v.length; i++) {
       const a = Math.abs(f.v[i]);
-      if (a > maxSpd) maxSpd = a;
+      if (a > maxHorz) maxHorz = a;
     }
     for (let i = 0; i < f.w.length; i++) {
       const a = Math.abs(f.w[i]);
-      if (a > maxSpd) maxSpd = a;
+      if (a > maxVert) maxVert = a;
     }
-    maxSpd += 15; // rain-fall CFL budget
-    const minDx = Math.min(dx, dy, dz);
-    const hMax = Math.max(1e-3, (0.85 * minDx) / maxSpd);
+    // Sedimentation already limits fall to ~1–2 cells/step, so do not let a
+    // flat +15 m/s rain budget force dozens of dynamics substeps. On large
+    // horizontal grids the Courant length is dx/dy, not dz.
+    let hasFall = false;
+    const nQr = f.qr.length;
+    const stride = Math.max(1, (nQr / 8192) | 0);
+    for (let i = 0; i < nQr; i += stride) {
+      if (f.qr[i] + f.qg[i] + f.qh[i] > 1e-5) {
+        hasFall = true;
+        break;
+      }
+    }
+    const wind = isHydrostatic
+      ? maxHorz
+      : Math.max(maxHorz, maxVert) + (hasFall ? 6 : 1);
+    const cflLen = isHydrostatic ? horiz : Math.min(horiz, dz);
+    const hMax = Math.max(1e-3, (0.85 * cflLen) / Math.max(wind, 1));
     let sub = Math.max(1, Math.ceil(dt / hMax));
+    // Hard cap keeps a busy high-res frame from exploding into 50+ substeps.
+    const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
+    const subCap = isHydrostatic ? 4 : cellsNow > 700_000 ? 5 : cellsNow > 400_000 ? 7 : 12;
+    if (sub > subCap) sub = subCap;
     const h = dt / sub;
-    // Above the default sandbox (~64×64×40), run the slower column physics
-    // every other CFL substep so high-res stays interactive.
+    // Large / coarse domains run slow column physics once per outer step.
     const nCells = this.grid.nx * this.grid.ny * this.grid.nz;
-    const splitSlow = nCells > 180_000 && sub > 1;
+    const slowEvery =
+      isHydrostatic || nCells > 700_000
+        ? 0
+        : nCells > 400_000
+          ? 3
+          : nCells > 180_000
+            ? 2
+            : 1;
     let slowDebt = 0;
     for (let s = 0; s < sub; s++) {
-      const isHydrostatic =
-        this.hydrostatic === "on" ||
-        (this.hydrostatic === "auto" && Math.min(dx, dy) > 5000);
       if (!isHydrostatic) this.applyBuoyancy(h);
       this.advectVelocity(h);
       if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
@@ -445,7 +471,12 @@ export class FluidSolver implements SimBackend {
       stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
       slowDebt += h;
       const last = s === sub - 1;
-      const runSlow = !splitSlow || last || (s & 1) === 1;
+      const runSlow =
+        slowEvery <= 1
+          ? true
+          : slowEvery === 0
+            ? last
+            : last || (s + 1) % slowEvery === 0;
       if (runSlow) {
         const slowDt = slowDebt;
         slowDebt = 0;

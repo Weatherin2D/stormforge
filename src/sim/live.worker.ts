@@ -69,6 +69,10 @@ function frontPositions(): DrawnFront[] {
     }));
 }
 
+/** Last full hydrometeor scan — reused when the volume was not repacked. */
+let cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
+let statsAge = 0;
+
 function publish(extra: {
   volume: Uint8Array | null;
   map: Uint8Array | null;
@@ -83,10 +87,16 @@ function publish(extra: {
   ground?: Uint8Array | null;
   probe?: ColumnProbe | null;
   section?: SectionImage | null;
+  refreshStats?: boolean;
 }): void {
   if (!solver) return;
   const sun = solver.getSolarStatus();
-  const stats = solver.cloudRainStats();
+  statsAge++;
+  if (extra.refreshStats || extra.volume || statsAge >= 8) {
+    cachedStats = solver.cloudRainStats();
+    statsAge = 0;
+  }
+  const stats = cachedStats;
   const transfers: Transferable[] = [];
   if (extra.volume) transfers.push(extra.volume.buffer);
   if (extra.map) transfers.push(extra.map.buffer);
@@ -150,6 +160,7 @@ self.onmessage = (ev: MessageEvent) => {
         opts: InitOptions;
         radiation: RadiationOptions;
         clockPaused: boolean;
+        hydrostatic?: "on" | "off" | "auto";
       }
     | { type: "reset"; sounding: SoundingLevel[]; opts: InitOptions }
     | { type: "bubble"; strength: number }
@@ -164,7 +175,17 @@ self.onmessage = (ev: MessageEvent) => {
     solver.rebuild(grid, msg.sounding, msg.opts);
     solver.setRadiation(msg.radiation);
     solver.clockPaused = msg.clockPaused;
-    publish({ volume: null, map: null, mapId: null, winds: null, strikes: [] });
+    if (msg.hydrostatic) solver.hydrostatic = msg.hydrostatic;
+    cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
+    statsAge = 99;
+    publish({
+      volume: null,
+      map: null,
+      mapId: null,
+      winds: null,
+      strikes: [],
+      refreshStats: true,
+    });
     return;
   }
   if (!solver) return;
@@ -194,7 +215,20 @@ self.onmessage = (ev: MessageEvent) => {
     solver.setFollowStorm(!!msg.on);
     return;
   }
-  if (msg.dt > 1e-6) solver.step(Math.min(2, Math.max(0, msg.dt)));
+  // Outer dt may exceed 2 s on coarse / hydrostatic grids; the solver
+  // CFL-splits internally. Chunk only so a single message cannot runaway.
+  if (msg.dt > 1e-6) {
+    const g = solver.grid;
+    const nCells = g.nx * g.ny * g.nz;
+    let left = Math.max(0, msg.dt);
+    const chunk =
+      Math.min(g.dx, g.dy) > 5000 || nCells > 400_000 ? 8 : 2;
+    while (left > 1e-6) {
+      const h = Math.min(chunk, left);
+      solver.step(h);
+      left -= h;
+    }
+  }
   solver.setMapDomain(msg.mapDomain === "nest" ? "nest" : "parent");
   solver.prepareView();
   const shown = solver.displayGrid;
@@ -237,8 +271,13 @@ self.onmessage = (ev: MessageEvent) => {
   if (msg.wantVortex) {
     vortex = packVortexLevels(findVortexColumn(shown, shownFields));
   }
-  const ground = new Uint8Array(shown.nx * shown.ny * 4);
-  packGroundCover(shown, shownFields, ground, solver.groundCoverOffset());
+  // Ground cover only when something visible is refreshing — packing it every
+  // physics reply dominates large domains.
+  let ground: Uint8Array | null = null;
+  if (msg.wantVolume || msg.map || msg.winds || msg.wantSwath || msg.wantColdPool) {
+    ground = new Uint8Array(shown.nx * shown.ny * 4);
+    packGroundCover(shown, shownFields, ground, solver.groundCoverOffset());
+  }
   const probe = msg.probe
     ? sampleColumn(mapped, mappedFields, msg.probe.i, msg.probe.j, solver.time)
     : null;
@@ -259,5 +298,6 @@ self.onmessage = (ev: MessageEvent) => {
     ground,
     probe,
     section,
+    refreshStats: !!msg.wantVolume,
   });
 };
