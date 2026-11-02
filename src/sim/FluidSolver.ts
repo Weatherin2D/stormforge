@@ -18,6 +18,7 @@ import {
   packLightning,
   packMapProduct as packMapProductRGBA,
 } from "./mapProducts";
+import { isPlannedProduct, packChargeProduct, packPlannedProduct } from "./mapPlanned";
 import { volumeDisplaySize } from "./Grid3D";
 import {
   RadiationOptions,
@@ -2745,6 +2746,25 @@ export class FluidSolver implements SimBackend {
     this.prepareView();
     if (id === "ltg") {
       packLightning(this.grid, this.flash, out);
+      return;
+    }
+    if (id === "charge") {
+      packChargeProduct(this.grid, this.charge, this.chargeCol, out, "abs");
+      return;
+    }
+    if (id === "chargepos") {
+      packChargeProduct(this.grid, this.charge, this.chargeCol, out, "pos");
+      return;
+    }
+    if (id === "chargeneg") {
+      packChargeProduct(this.grid, this.charge, this.chargeCol, out, "neg");
+      return;
+    }
+    if (isPlannedProduct(id)) {
+      packPlannedProduct(id, this.grid, this.fields, out, {
+        sunFrac: this.getSolarStatus().sunFrac,
+        flash: this.flash,
+      });
       return;
     }
     packMapProductRGBA(id, this.grid, this.fields, out);

@@ -7,6 +7,13 @@ import {
   packDerivedProduct,
   type DerivedProductId,
 } from "./mapDerived";
+import {
+  isPlannedProduct,
+  packPlannedProduct,
+  PLANNED_LEGENDS,
+  PLANNED_PRODUCT_META,
+  type PlannedProductId,
+} from "./mapPlanned";
 import { surfacePressureBiasHpa } from "./synoptic";
 import {
   columnBaseK,
@@ -160,7 +167,9 @@ export type MapProductId =
   | "soilm"
   | "vegc"
   | "albedo"
-  | "rough";
+  | "rough"
+  // ── Newly promoted planned views ──────────────────────────────────────────
+  | PlannedProductId;
 
 export interface MapScale {
   min: number;
@@ -1118,6 +1127,20 @@ export const MAP_PRODUCTS: Record<MapProductId, MapProductMeta> = {
   pgrad: pm("pgrad", "Surface pressure gradient", "hPa/km", DERIVED_LEGENDS.scalar, 0, 5, [0, 1, 2, 3, 5], ["0", "1", "2", "3", "5"]),
   tgrad: pm("tgrad", "Surface temperature gradient", "K/km", DERIVED_LEGENDS.scalar, 0, 10, [0, 2, 4, 7, 10], ["0", "2", "4", "7", "10"]),
   tdgrad: pm("tdgrad", "Surface dew-point gradient", "K/km", DERIVED_LEGENDS.scalar, 0, 10, [0, 2, 4, 7, 10], ["0", "2", "4", "7", "10"]),
+  // ── Newly promoted planned views ──────────────────────────────────────────
+  ...Object.fromEntries(
+    (Object.keys(PLANNED_PRODUCT_META) as PlannedProductId[]).map((id) => {
+      const m = PLANNED_PRODUCT_META[id];
+      const legend =
+        m.legend === "diverging"
+          ? PLANNED_LEGENDS.diverging
+          : PLANNED_LEGENDS.scalar;
+      return [
+        id,
+        pm(id, m.title, m.units, legend, m.min, m.max, [m.min, (m.min + m.max) / 2, m.max], m.ticks),
+      ];
+    }),
+  ) as Record<PlannedProductId, MapProductMeta>,
 };
 
 /** Paint a legend bar and its ticks from one product definition. */
@@ -1404,6 +1427,11 @@ export function packMapProduct(
     case "albedo":
     case "rough":
       if (isSurfaceProduct(id)) packSurfaceProduct(id, grid, fields, out);
+      break;
+    default:
+      if (isPlannedProduct(id)) {
+        packPlannedProduct(id, grid, fields, out);
+      }
       break;
   }
 }

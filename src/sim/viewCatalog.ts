@@ -1595,6 +1595,502 @@ export const VIEW_CATALOG: CatalogView[] = [
   }),
 ];
 
+/**
+ * Promote planned catalog rows to live once a packer exists.
+ * Mutates VIEW_CATALOG in place before IMPLEMENTED_VIEWS is built.
+ */
+const PLANNED_PROMOTIONS: Record<
+  string,
+  { productId: MapProductId; formula?: string; assumptions?: string }
+> = {
+  // Aliases onto existing products
+  "wind-overlay": {
+    productId: "wspd",
+    formula: "Visual wind arrows use the same surface u,v as wspd/wdir.",
+    assumptions: "Vectors are toggled with the Winds control; this catalog row selects the wind-speed field.",
+  },
+  srh: {
+    productId: "srh03",
+    formula: "Uses the live 0–3 km SRH packer.",
+    assumptions: "Generic SRH maps to the 0–3 km product until a depth picker exists.",
+  },
+  "brn-shear": {
+    productId: "brn",
+    formula: "BRN shear contribution is shown via the bulk Richardson number field.",
+    assumptions: "Shear term is not separated from CAPE in the packed BRN.",
+  },
+  geopotential: {
+    productId: "z500",
+    formula: "z ≈ z₀ + ∫ Rd·Tv/g dlnp ≈ packed 500 hPa height.",
+    assumptions: "Mapped to the live 500 hPa geopotential-height product.",
+  },
+  "jet-stream": {
+    productId: "w300",
+    formula: "|V| on the model level nearest 300 hPa.",
+    assumptions: "Upper-jet proxy; 200 hPa product remains available separately.",
+  },
+  "effective-shear": {
+    productId: "shear06",
+    formula: "0–6 km bulk shear as an effective-shear proxy.",
+    assumptions: "True effective shear (LFC–EL) needs parcel levels; uses bulk 0–6 km.",
+  },
+  "hail-max": {
+    productId: "hailsize",
+    formula: "Maximum hail diameter from the cold-microphysics spectrum.",
+    assumptions: "Same packer as hailsize.",
+  },
+  "melting-layer": {
+    productId: "wbz",
+    formula: "Wet-bulb 0 °C height.",
+    assumptions: "Melting layer ≈ wet-bulb freezing level.",
+  },
+  "surface-rain": {
+    productId: "paccum",
+    formula: "Accumulated surface rain water.",
+    assumptions: "Alias of precipitation accumulation.",
+  },
+  "accum-history": {
+    productId: "paccum",
+    formula: "Current accumulation field (no multi-hour rewind buffer yet).",
+    assumptions: "History buffer not stored; shows live accumulation.",
+  },
+  "cold-pool": {
+    productId: "coldpool",
+    formula: "Surface θ deficit vs base state.",
+    assumptions: "Alias of the live cold-pool product.",
+  },
+  downburst: {
+    productId: "mburst",
+    formula: "Microburst composite diagnostic.",
+    assumptions: "Alias of mburst.",
+  },
+  "severe-composite": {
+    productId: "scp",
+    formula: "Supercell composite parameter.",
+    assumptions: "Uses SCP as the severe-risk composite until a blended index ships.",
+  },
+  "strike-locations": {
+    productId: "ltg",
+    formula: "Recent flash density / strike field.",
+    assumptions: "Points share the lightning flash packer.",
+  },
+  "lightning-intensity": {
+    productId: "ltg",
+    formula: "Flash activity intensity.",
+    assumptions: "Alias of the lightning product.",
+  },
+  "lightning-history": {
+    productId: "ltg",
+    formula: "Recent flash field with ~5 min decay.",
+    assumptions: "No multi-hour archive; uses the live decaying flash map.",
+  },
+  cg: {
+    productId: "ltg",
+    formula: "Flash field (CG types not separated in the 2D packer).",
+    assumptions: "CG/IC separation is used for 3D bolts; 2D map shows all flashes.",
+  },
+  ic: {
+    productId: "ltg",
+    formula: "Flash field (IC types not separated in the 2D packer).",
+    assumptions: "Same flash map as CG until typed flash layers are packed.",
+  },
+  "cloud-cloud": { productId: "ltg", formula: "Flash field.", assumptions: "Alias of lightning until typed layers exist." },
+  "pos-cg": { productId: "ltg", formula: "Flash field.", assumptions: "Alias of lightning until typed layers exist." },
+  "neg-cg": { productId: "ltg", formula: "Flash field.", assumptions: "Alias of lightning until typed layers exist." },
+  "channel-paths": { productId: "ltg", formula: "Flash field proxy for channel activity.", assumptions: "True channel polylines remain a 3D overlay." },
+  "channel-length": { productId: "ltg", formula: "Flash field proxy.", assumptions: "Length not measured; activity intensity shown." },
+  "lightning-age": { productId: "ltg", formula: "Decaying flash field.", assumptions: "Age encoded by flash decay, not a separate clock." },
+  t1000: {
+    productId: "tsfc",
+    formula: "Near-surface temperature.",
+    assumptions: "1000 hPa ≈ lowest model level on this domain.",
+  },
+  "td-select": {
+    productId: "td850",
+    formula: "Dew point on the level nearest 850 hPa.",
+    assumptions: "Selectable UI not shipped; defaults to 850 hPa.",
+  },
+  "rh-select": {
+    productId: "rh",
+    formula: "Surface / lowest-level RH.",
+    assumptions: "Selectable UI not shipped; uses the live RH product.",
+  },
+  "wind-select": {
+    productId: "w850",
+    formula: "Wind speed near 850 hPa.",
+    assumptions: "Selectable UI not shipped; defaults to 850 hPa.",
+  },
+  "moisture-profile": {
+    productId: "mixratio",
+    formula: "Surface mixing ratio as a moisture proxy.",
+    assumptions: "Full vertical profile UI not shipped.",
+  },
+  "cloud-classification": {
+    productId: "hydrometeor",
+    formula: "Dominant hydrometeor class per column.",
+    assumptions: "Alias of hydrometeor classification.",
+  },
+  streamlines: {
+    productId: "wspd",
+    formula: "Speed field under optional wind arrows.",
+    assumptions: "Streamline tracing not drawn; wind overlay + speed used.",
+  },
+  "low-level-rotation": {
+    productId: "uh25",
+    formula: "2–5 km updraft helicity.",
+    assumptions: "UH as low-level/mesocyclone rotation proxy.",
+  },
+  mesocyclone: {
+    productId: "uh25",
+    formula: "2–5 km updraft helicity.",
+    assumptions: "MDA objects not tracked; UH is the rotation diagnostic.",
+  },
+  "tornado-vortex": {
+    productId: "uh25",
+    formula: "2–5 km updraft helicity.",
+    assumptions: "Tornado-scale vortices are below grid scale; UH is a proxy.",
+  },
+  "rotation-tracks": {
+    productId: "uh25",
+    formula: "Live UH field.",
+    assumptions: "No track buffer; shows current rotation.",
+  },
+  "storm-relative-inflow": {
+    productId: "srw",
+    formula: "Storm-relative wind speed.",
+    assumptions: "Inflow/outflow share the SRW packer.",
+  },
+  "storm-relative-outflow": {
+    productId: "srw",
+    formula: "Storm-relative wind speed.",
+    assumptions: "Inflow/outflow share the SRW packer.",
+  },
+  "hail-growth-zone": {
+    productId: "hailsize",
+    formula: "Hail size / presence.",
+    assumptions: "Growth zone inferred from hail field.",
+  },
+  "precip-tendency": {
+    productId: "rainrate",
+    formula: "Instantaneous rainfall rate.",
+    assumptions: "No stored tendency; rate stands in for precip change.",
+  },
+  "grid-velocity": {
+    productId: "wspd",
+    formula: "|V| on the lowest level.",
+    assumptions: "Alias of surface wind speed.",
+  },
+  "physics-vs-visual": {
+    productId: "refl",
+    formula: "Reflectivity as the physics condensate view.",
+    assumptions: "Side-by-side physics/visual compare not built; shows physics refl.",
+  },
+  "land-use": {
+    productId: "wkind",
+    formula: "Land / lake / ocean cover class.",
+    assumptions: "Alias of water-kind cover map.",
+  },
+  "soil-saturation": {
+    productId: "soilm",
+    formula: "Soil moisture 0–1.",
+    assumptions: "Saturation proxy from painted soil moisture.",
+  },
+  "surface-wetness": {
+    productId: "soilm",
+    formula: "Soil moisture 0–1.",
+    assumptions: "Wetness proxy from soil moisture.",
+  },
+  "vegetation-moisture": {
+    productId: "vegc",
+    formula: "Vegetation cover fraction.",
+    assumptions: "Moisture not separate from vegetation cover.",
+  },
+  "ground-conductivity": {
+    productId: "rough",
+    formula: "Roughness as a soft conductivity proxy.",
+    assumptions: "True electrical conductivity not modelled.",
+  },
+  "soil-moisture-conductivity": {
+    productId: "soilm",
+    formula: "Soil moisture as conductivity influence.",
+    assumptions: "Proxy only.",
+  },
+  // New packers (mapPlanned)
+  theta: {
+    productId: "theta",
+    formula: "θ on the first open level.",
+    assumptions: "Lowest free atmosphere level above terrain.",
+  },
+  "virtual-temp": {
+    productId: "tv",
+    formula: "Tv = T·(1 + 0.608·qv)",
+    assumptions: "Lowest free level.",
+  },
+  density: {
+    productId: "density",
+    formula: "ρ = p/(Rd·Tv)",
+    assumptions: "Hydrostatic base pressure; virtual T from θ,qv.",
+  },
+  n2: {
+    productId: "n2",
+    formula: "N² ≈ (g/θ)·Δθ/Δz",
+    assumptions: "One-level finite difference above the surface.",
+  },
+  "static-stability": {
+    productId: "staticstab",
+    formula: "Same as N² finite difference.",
+    assumptions: "Proxy for static stability.",
+  },
+  "temp-advection": {
+    productId: "tempadv",
+    formula: "−V·∇T (K/h)",
+    assumptions: "Horizontal advection on the lowest free level.",
+  },
+  "diff-temp-advection": {
+    productId: "tempadv",
+    formula: "Same horizontal T advection field.",
+    assumptions: "Differential (layered) advection not separated yet.",
+  },
+  "absolute-vorticity": {
+    productId: "absvort",
+    formula: "ζ + f with f ≈ 10⁻⁴ s⁻¹",
+    assumptions: "Constant Coriolis; surface-centred winds.",
+  },
+  "horizontal-vorticity": {
+    productId: "horyort",
+    formula: "|∂V/∂z| near the surface",
+    assumptions: "One-layer vertical shear magnitude.",
+  },
+  bunkers: {
+    productId: "bunkers",
+    formula: "C = Vmean ± 7.5·(shear×k)/|shear| (right-mover speed)",
+    assumptions: "Domain hodograph; packed as scalar speed of the right-mover.",
+  },
+  "storm-motion": {
+    productId: "stormmot",
+    formula: "Bunkers right-mover speed",
+    assumptions: "Same estimate as bunkers product.",
+  },
+  "gust-potential": {
+    productId: "gustpot",
+    formula: "|V| + 1.5·|w|_max(low-levels)",
+    assumptions: "Heuristic gust proxy.",
+  },
+  "charge-density": {
+    productId: "charge",
+    formula: "Column-max |q_e| from the non-inductive charge field",
+    assumptions: "CPU solver charge; packed as column peak magnitude.",
+  },
+  "positive-charge": {
+    productId: "chargepos",
+    formula: "Column-max positive charge",
+    assumptions: "From the live charge array.",
+  },
+  "negative-charge": {
+    productId: "chargeneg",
+    formula: "Column-max |negative| charge",
+    assumptions: "From the live charge array.",
+  },
+  "hail-concentration": {
+    productId: "hailconc",
+    formula: "Column-sum qh",
+    assumptions: "Mixing-ratio path, not number concentration.",
+  },
+  "hail-rate": {
+    productId: "hailrate",
+    formula: "Near-surface qh",
+    assumptions: "Presence proxy, not a production tendency.",
+  },
+  "anvil-extent": {
+    productId: "anvil",
+    formula: "Ice+snow above ~7 km",
+    assumptions: "Fixed height gate.",
+  },
+  "cloud-optical-depth": {
+    productId: "optdepth",
+    formula: "∫ (50·qc + 20·(qi+qs)) dz",
+    assumptions: "Simple extinction weights.",
+  },
+  "solar-incoming": {
+    productId: "solarinc",
+    formula: "sunFrac · 1000 W/m²",
+    assumptions: "Flat-domain insolation proxy from the solar clock.",
+  },
+  olr: {
+    productId: "olr",
+    formula: "σ·T_ct^4",
+    assumptions: "Cloud-top temperature when cloudy, else mid-troposphere.",
+  },
+  lpi: {
+    productId: "lpi",
+    formula: "√(ice·rime)·w_up",
+    assumptions: "Lightning Potential Index proxy from condensate and updraft.",
+  },
+  cfl: {
+    productId: "cfl",
+    formula: "max|V|·Δt_ref / Δx",
+    assumptions: "Domain-wide CFL indicator painted uniformly.",
+  },
+  dryline: {
+    productId: "dryline",
+    formula: "|∂qv/∂x| near the surface",
+    assumptions: "Moisture gradient magnitude as dryline detector.",
+  },
+  "gust-front": {
+    productId: "gustfront",
+    formula: "max(0, θ₀ − θ)",
+    assumptions: "Cold-pool deficit marks outflow/gust fronts.",
+  },
+  "outflow-boundaries": {
+    productId: "outflow",
+    formula: "max(0, θ₀ − θ)",
+    assumptions: "Same cold-pool deficit field.",
+  },
+  "boundary-strength": {
+    productId: "boundary",
+    formula: "max(0, θ₀ − θ)",
+    assumptions: "Strength ≈ cold-pool magnitude.",
+  },
+  "sea-breeze": {
+    productId: "seabreeze",
+    formula: "|∇qv| near the surface",
+    assumptions: "Moisture-gradient proxy for sea-breeze fronts.",
+  },
+  "ci-potential": {
+    productId: "cipot",
+    formula: "θ′ and qv′ near the surface",
+    assumptions: "Heuristic initiation potential, not a CI tracker.",
+  },
+  "precip-efficiency": {
+    productId: "precipeff",
+    formula: "rain rate / condensate",
+    assumptions: "Crude efficiency proxy.",
+  },
+  "fall-speed": {
+    productId: "fallspd",
+    formula: "Species terminal-speed estimate",
+    assumptions: "Class-based constants from dominant hydrometeor.",
+  },
+  "drop-size": {
+    productId: "dropSize",
+    formula: "Mean drop size from qr",
+    assumptions: "Single-moment estimate.",
+  },
+  "thunder-delay": {
+    productId: "thundel",
+    formula: "distance/340 s gated by flash/graupel",
+    assumptions: "Delay from domain centre, not from each strike.",
+  },
+  "energy-balance": {
+    productId: "energybal",
+    formula: "(θ − θ₀)·sunFrac",
+    assumptions: "Soft surface energy-balance proxy.",
+  },
+  evapotranspiration: {
+    productId: "et",
+    formula: "(θ − θ₀)·sunFrac",
+    assumptions: "ET proxy from near-surface thermal anomaly.",
+  },
+  "e-field": {
+    productId: "efield",
+    formula: "√(qg·qi) path proxy when charge packing unavailable",
+    assumptions: "True electrostatics not solved; charge maps preferred.",
+  },
+  "evap-cooling": {
+    productId: "evapcool",
+    formula: "(θ₀ − θ)·qr",
+    assumptions: "Cooling under rain shafts.",
+  },
+  runoff: {
+    productId: "runoff",
+    formula: "rainAccum",
+    assumptions: "No routing; accumulation stands in for runoff.",
+  },
+  infiltration: {
+    productId: "runoff",
+    formula: "rainAccum · soil moisture influence (display alias)",
+    assumptions: "Infiltration not modelled; shows accumulation.",
+  },
+  derecho: {
+    productId: "derecho",
+    formula: "|V| where |V| > 15 m/s",
+    assumptions: "Damaging-wind environment proxy.",
+  },
+  "bow-echo": {
+    productId: "bowecho",
+    formula: "Low-level condensate intensity",
+    assumptions: "Morphology not detected; intensity proxy.",
+  },
+  "storm-mode": {
+    productId: "stormmode",
+    formula: "Class from w_max and ice/hail",
+    assumptions: "0 clear … 3 supercell/hail-bearing.",
+  },
+  frontogenesis: {
+    productId: "frontogen",
+    formula: "−u·∂T/∂x proxy",
+    assumptions: "Simplified 2D frontogenesis.",
+  },
+  frontolysis: {
+    productId: "frontogen",
+    formula: "Same field as frontogenesis (sign indicates frontolysis)",
+    assumptions: "Shared packer.",
+  },
+  pv: {
+    productId: "pv",
+    formula: "−g·(ζ+f)·∂θ/∂z / ρ",
+    assumptions: "Isentropic PV proxy on the lowest layer.",
+  },
+  "mass-error": {
+    productId: "masserr",
+    formula: "|∇·V| residual",
+    assumptions: "Continuity residual magnitude, not a conserved-mass audit.",
+  },
+  "water-error": {
+    productId: "masserr",
+    formula: "Uses mass-residual map as a debug stand-in",
+    assumptions: "Dedicated water budget not stored.",
+  },
+  "energy-error": {
+    productId: "masserr",
+    formula: "Uses mass-residual map as a debug stand-in",
+    assumptions: "Dedicated energy budget not stored.",
+  },
+  "diurnal-heating": {
+    productId: "solarinc",
+    formula: "Incoming solar proxy",
+    assumptions: "Heating rate not differenced; insolation shown.",
+  },
+  "sensible-heat-flux": {
+    productId: "energybal",
+    formula: "θ anomaly · sunFrac",
+    assumptions: "Flux not in W/m²; anomaly proxy.",
+  },
+  "latent-heat-flux": {
+    productId: "et",
+    formula: "Same ET/energy proxy",
+    assumptions: "Latent flux not explicitly computed.",
+  },
+  "parcel-buoyancy": {
+    productId: "cape",
+    formula: "Column CAPE as integrated buoyancy",
+    assumptions: "Map shows CAPE, not a level-by-level B(z) slice.",
+  },
+  "pos-neg-buoyancy": {
+    productId: "cin",
+    formula: "CIN as negative buoyancy near the surface",
+    assumptions: "Positive buoyancy remains under CAPE.",
+  },
+};
+
+for (const view of VIEW_CATALOG) {
+  const promo = PLANNED_PROMOTIONS[view.id];
+  if (!promo || view.productId) continue;
+  view.productId = promo.productId;
+  if (promo.formula) view.formula = promo.formula;
+  if (promo.assumptions) view.assumptions = promo.assumptions;
+}
+
 /** Fast lookup by catalog id. */
 export const VIEW_BY_ID: Record<string, CatalogView> = Object.fromEntries(
   VIEW_CATALOG.map((v) => [v.id, v]),

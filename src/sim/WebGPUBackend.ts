@@ -57,6 +57,7 @@ import {
   packMapProduct as packMapProductRGBA,
   reflectivityDbz,
 } from "./mapProducts";
+import { isPlannedProduct, packPlannedProduct } from "./mapPlanned";
 
 const TILE_X = 16;
 const TILE_Y = 16;
@@ -1119,6 +1120,13 @@ export class WebGPUBackend implements SimBackend {
     bindSurfaceDraw(null, null, 22);
     if (id === "ltg") {
       packLightning(this.grid, this.flashField(), out);
+      return;
+    }
+    if (isPlannedProduct(id)) {
+      packPlannedProduct(id, this.grid, this.fields, out, {
+        sunFrac: this.getSolarStatus().sunFrac,
+        flash: this.flashField(),
+      });
       return;
     }
     packMapProductRGBA(id, this.grid, this.fields, out);
