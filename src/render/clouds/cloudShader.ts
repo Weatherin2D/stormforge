@@ -361,12 +361,17 @@ vec3 sampleSigma(vec3 p, float detail) {
           iceFrac
         );
       }
+      // Towers still cauliflower; thin stratus must not go swiss-cheese —
+      // low-base decks used to erase whole patches wherever billow noise dipped.
       float erode =
-        mix(mix(0.42, 0.62, vigor), 0.3, iceFrac) *
+        mix(mix(0.22, 0.62, vigor), 0.28, iceFrac) *
         mix(0.2, 1.0, rise) *
         mix(uErosionIce, uErosionLiquid, 1.0 - iceFrac) *
         detail;
+      erode *= mix(0.3, 1.0, smoothstep(0.06, 0.4, base));
       float d = base * 1.35 - (1.0 - n) * erode * (1.0 - base * 0.6);
+      // Keep a floor of the packed field so noise valleys stay translucent, not voids.
+      d = max(d, base * mix(0.55, 0.12, vigor));
       float carved = clamp(
         d * (1.0 + 4.0 * vigor) * mix(1.0, 0.75, iceFrac),
         0.0,
@@ -512,7 +517,9 @@ void main() {
     vec4 field = textureLod(uFields, uvw, 0.0);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
-    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.003;
+    // Low threshold so thin stratus / drizzle decks are not treated as empty
+    // and coarse-skipped into holes.
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.001;
 
     // MeteoLAB-style refine: step back into the slab with fine steps so a
     // distant thin deck is not skipped between coarse samples.

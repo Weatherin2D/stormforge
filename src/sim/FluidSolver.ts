@@ -467,7 +467,7 @@ export class FluidSolver implements SimBackend {
     // Hard cap keeps a busy high-res frame from exploding into 50+ substeps.
     const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
     const subCap = isHydrostatic
-      ? 4
+      ? 3
       : tog.enableCFLClamp
         ? cellsNow > 700_000
           ? 5
@@ -506,7 +506,10 @@ export class FluidSolver implements SimBackend {
           for (let i = 0; i < ww.length; i++) ww[i] *= 1 - wd;
         }
       }
-      this.advectVelocity(h);
+      // Euler SL when hydrostatic or at/above typical live sizes — RK2
+      // roughly doubles advection cost; CFL caps already limit Courant.
+      const cheapAdvect = isHydrostatic || nCells > 150_000;
+      this.advectVelocity(h, cheapAdvect);
       const vort = tog.enableVorticity
         ? this.vorticityStrength * Math.max(0, adv.vorticityBoost)
         : 0;
@@ -516,13 +519,26 @@ export class FluidSolver implements SimBackend {
       this.applyTerrainKinematics(h);
       this.project(h);
       this.applyTerrain(h);
-      this.advectScalars(h);
-      // Warm rain stays every substep — condensation feeds buoyancy.
-      if (tog.enableWarmRain) {
-        stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
-      }
+      this.advectScalars(h, cheapAdvect);
       slowDebt += h;
       const last = s === sub - 1;
+      // Condensation feeds buoyancy every substep on small grids. Larger /
+      // hydrostatic / multi-substep runs alternate to cut Kessler cost.
+      if (tog.enableWarmRain) {
+        const warmEvery =
+          isHydrostatic || nCells > 400_000 || sub > 2
+            ? last || (s & 1) === 0
+            : true;
+        if (warmEvery) {
+          stepMicrophysics(
+            this.grid,
+            this.fields,
+            h,
+            this.qrScratch,
+            this.exner,
+          );
+        }
+      }
       const runSlow =
         slowEvery <= 1
           ? true
@@ -591,7 +607,8 @@ export class FluidSolver implements SimBackend {
         if (tog.enableCharge) this.updateCharge(slowDt);
       }
       if (tog.enableSponge) this.applySponge(h);
-      this.applyTerrain(h);
+      // Terrain BC already applied after project; a second pass here was
+      // redundant once kinematics run before the Poisson solve.
       if (!this.nestChild && !this.clockPaused) {
         this.radiation.solarHour = advanceSolarHour(
           this.radiation.solarHour,
@@ -897,14 +914,15 @@ export class FluidSolver implements SimBackend {
 
   /**
    * Semi-Lagrangian velocity advection with a mid-point (RK2) backtrace.
-   * Reduces cross-wind numerical diffusion vs single-step Euler departure.
+   * Pass `euler` to skip the mid-point (cheaper on hydrostatic / coarse grids).
    */
-  private advectVelocity(dt: number): void {
+  private advectVelocity(dt: number, euler = false): void {
     const g = this.grid;
     const f = this.fields;
     const { nx, ny, nz, dx, dy, dz } = g;
     const half = 0.5 * dt;
     const open = this.openK;
+    const useRk2 = !euler;
 
     // --- u faces ---
     for (let k = 0; k < nz; k++) {
@@ -946,27 +964,29 @@ export class FluidSolver implements SimBackend {
                     f.w[g.wIdx(i, j, k)] +
                     f.w[g.wIdx(i - 1, j, k + 1)] +
                     f.w[g.wIdx(i, j, k + 1)]);
-          // Mid-point estimate of the departure velocity.
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i === nx ? nx - 1 : i));
-            const jj = Math.min(ny - 1, Math.max(0, j));
-            zm = Math.max(open[ii + jj * nx], zm);
-          }
-          if (xm >= 0 && xm <= nx && ym >= 0 && ym <= ny - 1) {
-            uc = this.sampleU(xm, ym, zm);
-            vc = this.sampleV(
-              Math.min(nx - 1, Math.max(0, xm - 0.5)),
-              ym,
-              zm,
-            );
-            wc = this.sampleW(
-              Math.min(nx - 1, Math.max(0, xm - 0.5)),
-              Math.min(ny - 1, Math.max(0, ym)),
-              zm,
-            );
+          if (useRk2) {
+            // Mid-point estimate of the departure velocity.
+            const xm = i - (uc * half) / dx;
+            const ym = j - (vc * half) / dy;
+            let zm = k - (wc * half) / dz;
+            if (open) {
+              const ii = Math.min(nx - 1, Math.max(0, i === nx ? nx - 1 : i));
+              const jj = Math.min(ny - 1, Math.max(0, j));
+              zm = Math.max(open[ii + jj * nx], zm);
+            }
+            if (xm >= 0 && xm <= nx && ym >= 0 && ym <= ny - 1) {
+              uc = this.sampleU(xm, ym, zm);
+              vc = this.sampleV(
+                Math.min(nx - 1, Math.max(0, xm - 0.5)),
+                ym,
+                zm,
+              );
+              wc = this.sampleW(
+                Math.min(nx - 1, Math.max(0, xm - 0.5)),
+                Math.min(ny - 1, Math.max(0, ym)),
+                zm,
+              );
+            }
           }
           let x = i - (uc * dt) / dx;
           let y = j - (vc * dt) / dy;
@@ -1024,22 +1044,24 @@ export class FluidSolver implements SimBackend {
                     f.w[g.wIdx(i, j, k)] +
                     f.w[g.wIdx(i, j - 1, k + 1)] +
                     f.w[g.wIdx(i, j, k + 1)]);
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i));
-            const jj = Math.min(ny - 1, Math.max(0, j === ny ? ny - 1 : j));
-            zm = Math.max(open[ii + jj * nx], zm);
-          }
-          if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny) {
-            uc = this.sampleU(xm, Math.min(ny - 1, Math.max(0, ym - 0.5)), zm);
-            vc = this.sampleV(xm, ym, zm);
-            wc = this.sampleW(
-              Math.min(nx - 1, Math.max(0, xm)),
-              Math.min(ny - 1, Math.max(0, ym - 0.5)),
-              zm,
-            );
+          if (useRk2) {
+            const xm = i - (uc * half) / dx;
+            const ym = j - (vc * half) / dy;
+            let zm = k - (wc * half) / dz;
+            if (open) {
+              const ii = Math.min(nx - 1, Math.max(0, i));
+              const jj = Math.min(ny - 1, Math.max(0, j === ny ? ny - 1 : j));
+              zm = Math.max(open[ii + jj * nx], zm);
+            }
+            if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny) {
+              uc = this.sampleU(xm, Math.min(ny - 1, Math.max(0, ym - 0.5)), zm);
+              vc = this.sampleV(xm, ym, zm);
+              wc = this.sampleW(
+                Math.min(nx - 1, Math.max(0, xm)),
+                Math.min(ny - 1, Math.max(0, ym - 0.5)),
+                zm,
+              );
+            }
           }
           let x = i - (uc * dt) / dx;
           let y = j - (vc * dt) / dy;
@@ -1061,66 +1083,74 @@ export class FluidSolver implements SimBackend {
     }
 
     // --- w faces ---
-    const height = this.heightGrid;
-    for (let k = 0; k <= nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          const id = g.wIdx(i, j, k);
-          if (k === nz) {
-            this.tmpW[id] = 0;
-            continue;
-          }
-          if (k === 0) {
-            // Domain floor stays sealed except where sub-grid terrain needs
-            // a kinematic flux (openK == 0 but height > 0).
-            const s = i + j * nx;
-            if (
-              open &&
-              open[s] === 0 &&
-              height &&
-              height[s] > 1e-3
-            ) {
-              this.tmpW[id] = f.w[id];
-            } else {
+    // Hydrostatic (euler) path: keep existing w; projection + terrain
+    // kinematics rebuild vertical motion from continuity / orography.
+    if (euler) {
+      this.tmpW.set(f.w);
+    } else {
+      const height = this.heightGrid;
+      for (let k = 0; k <= nz; k++) {
+        for (let j = 0; j < ny; j++) {
+          for (let i = 0; i < nx; i++) {
+            const id = g.wIdx(i, j, k);
+            if (k === nz) {
               this.tmpW[id] = 0;
+              continue;
             }
-            continue;
-          }
-          // openK is the first free cell; face k==openK carries orographic w.
-          if (open && k < open[i + j * nx]) {
-            this.tmpW[id] = 0;
-            continue;
-          }
-          let wc = f.w[id];
-          let uc =
-            0.25 *
-            (f.u[g.uIdx(i, j, k - 1)] +
-              f.u[g.uIdx(i + 1, j, k - 1)] +
-              f.u[g.uIdx(i, j, k)] +
-              f.u[g.uIdx(i + 1, j, k)]);
-          let vc =
-            0.25 *
-            (f.v[g.vIdx(i, j, k - 1)] +
-              f.v[g.vIdx(i, j + 1, k - 1)] +
-              f.v[g.vIdx(i, j, k)] +
-              f.v[g.vIdx(i, j + 1, k)]);
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) zm = Math.max(open[i + j * nx] + 0.5, zm);
-          if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny - 1) {
-            uc = this.sampleU(xm, ym, zm);
-            vc = this.sampleV(xm, ym, zm);
-            wc = this.sampleW(xm, ym, zm);
-          }
-          let x = i - (uc * dt) / dx;
-          let y = j - (vc * dt) / dy;
-          let z = k - (wc * dt) / dz;
-          if (open) z = Math.max(open[i + j * nx] + 0.5, z);
-          if (x < 0 || x > nx - 1 || y < 0 || y > ny - 1) {
-            this.tmpW[id] = 0;
-          } else {
-            this.tmpW[id] = this.sampleW(x, y, z);
+            if (k === 0) {
+              // Domain floor stays sealed except where sub-grid terrain needs
+              // a kinematic flux (openK == 0 but height > 0).
+              const s = i + j * nx;
+              if (
+                open &&
+                open[s] === 0 &&
+                height &&
+                height[s] > 1e-3
+              ) {
+                this.tmpW[id] = f.w[id];
+              } else {
+                this.tmpW[id] = 0;
+              }
+              continue;
+            }
+            // openK is the first free cell; face k==openK carries orographic w.
+            if (open && k < open[i + j * nx]) {
+              this.tmpW[id] = 0;
+              continue;
+            }
+            let wc = f.w[id];
+            let uc =
+              0.25 *
+              (f.u[g.uIdx(i, j, k - 1)] +
+                f.u[g.uIdx(i + 1, j, k - 1)] +
+                f.u[g.uIdx(i, j, k)] +
+                f.u[g.uIdx(i + 1, j, k)]);
+            let vc =
+              0.25 *
+              (f.v[g.vIdx(i, j, k - 1)] +
+                f.v[g.vIdx(i, j + 1, k - 1)] +
+                f.v[g.vIdx(i, j, k)] +
+                f.v[g.vIdx(i, j + 1, k)]);
+            if (useRk2) {
+              const xm = i - (uc * half) / dx;
+              const ym = j - (vc * half) / dy;
+              let zm = k - (wc * half) / dz;
+              if (open) zm = Math.max(open[i + j * nx] + 0.5, zm);
+              if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny - 1) {
+                uc = this.sampleU(xm, ym, zm);
+                vc = this.sampleV(xm, ym, zm);
+                wc = this.sampleW(xm, ym, zm);
+              }
+            }
+            let x = i - (uc * dt) / dx;
+            let y = j - (vc * dt) / dy;
+            let z = k - (wc * dt) / dz;
+            if (open) z = Math.max(open[i + j * nx] + 0.5, z);
+            if (x < 0 || x > nx - 1 || y < 0 || y > ny - 1) {
+              this.tmpW[id] = 0;
+            } else {
+              this.tmpW[id] = this.sampleW(x, y, z);
+            }
           }
         }
       }
@@ -1192,8 +1222,9 @@ export class FluidSolver implements SimBackend {
    * One backtrace for θ, qv, qc, qr, and the cold species qi/qs/qg/qh plus
    * the cloud-ice crystal number ni.
    * Open lateral BC: inflow from the synoptic boundary state, condensate from zero.
+   * Pass `euler` to skip the RK2 mid-point (cheaper on hydrostatic grids).
    */
-  private advectScalars(dt: number): void {
+  private advectScalars(dt: number, euler = false): void {
     const g = this.grid;
     const f = this.fields;
     const { nx, ny, nz, dx, dy, dz } = g;
@@ -1222,6 +1253,21 @@ export class FluidSolver implements SimBackend {
     const yMax = ny - 1;
     const samp = this.samp4;
     const open = this.openK;
+    const useRk2 = !euler;
+    // Skip ice sampling entirely when the domain has no cold condensate.
+    let hasCold = false;
+    {
+      const qi = f.qi;
+      const qs = f.qs;
+      const qg = f.qg;
+      const qh = f.qh;
+      for (let i = 0; i < qi.length; i++) {
+        if (qi[i] + qs[i] + qg[i] + qh[i] > 1e-8) {
+          hasCold = true;
+          break;
+        }
+      }
+    }
 
     for (let k = 0; k < nz; k++) {
       const th0 = f.theta0[k];
@@ -1257,22 +1303,24 @@ export class FluidSolver implements SimBackend {
           let uu = 0.5 * (u[ju + i] + u[ju + i + 1]);
           let vv = 0.5 * (v[jv + i] + v[jv1 + i]);
           let ww = 0.5 * (w[jw + i] + w[jw1 + i]);
-          // RK2 mid-point departure for less diffusive scalar transport.
-          const xm = i - uu * halfDx;
-          const ym = j - vv * halfDy;
-          let zm = Math.max(kFloor, k - ww * halfDz);
-          if (xm >= 0 && xm <= xMax && ym >= 0 && ym <= yMax) {
-            const ix = Math.min(xMax, Math.max(0, xm | 0));
-            const iy = Math.min(yMax, Math.max(0, ym | 0));
-            const iz = Math.min(nz - 1, Math.max(kFloor, zm | 0));
-            const juM = iz * nu * ny + iy * nu;
-            const jvM = iz * nx * nv + iy * nx;
-            const jv1M = iz * nx * nv + (iy + 1 < nv ? iy + 1 : iy) * nx;
-            const jwM = iz * nxny + iy * nx;
-            const jw1M = Math.min(nz, iz + 1) * nxny + iy * nx;
-            uu = 0.5 * (u[juM + ix] + u[juM + Math.min(nx, ix + 1)]);
-            vv = 0.5 * (v[jvM + ix] + v[jv1M + ix]);
-            ww = 0.5 * (w[jwM + ix] + w[jw1M + ix]);
+          if (useRk2) {
+            // RK2 mid-point departure for less diffusive scalar transport.
+            const xm = i - uu * halfDx;
+            const ym = j - vv * halfDy;
+            let zm = Math.max(kFloor, k - ww * halfDz);
+            if (xm >= 0 && xm <= xMax && ym >= 0 && ym <= yMax) {
+              const ix = Math.min(xMax, Math.max(0, xm | 0));
+              const iy = Math.min(yMax, Math.max(0, ym | 0));
+              const iz = Math.min(nz - 1, Math.max(kFloor, zm | 0));
+              const juM = iz * nu * ny + iy * nu;
+              const jvM = iz * nx * nv + iy * nx;
+              const jv1M = iz * nx * nv + (iy + 1 < nv ? iy + 1 : iy) * nx;
+              const jwM = iz * nxny + iy * nx;
+              const jw1M = Math.min(nz, iz + 1) * nxny + iy * nx;
+              uu = 0.5 * (u[juM + ix] + u[juM + Math.min(nx, ix + 1)]);
+              vv = 0.5 * (v[jvM + ix] + v[jv1M + ix]);
+              ww = 0.5 * (w[jwM + ix] + w[jw1M + ix]);
+            }
           }
           const x = i - uu * invDx;
           const y = j - vv * invDy;
@@ -1300,12 +1348,20 @@ export class FluidSolver implements SimBackend {
              qvD[id] = samp[1];
              qcD[id] = samp[2];
              qrD[id] = samp[3];
-             this.sampleQuad(f.qi, f.qs, f.qg, f.qh, x, y, z);
-             qiD[id] = samp[0];
-             qsD[id] = samp[1];
-             qgD[id] = samp[2];
-             qhD[id] = samp[3];
-             niD[id] = this.sampleField(f.ni, x, y, z);
+             if (hasCold) {
+               this.sampleQuad(f.qi, f.qs, f.qg, f.qh, x, y, z);
+               qiD[id] = samp[0];
+               qsD[id] = samp[1];
+               qgD[id] = samp[2];
+               qhD[id] = samp[3];
+               niD[id] = this.sampleField(f.ni, x, y, z);
+             } else {
+               qiD[id] = 0;
+               qsD[id] = 0;
+               qgD[id] = 0;
+               qhD[id] = 0;
+               niD[id] = 0;
+             }
            }
            // Cap per-step theta change to prevent localized transients
            // (e.g. semi-Lagrangian advection across a moving front) from
@@ -1800,6 +1856,15 @@ export class FluidSolver implements SimBackend {
     this.vcycle(0);
     this.correctVelocity(dt);
     this.setLids();
+    // Hydrostatic / very large grids skip the corrective second V-cycle —
+    // one pass is enough when vertical motion is weak and cost dominates.
+    const horiz = Math.min(this.grid.dx, this.grid.dy);
+    const hydro =
+      this.hydrostatic === "on" ||
+      (this.hydrostatic === "auto" && horiz > 5000);
+    if (hydro || this.grid.nx * this.grid.ny * this.grid.nz > 180_000) {
+      return;
+    }
     const max1 = this.fillDivergence(invDt);
     if (max1 > 0.08 && max0 > 1e-8 && max1 > 0.5 * max0) {
       // Second cycle is a correction on the leftover divergence, then
@@ -2015,15 +2080,42 @@ export class FluidSolver implements SimBackend {
       }
       return;
     }
+    // Max-pool each stride block so a clear neighbour cannot punch a hole
+    // through mottled / thin cloud when the display grid is coarser than sim.
     const d = volumeDisplaySize(nx, ny, nz);
     for (let k = 0; k < d.nz; k++) {
-      const ks = Math.min(nz - 1, k * d.sz);
+      const k0 = Math.min(nz - 1, k * d.sz);
+      const k1 = Math.min(nz, k0 + d.sz);
       for (let j = 0; j < d.ny; j++) {
-        const js = Math.min(ny - 1, j * d.sy);
+        const j0 = Math.min(ny - 1, j * d.sy);
+        const j1 = Math.min(ny, j0 + d.sy);
         const row = k + d.nz * (d.ny - 1 - j);
         for (let i = 0; i < d.nx; i++) {
-          const is = Math.min(nx - 1, i * d.sx);
-          write(is + nx * (js + ny * ks), ks, (i + d.nx * row) * 4);
+          const i0 = Math.min(nx - 1, i * d.sx);
+          const i1 = Math.min(nx, i0 + d.sx);
+          let bestQc = 0;
+          let bestCold = 0;
+          let bestQr = 0;
+          let bestQh = 0;
+          for (let kk = k0; kk < k1; kk++) {
+            for (let jj = j0; jj < j1; jj++) {
+              const base = nx * (jj + ny * kk);
+              for (let ii = i0; ii < i1; ii++) {
+                const id = ii + base;
+                const liq = cloudOpacity(f.qc[id]);
+                if (liq > bestQc) bestQc = liq;
+                const cold = coldOpacity(id);
+                if (cold > bestCold) bestCold = cold;
+                if (f.qr[id] > bestQr) bestQr = f.qr[id];
+                if (f.qh[id] > bestQh) bestQh = f.qh[id];
+              }
+            }
+          }
+          const o = (i + d.nx * row) * 4;
+          out[o] = byte01(bestQc);
+          out[o + 1] = byte01(bestCold);
+          out[o + 2] = rainByte(bestQr);
+          out[o + 3] = hailByte(bestQh);
         }
       }
     }
@@ -2811,7 +2903,9 @@ export class FluidSolver implements SimBackend {
     child.hydrostatic = this.hydrostatic;
     child.clockPaused = true;
     child.radiation.solarHour = this.radiation.solarHour;
-    const n = nest.refinement >= 3 ? 3 : 2;
+    // Live path: one child step per parent step. Extra subcycles mainly
+    // help offline/high-refinement nests and roughly 2–3× the nest cost.
+    const n = 1;
     const h = dt / n;
     for (let s = 0; s < n; s++) {
       this.blendChild(false);

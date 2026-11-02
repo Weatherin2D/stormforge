@@ -1100,14 +1100,41 @@ export class WebGPUBackend implements SimBackend {
       }
       return;
     }
+    // Max-pool stride blocks (same as FluidSolver) so thin cloud is not
+    // dropped by nearest-neighbour holes on the display grid.
     for (let k = 0; k < d.nz; k++) {
-      const ks = Math.min(nz - 1, k * d.sz);
+      const k0 = Math.min(nz - 1, k * d.sz);
+      const k1 = Math.min(nz, k0 + d.sz);
       for (let j = 0; j < d.ny; j++) {
-        const js = Math.min(ny - 1, j * d.sy);
+        const j0 = Math.min(ny - 1, j * d.sy);
+        const j1 = Math.min(ny, j0 + d.sy);
         const row = k + d.nz * (d.ny - 1 - j);
         for (let i = 0; i < d.nx; i++) {
-          const is = Math.min(nx - 1, i * d.sx);
-          write(is + nx * (js + ny * ks), ks, (i + d.nx * row) * 4);
+          const i0 = Math.min(nx - 1, i * d.sx);
+          const i1 = Math.min(nx, i0 + d.sx);
+          let bestQc = 0;
+          let bestCold = 0;
+          let bestQr = 0;
+          let bestQh = 0;
+          for (let kk = k0; kk < k1; kk++) {
+            for (let jj = j0; jj < j1; jj++) {
+              const base = nx * (jj + ny * kk);
+              for (let ii = i0; ii < i1; ii++) {
+                const id = ii + base;
+                const liq = cloudOpacity(f.qc[id]);
+                if (liq > bestQc) bestQc = liq;
+                const cold = coldOpacity(id);
+                if (cold > bestCold) bestCold = cold;
+                if (f.qr[id] > bestQr) bestQr = f.qr[id];
+                if (f.qh[id] > bestQh) bestQh = f.qh[id];
+              }
+            }
+          }
+          const o = (i + d.nx * row) * 4;
+          out[o] = byte01(bestQc);
+          out[o + 1] = byte01(bestCold);
+          out[o + 2] = rainByte(bestQr);
+          out[o + 3] = hailByte(bestQh);
         }
       }
     }
