@@ -319,10 +319,10 @@ vec3 sampleSigma(vec3 p, float detail) {
   }
 
   if (detail > 0.01 && (liq + ice + rain) > 0.002) {
-    // MeteoLAB cloudDensity — world coords in km. Stormforge packs liquid/ice/rain
-    // separately; MeteoLAB packs combined cloud (R), updraught (B), ice share (A).
-    // Map: base = liquid+ice, vigor from liquid (tower proxy), iceFrac from ice share.
-    vec3 pk = (p + uNoiseOffset) * 0.001;
+    // MeteoLAB cloudDensity — world coords in km. Do not advect by uNoiseOffset
+    // (wind*time): that shears billows into long streaks. MeteoLAB only scrolls
+    // a tiny time term inside fbm / risingBillow.
+    vec3 pk = p * 0.001;
     float base = clamp(liq + ice, 0.0, 1.0);
     if (base >= 0.004) {
       float vigor = smoothstep(0.05, 0.4, liq);
@@ -340,9 +340,11 @@ vec3 sampleSigma(vec3 p, float detail) {
         n = mix(n, tower, vigor);
       }
       if (iceFrac > 0.0) {
+        // Milder anisotropy than MeteoLAB's 2.8 — Stormforge lacks rotation/columns
+        // so full vertical squash read as horizon-parallel stretch bands.
         n = mix(
           n,
-          fbm(pk * vec3(0.55, 2.8, 0.55) + vec3(uTime * 0.0004, 0.0, 0.0)),
+          fbm(pk * vec3(0.7, 1.6, 0.7) + vec3(uTime * 0.0004, 0.0, 0.0)),
           iceFrac
         );
       }
@@ -372,7 +374,7 @@ vec3 sampleSigma(vec3 p, float detail) {
     if (rain > 0.0004) {
       float rainCore = smoothstep(0.002, 0.45, rain);
       rain = mix(rain, max(rain, rainCore * 0.35), 0.35);
-      vec3 sheared = p + uNoiseOffset + uRainWindShear * (p.y - uBoxMin.y);
+      vec3 sheared = p + uRainWindShear * (p.y - uBoxMin.y);
       vec3 pkR = sheared * 0.001;
       float streak = fbm(vec3(pkR.x * 1.8, pkR.y * 0.04 - uTime * 0.001 * uRainFallSpeed, pkR.z * 1.8));
       float edgeMask = 1.0 - rainCore;

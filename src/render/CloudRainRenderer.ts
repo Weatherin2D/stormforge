@@ -120,7 +120,16 @@ void main() {
     fragColor = curr;
     return;
   }
+  // Clouds are drawn without writing depth. Reprojecting with the scene depth
+  // (ground / far plane) smears cloud history into long horizon streaks —
+  // especially when looking at sky or walking the camera. Far pixels get a
+  // soft same-UV blend only; closer pixels may reproject with a tight gate.
   float depth = texture(uDepth, vUv).r;
+  if (depth > 0.998) {
+    vec4 hist = texture(uHistory, vUv);
+    fragColor = mix(curr, hist, uMix * 0.25);
+    return;
+  }
   vec4 ndc = vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
   vec4 world = uInvViewProj * ndc;
   world /= max(world.w, 1e-6);
@@ -128,11 +137,12 @@ void main() {
   prev /= max(prev.w, 1e-6);
   vec2 puv = prev.xy * 0.5 + 0.5;
   float inside = step(0.0, puv.x) * step(puv.x, 1.0) * step(0.0, puv.y) * step(puv.y, 1.0);
-  float stable = inside * step(length(puv - vUv), 0.15);
-  vec4 hist = texture(uHistory, puv);
-  // When history is invalid, still blend slightly to avoid hard pop
-  float blendMix = uValid > 0.5 ? uMix : 0.0;
-  fragColor = mix(curr, mix(curr, hist, blendMix), stable);
+  float motion = length(puv - vUv);
+  // Reject big camera moves (WASD) so history cannot drag into ribbons.
+  float stable = inside * (1.0 - smoothstep(0.012, 0.055, motion));
+  vec4 hist = texture(uHistory, clamp(puv, vec2(0.0), vec2(1.0)));
+  float blendMix = uMix * stable;
+  fragColor = mix(curr, hist, blendMix);
 }
 `;
 
@@ -2368,14 +2378,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.prevViewProj.copy(this.currViewProj);
   }
 
-  /** Reduce TAA blend while a bolt is bright so the flash isn't smeared, but never drop to 0. */
+  /**
+   * Temporal mix for the cloud resolve. Lower while walking or a bolt is bright
+   * so history cannot stretch into ribbons.
+   */
   private lightningMix(): number {
     for (const bolt of this.liveBolts) {
       if (bolt.kind === "sprite") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
-      if (b.main * bolt.brightness > 0.25) return 0.12;
+      if (b.main * bolt.brightness > 0.25) return 0.08;
     }
-    return 0.88;
+    const k = this.moveKeys;
+    const walking = k.forward || k.back || k.left || k.right || this.draggingLook;
+    return walking ? 0.28 : 0.62;
   }
 
   /** Point bolt shaders at the live cloud/rain volume so thick media hides the channel. */
