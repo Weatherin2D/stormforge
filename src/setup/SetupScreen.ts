@@ -12,6 +12,7 @@ import { BATCH_FIXED_DT } from "../sim/BatchRunner";
 import { SoundingLevel } from "../sim/thermo";
 import { SoundingCreator } from "../skewt/creator";
 import { SynopticEditor } from "./SynopticEditor";
+import { TerrainEditor } from "./TerrainEditor";
 import { SynopticSetup } from "../sim/synoptic";
 import type { NestRect } from "../sim/surface";
 
@@ -108,6 +109,7 @@ export class SetupScreen {
   private creator: SoundingCreator;
   private sounding: SoundingLevel[];
   private fronts: SynopticEditor;
+  private terrain: TerrainEditor;
 
   constructor(onStart: (values: SetupValues) => void) {
     this.onStart = onStart;
@@ -255,22 +257,48 @@ export class SetupScreen {
         </div>
 
         <aside class="setup-card setup-sounding">
-          <div class="setup-pane-tabs" role="tablist">
-            <button type="button" id="sf-pane-sounding" class="active" role="tab">Sounding</button>
-            <button type="button" id="sf-pane-map" role="tab">Land &amp; water</button>
+          <div class="setup-jump" role="navigation" aria-label="Setup sections">
+            <button type="button" data-jump="sf-sec-sounding">Sounding</button>
+            <button type="button" data-jump="sf-sec-fronts">Fronts</button>
+            <button type="button" data-jump="sf-sec-land">Land &amp; water</button>
           </div>
-          <p class="hint setup-sounding-desc" id="sf-pane-hint">
-            Drag T/Td and hodograph tips, pick a preset, or import. Terrain, lakes, and the nest are on Land &amp; water.
-          </p>
-          <div id="sf-creator-host"></div>
-          <div id="sf-fronts-host" class="fronts-embedded-host" hidden></div>
+          <section id="sf-sec-sounding">
+            <h2>Sounding</h2>
+            <p class="hint setup-sounding-desc">
+              Drag the red temperature and green dewpoint, or the hodograph tips. Pick a preset or import a sounding.
+            </p>
+            <div id="sf-creator-host"></div>
+          </section>
+          <section id="sf-sec-fronts" class="fronts-embedded-host">
+            <h2>Fronts</h2>
+          </section>
+          <section id="sf-sec-land" class="terrain-host"></section>
         </aside>
       </div>
     `;
 
     this.warnEl = this.root.querySelector("#sf-perf-warn") as HTMLElement;
     this.fronts = new SynopticEditor({ embedded: true });
-    this.root.querySelector("#sf-fronts-host")!.append(this.fronts.root);
+    this.terrain = new TerrainEditor();
+    this.root.querySelector("#sf-sec-fronts")!.append(this.fronts.root);
+    this.root.querySelector("#sf-sec-land")!.append(this.terrain.root);
+    this.root.querySelector(".setup-jump")!.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button[data-jump]") as HTMLButtonElement | null;
+      if (!btn?.dataset.jump) return;
+      const card = this.root.querySelector(".setup-sounding") as HTMLElement | null;
+      const target = this.root.querySelector("#" + btn.dataset.jump) as HTMLElement | null;
+      const jump = this.root.querySelector(".setup-jump") as HTMLElement | null;
+      if (!card || !target) return;
+      card.scrollTo({
+        top: Math.max(0, target.offsetTop - (jump?.offsetHeight ?? 0) - 10),
+        behavior: "smooth",
+      });
+    });
+    this.fronts.onMarine = (on) => {
+      if (on) this.terrain.paintSoutheast();
+      else this.terrain.clearWater();
+    };
+    this.terrain.onMarine = (on) => this.fronts.setMarine(on);
 
     this.creator = new SoundingCreator();
     this.sounding = this.creator.getLevels();
@@ -279,27 +307,8 @@ export class SetupScreen {
     };
     this.root.querySelector("#sf-creator-host")!.appendChild(this.creator.root);
     this.fronts.resize();
-    this.fronts.setTerrainCeiling(12000);
-    const soundingPane = this.root.querySelector("#sf-pane-sounding") as HTMLButtonElement;
-    const mapPane = this.root.querySelector("#sf-pane-map") as HTMLButtonElement;
-    const creatorHost = this.root.querySelector("#sf-creator-host") as HTMLElement;
-    const frontsHost = this.root.querySelector("#sf-fronts-host") as HTMLElement;
-    const paneHint = this.root.querySelector("#sf-pane-hint") as HTMLElement;
-    const showMap = (on: boolean) => {
-      this.root.querySelector(".setup-sounding")?.classList.toggle("show-map", on);
-      soundingPane.classList.toggle("active", !on);
-      mapPane.classList.toggle("active", on);
-      soundingPane.setAttribute("aria-selected", on ? "false" : "true");
-      mapPane.setAttribute("aria-selected", on ? "true" : "false");
-      creatorHost.hidden = on;
-      frontsHost.hidden = !on;
-      paneHint.textContent = on
-        ? "Pick Terrain, then Raise or Lower, and drag on the map. Nest draws one finer box."
-        : "Drag T/Td and hodograph tips, pick a preset, or import. Terrain, lakes, and the nest are on Land & water.";
-      if (on) this.fronts.resize();
-    };
-    soundingPane.addEventListener("click", () => showMap(false));
-    mapPane.addEventListener("click", () => showMap(true));
+    this.terrain.resize();
+    this.terrain.setTerrainCeiling(12000);
 
     const monthNames = [
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -322,7 +331,7 @@ export class SetupScreen {
           const v = (this.root.querySelector("#sf-ztop") as HTMLInputElement).value;
           (this.root.querySelector("#sf-ztop-val") as HTMLElement).textContent = v;
           this.creator.setZTop(Number(v));
-          this.fronts.setTerrainCeiling(Number(v));
+          this.terrain.setTerrainCeiling(Number(v));
         }
         if (id === "sf-bubble") {
           const v = Number(
@@ -436,6 +445,7 @@ export class SetupScreen {
       requestAnimationFrame(() => {
         this.creator.resize();
         this.fronts.resize();
+        this.terrain.resize();
       });
     });
   }
@@ -446,6 +456,7 @@ export class SetupScreen {
       requestAnimationFrame(() => {
         this.creator.resize();
         this.fronts.resize();
+        this.terrain.resize();
       });
     });
   }
@@ -529,7 +540,7 @@ export class SetupScreen {
       dxKm,
       dyKm,
       hydrostatic,
-      ...this.fronts.exportSurface(),
+      ...this.terrain.exportSurface(),
     };
   }
 

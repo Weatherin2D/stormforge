@@ -10,48 +10,7 @@ import {
   defaultSynoptic,
   generateSynopticSystems,
 } from "../sim/synoptic";
-import {
-  COVER_LAKE,
-  COVER_OCEAN,
-  SURFACE_N,
-  crestCap,
-  fillForest,
-  fillLakeBasin,
-  fillPeak,
-  fillRidge,
-  fillSoutheastSea,
-  normalizeNest,
-  zeroField,
-  type NestRect,
-} from "../sim/surface";
-
-type Tool =
-  | "select"
-  | FrontKind
-  | "low"
-  | "high"
-  | "raise"
-  | "lower"
-  | "sea"
-  | "lake"
-  | "land"
-  | "temp"
-  | "soil"
-  | "veg"
-  | "nest";
-
-type CoverLayer = "terrain" | "water" | "temp" | "soil" | "veg";
-
-export interface SurfaceExport {
-  terrain?: number[];
-  water?: number[];
-  kind?: number[];
-  waterTemp?: number[];
-  soil?: number[];
-  veg?: number[];
-  sstC?: number;
-  nest?: NestRect | null;
-}
+type Tool = "select" | FrontKind | "low" | "high";
 
 const KIND_LABEL = FRONT_LABELS;
 const KIND_COLOR = FRONT_COLORS;
@@ -73,6 +32,8 @@ export class SynopticEditor {
   readonly root: HTMLElement;
   /** Fired whenever the pattern changes, so the host can apply it. */
   onChange: ((setup: SynopticSetup) => void) | null = null;
+  /** Southeast-sea checkbox. The land map paints or clears the ocean. */
+  onMarine: ((on: boolean) => void) | null = null;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private listEl: HTMLElement;
@@ -97,24 +58,6 @@ export class SynopticEditor {
   private dragging: { id: string; dx: number; dy: number } | null = null;
   private seq = 10;
   private ro: ResizeObserver | null = null;
-  private terrain = new Float32Array(SURFACE_N * SURFACE_N);
-  private water = new Float32Array(SURFACE_N * SURFACE_N);
-  private kind = new Float32Array(SURFACE_N * SURFACE_N);
-  private waterTemp = new Float32Array(SURFACE_N * SURFACE_N);
-  private soil = new Float32Array(SURFACE_N * SURFACE_N);
-  private veg = new Float32Array(SURFACE_N * SURFACE_N);
-  private sstC = 22;
-  private raiseStep = 80;
-  private soilBrush = 0.6;
-  private vegBrush = 0.8;
-  private coverLayer: CoverLayer = "terrain";
-  private nest: NestRect | null = null;
-  private ceiling = 4800;
-  private painting = false;
-  private nestDrag: MapPoint | null = null;
-  private sstInput: HTMLInputElement;
-  private refineInput: HTMLSelectElement;
-  private layerInput: HTMLSelectElement;
 
   constructor(opts: SynopticEditorOptions = {}) {
     const compact = opts.compact === true;
@@ -131,53 +74,13 @@ export class SynopticEditor {
     this.root.innerHTML = `
       ${compact || embedded ? "" : "<h2>Fronts</h2>"}
       ${
-        compact || embedded
+        compact
           ? ""
           : `<p class="hint fronts-desc">
         Draw a front where it should sit. The air on the left of your stroke
         is the cold or dry side. Triangles point the way it will move.
       </p>`
       }
-      <div class="surface-block">
-      <label class="surface-field">
-        Layer
-        <select id="sf-cover-layer">
-          <option value="terrain" selected>Terrain</option>
-          <option value="water">Water</option>
-          <option value="temp">Water temperature</option>
-          <option value="soil">Soil moisture</option>
-          <option value="veg">Vegetation</option>
-        </select>
-      </label>
-      <div class="front-tools" id="sf-surface-tools">
-        <button type="button" data-tool="raise">Raise</button>
-        <button type="button" data-tool="lower">Lower</button>
-        <button type="button" data-tool="sea">Ocean</button>
-        <button type="button" data-tool="lake">Lake</button>
-        <button type="button" data-tool="land">Land</button>
-        <button type="button" data-tool="nest">Nest</button>
-      </div>
-      <div class="front-tools" id="sf-surface-presets">
-        <button type="button" data-preset="flat">Flat</button>
-        <button type="button" data-preset="ridge">Ridge</button>
-        <button type="button" data-preset="peak">Peak</button>
-        <button type="button" data-preset="sea">Southeast ocean</button>
-        <button type="button" data-preset="lake">Lake basin</button>
-        <button type="button" data-preset="forest">Forest</button>
-      </div>
-      <label class="surface-field" id="sf-cover-slider">
-        <span id="sf-cover-label">Raise per stroke (m)</span>
-        <input id="sf-sst" type="range" min="40" max="200" step="20" value="80" />
-        <span id="sf-sst-val">80</span>
-      </label>
-      <label class="surface-field">
-        Nest refinement
-        <select id="sf-nest-refine">
-          <option value="2" selected>2×</option>
-          <option value="3">3×</option>
-        </select>
-      </label>
-      </div>
       <div class="front-tools" id="sf-front-tools">
         <button type="button" data-tool="select">Select</button>
         <button type="button" data-tool="cold" class="active">Cold</button>
@@ -245,11 +148,6 @@ export class SynopticEditor {
     this.moveRow = this.root.querySelector("#sf-move-row") as HTMLElement;
     this.moveSpeed = this.root.querySelector("#sf-move-speed") as HTMLInputElement;
     this.moveSpeedVal = this.root.querySelector("#sf-move-speed-val") as HTMLElement;
-    this.sstInput = this.root.querySelector("#sf-sst") as HTMLInputElement;
-    this.layerInput = this.root.querySelector("#sf-cover-layer") as HTMLSelectElement;
-    this.refineInput = this.root.querySelector("#sf-nest-refine") as HTMLSelectElement;
-    this.waterTemp.fill(this.sstC);
-    this.syncCoverLayer(true);
 
     this.root.querySelector("#sf-front-tools")!.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest(
@@ -262,60 +160,12 @@ export class SynopticEditor {
         b.classList.toggle("active", b === btn);
       }
       this.canvas.classList.toggle("drawing", this.tool !== "select");
-      this.painting = false;
-      this.nestDrag = null;
-    });
-    this.root.querySelector("#sf-surface-tools")!.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest(
-        "button[data-tool]",
-      ) as HTMLButtonElement | null;
-      if (!btn) return;
-      this.tool = btn.dataset.tool as Tool;
-      this.draft = null;
-      this.painting = false;
-      this.nestDrag = null;
-      if (this.tool === "raise" || this.tool === "lower") this.coverLayer = "terrain";
-      else if (this.tool === "sea" || this.tool === "lake" || this.tool === "land") this.coverLayer = "water";
-      if (this.tool !== "nest") this.layerInput.value = this.coverLayer;
-      this.syncCoverLayer(this.tool === "nest");
-    });
-    this.root.querySelector("#sf-surface-presets")!.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest(
-        "button[data-preset]",
-      ) as HTMLButtonElement | null;
-      if (!btn) return;
-      this.applyPreset(btn.dataset.preset || "flat");
-      this.notify();
-    });
-    this.layerInput.addEventListener("change", () => {
-      const value = this.layerInput.value;
-      this.coverLayer =
-        value === "water" || value === "temp" || value === "soil" || value === "veg"
-          ? value
-          : "terrain";
-      this.syncCoverLayer();
-    });
-    this.sstInput.addEventListener("input", () => {
-      const v = Number(this.sstInput.value);
-      if (this.coverLayer === "temp" || this.coverLayer === "water") this.sstC = v;
-      else if (this.coverLayer === "soil") this.soilBrush = v;
-      else if (this.coverLayer === "veg") this.vegBrush = v;
-      else this.raiseStep = v;
-      this.writeSliderLabel();
-    });
-    this.refineInput.addEventListener("change", () => {
-      if (!this.nest) return;
-      this.nest.refinement = Number(this.refineInput.value) >= 3 ? 3 : 2;
-      this.draw();
     });
 
     this.marineInput.addEventListener("change", () => {
       this.setup.marine = this.marineInput.checked;
-      if (this.marineInput.checked) this.applyPreset("sea");
-      else {
-        this.clearCover();
-        this.draw();
-      }
+      this.onMarine?.(this.marineInput.checked);
+      this.draw();
       this.notify();
     });
     this.synopticToggle.addEventListener("change", () => {
@@ -553,6 +403,14 @@ export class SynopticEditor {
     }
   }
 
+  /** Keep the checkbox in step with the land map without painting again. */
+  setMarine(on: boolean): void {
+    this.setup.marine = on;
+    this.marineInput.checked = on;
+    this.draw();
+    this.notify();
+  }
+
   private renderList(): void {
     const rows: string[] = [];
     for (const f of this.setup.fronts) {
@@ -621,23 +479,6 @@ export class SynopticEditor {
     this.canvas.setPointerCapture(e.pointerId);
     this.root.focus();
     const p = this.norm(e);
-    if (this.isCoverTool(this.tool)) {
-      this.painting = true;
-      this.stamp(p);
-      return;
-    }
-    if (this.tool === "nest") {
-      this.nestDrag = p;
-      this.nest = {
-        x0: p.x,
-        y0: p.y,
-        x1: p.x,
-        y1: p.y,
-        refinement: Number(this.refineInput.value) >= 3 ? 3 : 2,
-      };
-      this.draw();
-      return;
-    }
     if (this.tool === "low" || this.tool === "high") {
       const center: PressureCenter = {
         id: this.nextId(this.tool),
@@ -676,16 +517,6 @@ export class SynopticEditor {
 
   private onMove(e: PointerEvent): void {
     const p = this.norm(e);
-    if (this.painting) {
-      this.stamp(p);
-      return;
-    }
-    if (this.nestDrag && this.nest) {
-      this.nest.x1 = p.x;
-      this.nest.y1 = p.y;
-      this.draw();
-      return;
-    }
     if (this.dragging) {
       const c = this.setup.centers.find((x) => x.id === this.dragging!.id);
       if (!c) return;
@@ -707,26 +538,6 @@ export class SynopticEditor {
       this.canvas.releasePointerCapture(e.pointerId);
     }
     this.dragging = null;
-    if (this.painting) {
-      this.painting = false;
-      return;
-    }
-    if (this.nestDrag && this.nest) {
-      this.nestDrag = null;
-      const x0 = Math.min(this.nest.x0, this.nest.x1);
-      const x1 = Math.max(this.nest.x0, this.nest.x1);
-      const y0 = Math.min(this.nest.y0, this.nest.y1);
-      const y1 = Math.max(this.nest.y0, this.nest.y1);
-      this.nest = normalizeNest({
-        x0,
-        y0,
-        x1,
-        y1,
-        refinement: this.nest.refinement >= 3 ? 3 : 2,
-      });
-      this.draw();
-      return;
-    }
     if (!this.draft) return;
     const pts = this.draft;
     this.draft = null;
@@ -791,7 +602,6 @@ export class SynopticEditor {
         .getPropertyValue("--bg")
         .trim() || "#0a0f16";
     ctx.fillRect(0, 0, cssW, cssH);
-    this.paintSurface(cssW, cssH);
     this.paintTint(cssW, cssH);
     this.paintMarine(cssW, cssH);
     for (const f of this.setup.fronts) this.paintFront(f, cssW, cssH, false);
@@ -843,300 +653,6 @@ export class SynopticEditor {
       else dry += v * 0.4;
     }
     return { cold, dry, low, high };
-  }
-
-  /** Highest terrain the brush will raise to, from the domain altitude. */
-  setTerrainCeiling(zTop: number): void {
-    this.ceiling = crestCap(zTop);
-    for (let i = 0; i < this.terrain.length; i++) {
-      if (this.kind[i] >= 1.5 || (this.kind[i] < 0.5 && this.water[i] > 0.5)) this.terrain[i] = 0;
-      else if (this.terrain[i] > this.ceiling) this.terrain[i] = this.ceiling;
-    }
-  }
-
-  exportSurface(): SurfaceExport {
-    let terrainOn = false;
-    let waterOn = false;
-    let soilOn = false;
-    let vegOn = false;
-    for (let i = 0; i < this.terrain.length; i++) {
-      if (this.terrain[i] > 1) terrainOn = true;
-      if (this.kind[i] >= 0.5 || this.water[i] > 0.02) waterOn = true;
-      if (this.soil[i] > 0.02) soilOn = true;
-      if (this.veg[i] > 0.02) vegOn = true;
-    }
-    const out: SurfaceExport = {};
-    if (terrainOn) out.terrain = Array.from(this.terrain);
-    if (waterOn) {
-      out.water = Array.from(this.water);
-      out.kind = Array.from(this.kind);
-      out.waterTemp = Array.from(this.waterTemp);
-      out.sstC = this.sstC;
-    }
-    if (soilOn) out.soil = Array.from(this.soil);
-    if (vegOn) out.veg = Array.from(this.veg);
-    if (this.nest) out.nest = { ...this.nest };
-    return out;
-  }
-
-  private applyPreset(kind: string): void {
-    if (kind === "flat") {
-      zeroField(this.terrain);
-      this.clearCover();
-      this.nest = null;
-      this.setup.marine = false;
-      this.marineInput.checked = false;
-    } else if (kind === "ridge") {
-      fillRidge(this.terrain, this.ceiling * 0.55);
-      this.clearWaterOnHills();
-    } else if (kind === "peak") {
-      fillPeak(this.terrain, this.ceiling * 0.7);
-      this.clearWaterOnHills();
-    } else if (kind === "lake") {
-      zeroField(this.terrain);
-      this.clearCover();
-      fillLakeBasin(this.terrain, this.kind, this.water, this.waterTemp, this.ceiling * 0.25);
-    } else if (kind === "forest") {
-      fillForest(this.soil, this.veg);
-      this.clearVegOnWater();
-    } else {
-      fillSoutheastSea(this.water);
-      for (let i = 0; i < this.water.length; i++) {
-        if (this.water[i] > 0.02) {
-          this.kind[i] = COVER_OCEAN;
-          this.waterTemp[i] = this.sstC;
-          this.soil[i] = 0;
-          this.veg[i] = 0;
-        }
-        if (this.water[i] > 0.5) this.terrain[i] = 0;
-      }
-      this.setup.marine = true;
-      this.marineInput.checked = true;
-    }
-    this.draw();
-  }
-
-  private clearCover(): void {
-    zeroField(this.water);
-    zeroField(this.kind);
-    zeroField(this.soil);
-    zeroField(this.veg);
-    this.waterTemp.fill(this.sstC);
-  }
-
-  private clearWaterOnHills(): void {
-    for (let i = 0; i < this.terrain.length; i++) {
-      if (this.terrain[i] > 1 && this.kind[i] >= 0.5) {
-        this.water[i] = 0;
-        this.kind[i] = 0;
-      }
-    }
-  }
-
-  private clearVegOnWater(): void {
-    for (let i = 0; i < this.kind.length; i++) {
-      if (this.kind[i] >= 0.5) {
-        this.soil[i] = 0;
-        this.veg[i] = 0;
-      }
-    }
-  }
-
-  private stamp(p: MapPoint): void {
-    const n = SURFACE_N;
-    const radius = 4;
-    const cx = p.x * (n - 1);
-    const cy = p.y * (n - 1);
-    const i0 = Math.max(0, Math.floor(cx - radius));
-    const i1 = Math.min(n - 1, Math.ceil(cx + radius));
-    const j0 = Math.max(0, Math.floor(cy - radius));
-    const j1 = Math.min(n - 1, Math.ceil(cy + radius));
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const d = Math.hypot(i - cx, j - cy);
-        if (d > radius) continue;
-        const s = i + n * j;
-        if (this.tool === "raise") {
-          this.kind[s] = 0;
-          this.water[s] = 0;
-          this.terrain[s] = Math.min(this.ceiling, this.terrain[s] + this.raiseStep);
-        } else if (this.tool === "lower") {
-          this.terrain[s] = Math.max(0, this.terrain[s] - this.raiseStep);
-        } else if (this.tool === "sea") {
-          this.kind[s] = COVER_OCEAN;
-          this.water[s] = 1;
-          this.waterTemp[s] = this.sstC;
-          this.soil[s] = 0;
-          this.veg[s] = 0;
-          this.terrain[s] = 0;
-        } else if (this.tool === "lake") {
-          this.kind[s] = COVER_LAKE;
-          this.water[s] = 1;
-          this.waterTemp[s] = this.sstC;
-          this.soil[s] = 0;
-          this.veg[s] = 0;
-        } else if (this.tool === "temp") {
-          if (this.kind[s] >= 0.5) this.waterTemp[s] = this.sstC;
-        } else if (this.tool === "soil") {
-          if (this.kind[s] < 0.5) this.soil[s] = this.soilBrush;
-        } else if (this.tool === "veg") {
-          if (this.kind[s] < 0.5) this.veg[s] = this.vegBrush;
-        } else if (this.tool === "land") {
-          this.kind[s] = 0;
-          this.water[s] = 0;
-        }
-      }
-    }
-    this.draw();
-  }
-
-  private isCoverTool(tool: Tool): boolean {
-    return (
-      tool === "raise" ||
-      tool === "lower" ||
-      tool === "sea" ||
-      tool === "lake" ||
-      tool === "land" ||
-      tool === "temp" ||
-      tool === "soil" ||
-      tool === "veg"
-    );
-  }
-
-  /** keepTool leaves Nest selected when that button was the one just pressed. */
-  private syncCoverLayer(keepTool = false): void {
-    const layer = this.coverLayer;
-    if (!keepTool) {
-      if (layer === "terrain" && this.tool !== "raise" && this.tool !== "lower") this.tool = "raise";
-      else if (layer === "water" && this.tool !== "sea" && this.tool !== "lake" && this.tool !== "land") {
-        this.tool = "lake";
-      } else if (layer === "temp") this.tool = "temp";
-      else if (layer === "soil") this.tool = "soil";
-      else if (layer === "veg") this.tool = "veg";
-    }
-    const buttons = this.root.querySelectorAll("#sf-surface-tools button");
-    buttons.forEach((node) => {
-      const b = node as HTMLButtonElement;
-      const t = b.dataset.tool;
-      const show =
-        t === "nest" ||
-        (layer === "terrain" && (t === "raise" || t === "lower")) ||
-        (layer === "water" && (t === "land" || t === "lake" || t === "sea"));
-      b.hidden = !show;
-    });
-    this.applySliderRange();
-    for (const b of this.root.querySelectorAll(".front-tools button")) {
-      const tool = (b as HTMLButtonElement).dataset.tool;
-      b.classList.toggle("active", tool === this.tool);
-    }
-    this.canvas.classList.toggle("drawing", this.tool !== "select");
-    this.draw();
-  }
-
-  private applySliderRange(): void {
-    const input = this.sstInput;
-    const label = this.root.querySelector("#sf-cover-label");
-    if (this.coverLayer === "temp" || this.coverLayer === "water") {
-      input.min = "5";
-      input.max = "32";
-      input.step = "1";
-      input.value = String(Math.round(this.sstC));
-      if (label) label.textContent = "Water temperature (°C)";
-    } else if (this.coverLayer === "soil") {
-      input.min = "0";
-      input.max = "1";
-      input.step = "0.05";
-      input.value = this.soilBrush.toFixed(2);
-      if (label) label.textContent = "Soil moisture";
-    } else if (this.coverLayer === "veg") {
-      input.min = "0";
-      input.max = "1";
-      input.step = "0.05";
-      input.value = this.vegBrush.toFixed(2);
-      if (label) label.textContent = "Vegetation";
-    } else {
-      input.min = "40";
-      input.max = "200";
-      input.step = "20";
-      input.value = String(Math.round(this.raiseStep));
-      if (label) label.textContent = "Raise per stroke (m)";
-    }
-    this.writeSliderLabel();
-  }
-
-  private writeSliderLabel(): void {
-    const val = this.root.querySelector("#sf-sst-val");
-    if (!val) return;
-    const v = Number(this.sstInput.value);
-    if (this.coverLayer === "soil" || this.coverLayer === "veg") val.textContent = v.toFixed(2);
-    else val.textContent = String(Math.round(v));
-  }
-
-  private paintSurface(w: number, h: number): void {
-    const n = SURFACE_N;
-    const cw = w / n;
-    const ch = h / n;
-    const layer = this.coverLayer;
-    for (let j = 0; j < n; j++) {
-      for (let i = 0; i < n; i++) {
-        const s = i + n * j;
-        const style = this.coverStyle(layer, s);
-        if (!style) continue;
-        this.ctx.fillStyle = style;
-        const py = (1 - (j + 1) / n) * h;
-        this.ctx.fillRect(i * cw, py, cw + 0.6, ch + 0.6);
-      }
-    }
-    if (!this.nest) return;
-    const x0 = Math.min(this.nest.x0, this.nest.x1) * w;
-    const x1 = Math.max(this.nest.x0, this.nest.x1) * w;
-    const yTop = (1 - Math.max(this.nest.y0, this.nest.y1)) * h;
-    const yBot = (1 - Math.min(this.nest.y0, this.nest.y1)) * h;
-    this.ctx.strokeStyle = "#f4e2a8";
-    this.ctx.lineWidth = 2;
-    this.ctx.strokeRect(x0, yTop, Math.max(2, x1 - x0), Math.max(2, yBot - yTop));
-  }
-
-  private coverStyle(layer: CoverLayer, s: number): string | null {
-    const kind = this.kind[s];
-    const elev = this.ceiling > 0 ? this.terrain[s] / this.ceiling : 0;
-    if (layer === "temp") {
-      if (kind < 0.5) return null;
-      const t = Math.max(0, Math.min(1, (this.waterTemp[s] - 5) / 27));
-      const r = Math.round(40 + t * 190);
-      const b = Math.round(200 - t * 150);
-      return `rgba(${r}, 90, ${b}, 0.85)`;
-    }
-    if (layer === "soil") {
-      if (kind >= 0.5) return null;
-      const m = Math.max(0, Math.min(1, this.soil[s]));
-      if (m < 0.02) return null;
-      const r = Math.round(150 - m * 110);
-      const g = Math.round(100 - m * 20);
-      const b = Math.round(52 + m * 120);
-      return `rgba(${r}, ${g}, ${b}, 0.85)`;
-    }
-    if (layer === "veg") {
-      if (kind >= 0.5) return null;
-      const v = Math.max(0, Math.min(1, this.veg[s]));
-      if (v < 0.02) return null;
-      const r = Math.round(140 - v * 110);
-      const g = Math.round(120 - v * 20);
-      const b = Math.round(70 - v * 30);
-      return `rgba(${r}, ${g}, ${b}, 0.85)`;
-    }
-    if (layer === "water") {
-      if (kind >= 1.5) return "rgba(18, 78, 130, 0.82)";
-      if (kind >= 0.5) return "rgba(120, 190, 210, 0.82)";
-      return null;
-    }
-    if (kind >= 1.5) return `rgba(18, 78, 130, ${0.45 + this.water[s] * 0.4})`;
-    if (kind >= 0.5) return "rgba(120, 190, 210, 0.75)";
-    if (elev > 0.02) {
-      const g = Math.round(90 + elev * 80);
-      return `rgba(${g}, ${Math.round(g * 0.85)}, ${Math.round(70 + elev * 40)}, 0.85)`;
-    }
-    return null;
   }
 
   private paintTint(w: number, h: number): void {

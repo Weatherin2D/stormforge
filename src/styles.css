@@ -412,13 +412,18 @@ label {
   min-width: 0;
 }
 
-.setup-pane-tabs {
+.setup-jump {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+  padding: 0.15rem 0 0.7rem;
+  background: var(--bg-panel);
 }
 
-.setup-pane-tabs button {
+.setup-jump button {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -428,15 +433,40 @@ label {
   color: var(--text);
 }
 
-.setup-pane-tabs button.active {
+.setup-jump button:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.setup-sounding.show-map .fronts-embedded-host {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
+#sf-sec-sounding,
+#sf-sec-fronts,
+#sf-sec-land {
+  scroll-margin-top: 2.8rem;
+}
+
+.terrain-host {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.terrain-editor h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+#sf-terrain-canvas {
+  display: block;
+  width: min(100%, 720px);
+  height: auto;
+  aspect-ratio: 1;
+  max-height: min(56vh, 720px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  touch-action: none;
+  cursor: crosshair;
 }
 
 .front-list {

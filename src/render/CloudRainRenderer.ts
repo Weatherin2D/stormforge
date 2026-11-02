@@ -136,6 +136,25 @@ void main() {
 }
 `;
 
+function joinTreeGeometry(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  let count = 0;
+  for (const part of parts) count += part.getAttribute("position").count;
+  const pos = new Float32Array(count * 3);
+  const nrm = new Float32Array(count * 3);
+  let offset = 0;
+  for (const part of parts) {
+    const pp = part.getAttribute("position").array as Float32Array;
+    const nn = part.getAttribute("normal").array as Float32Array;
+    pos.set(pp, offset);
+    nrm.set(nn, offset);
+    offset += pp.length;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+  return geo;
+}
+
 export class CloudRainRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -154,6 +173,7 @@ export class CloudRainRenderer {
   private surfaceKind: Float32Array | null = null;
   private surfaceSoil: Float32Array | null = null;
   private surfaceVeg: Float32Array | null = null;
+  private forest: THREE.Group | null = null;
   private surfaceNx = 0;
   private surfaceNy = 0;
   private radarTex: THREE.DataTexture | null = null;
@@ -397,7 +417,7 @@ export class CloudRainRenderer {
     this.scene.fog = new THREE.FogExp2(0x9fb4c4, 0.0001);
     this.renderer.setClearColor(0x9fb4c4, 1);
 
-    const groundSeg = 64;
+    const groundSeg = 128;
     const groundGeo = new THREE.PlaneGeometry(4, 4, groundSeg, groundSeg);
     const groundVerts = (groundSeg + 1) * (groundSeg + 1);
     const coverAttr = () => new THREE.BufferAttribute(new Float32Array(groundVerts), 1);
@@ -472,15 +492,19 @@ export class CloudRainRenderer {
     float U = texture(uWind, gScroll).r * WIND_SCALE / 1.15;
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6), clamp(3.84e-6 * pow(U, 3.41), 0.0, 0.3));
     gSpec = 1.0;
+  } else if(vPaint > 0.5){
+    float n = texture(uNoise, vec3(q * 0.11, 0.22)).g;
+    diffuseColor.rgb = vColor * diffuse * (0.9 + 0.14 * n);
+    gSpec = step(0.5, vCover);
   } else {
     diffuseColor.rgb *= landPattern(q, blur);
     float urban = step(2.5, uSurface), steppe = step(0.5, uSurface) * (1.0 - urban);
     float wet = mix(mix(0.88, 0.7, steppe), 0.55, urban), pond = mix(mix(10.0, 5.0, steppe), 1.5, urban);
     float snowCover = smoothstep(0.04, 0.82, gSnow);
     diffuseColor.rgb *= mix(1.0, wet, smoothstep(0.0, 0.3, gWater) * (1.0 - snowCover));
+    diffuseColor.rgb *= vColor;
     gSpec = smoothstep(pond, pond * 2.0, gWater) * (1.0 - snowCover);
   }
-  diffuseColor.rgb = vColor * diffuse;
   float dust = smoothstep(0.0, 0.04, gSnow);
   float deep = smoothstep(0.02, 0.55, gSnow);
   vec3 snowCol = vec3(0.94, 0.96, 0.98);
@@ -1498,7 +1522,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const u = worldX / sx + 0.5;
       const v = 0.5 - worldZ / sz;
       const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
-      pos.setZ(i, sample(h, u, v));
+      const elev = sample(h, u, v);
+      const edge = Math.min(u, v, 1 - u, 1 - v);
+      const skirt = inside ? Math.min(1, edge / 0.025) : 0;
+      pos.setZ(i, elev * skirt);
       wet.setX(i, sample(w, u, v));
       const kind = nearest(this.surfaceKind, u, v);
       const soilV = sample(this.surfaceSoil, u, v);
@@ -1507,7 +1534,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       soil.setX(i, soilV);
       veg.setX(i, vegV);
       paint.setX(i, inside && painted ? 1 : 0);
-      const rgb = this.coverColor(inside && painted, kind, soilV, vegV);
+      const rgb = this.coverColor(inside && painted, kind, soilV, vegV, elev * skirt);
       color.setXYZ(i, rgb[0], rgb[1], rgb[2]);
     }
     pos.needsUpdate = true;
@@ -1517,29 +1544,217 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     veg.needsUpdate = true;
     paint.needsUpdate = true;
     color.needsUpdate = true;
-    this.ground.geometry.computeVertexNormals();
+    this.writeGroundNormals(pos, scaleX, scaleY);
+    this.rebuildForest();
   }
 
-  /** Bare ground, wet soil, forest, lake, and ocean. The skirt stays the base green. */
+  /** Pines on vegetated land. A stand, not a canopy model. */
+  private rebuildForest(): void {
+    this.clearForest();
+    const veg = this.surfaceVeg;
+    const nx = this.surfaceNx;
+    const ny = this.surfaceNy;
+    if (!veg || nx < 2 || ny < 2) return;
+    const sx = Math.max(1, this.spanX);
+    const sz = Math.max(1, this.spanZ);
+    const spacing = Math.max(260, Math.min(sx, sz) / 150);
+    const cols = Math.max(1, Math.ceil(sx / spacing));
+    const rows = Math.max(1, Math.ceil(sz / spacing));
+    const hash = (i: number, j: number) => {
+      const n = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+      return n - Math.floor(n);
+    };
+    const sample = (buf: Float32Array, u: number, v: number): number => {
+      if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+      const x = u * (nx - 1);
+      const y = v * (ny - 1);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(nx - 1, x0 + 1);
+      const y1 = Math.min(ny - 1, y0 + 1);
+      const tx = x - x0;
+      const ty = y - y0;
+      const at = (ix: number, iy: number) => buf[ix + nx * iy] ?? 0;
+      const a = at(x0, y0) * (1 - tx) + at(x1, y0) * tx;
+      const b = at(x0, y1) * (1 - tx) + at(x1, y1) * tx;
+      return a * (1 - ty) + b * ty;
+    };
+    const kindAt = (u: number, v: number): number => {
+      const kind = this.surfaceKind;
+      if (!kind || u < 0 || u > 1 || v < 0 || v > 1) return 0;
+      const ix = Math.max(0, Math.min(nx - 1, Math.round(u * (nx - 1))));
+      const iy = Math.max(0, Math.min(ny - 1, Math.round(v * (ny - 1))));
+      return kind[ix + nx * iy] ?? 0;
+    };
+    const spots: { x: number; z: number; y: number; s: number; yaw: number }[] = [];
+    const maxTrees = 4000;
+    const consider = (worldX: number, worldZ: number, salt: number) => {
+      if (spots.length >= maxTrees) return;
+      const u = worldX / sx + 0.5;
+      const v = 0.5 - worldZ / sz;
+      if (u < 0.02 || u > 0.98 || v < 0.02 || v > 0.98) return;
+      const cover = sample(veg, u, v);
+      if (cover < 0.34 || kindAt(u, v) >= 0.5) return;
+      if (hash(salt, salt + 19) > 0.2 + cover * 0.8) return;
+      const elev = this.surfaceH ? sample(this.surfaceH, u, v) : 0;
+      const h = hash(salt + 3, salt + 11);
+      spots.push({
+        x: worldX,
+        z: worldZ,
+        y: this.groundY + elev,
+        s: (0.75 + cover * 0.85) * (0.82 + h * 0.45),
+        yaw: hash(salt + 5, salt + 8) * Math.PI * 2,
+      });
+    };
+    for (let j = 0; j < rows && spots.length < maxTrees; j++) {
+      for (let i = 0; i < cols && spots.length < maxTrees; i++) {
+        const jx = (hash(i, j) - 0.5) * spacing * 0.85;
+        const jz = (hash(i + 4, j + 9) - 0.5) * spacing * 0.85;
+        const worldX = -sx / 2 + (i + 0.5) * spacing + jx;
+        const worldZ = -sz / 2 + (j + 0.5) * spacing + jz;
+        consider(worldX, worldZ, i + cols * j);
+        const coverU = worldX / sx + 0.5;
+        const coverV = 0.5 - worldZ / sz;
+        if (sample(veg, coverU, coverV) > 0.72) {
+          consider(worldX + spacing * 0.42, worldZ - spacing * 0.33, i + cols * j + 9000);
+        }
+      }
+    }
+    if (spots.length === 0) return;
+    const trunkGeo = new THREE.CylinderGeometry(1.1, 1.6, 14, 5);
+    trunkGeo.translate(0, 7, 0);
+    const low = new THREE.ConeGeometry(12, 28, 7);
+    low.translate(0, 24, 0);
+    const high = new THREE.ConeGeometry(7.5, 20, 7);
+    high.translate(0, 38, 0);
+    const canopyGeo = joinTreeGeometry([low.toNonIndexed(), high.toNonIndexed()]);
+    low.dispose();
+    high.dispose();
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4632, roughness: 0.92 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x1f5a30, roughness: 0.82 });
+    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, spots.length);
+    const leaves = new THREE.InstancedMesh(canopyGeo, leafMat, spots.length);
+    const dummy = new THREE.Object3D();
+    for (let n = 0; n < spots.length; n++) {
+      const spot = spots[n];
+      dummy.position.set(spot.x, spot.y, spot.z);
+      dummy.rotation.set(0, spot.yaw, 0);
+      dummy.scale.set(spot.s, spot.s, spot.s);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(n, dummy.matrix);
+      leaves.setMatrixAt(n, dummy.matrix);
+    }
+    trunks.instanceMatrix.needsUpdate = true;
+    leaves.instanceMatrix.needsUpdate = true;
+    trunks.frustumCulled = false;
+    leaves.frustumCulled = false;
+    const group = new THREE.Group();
+    group.add(trunks);
+    group.add(leaves);
+    this.forest = group;
+    this.scene.add(group);
+  }
+
+  private clearForest(): void {
+    if (!this.forest) return;
+    this.scene.remove(this.forest);
+    this.forest.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      mesh.geometry?.dispose();
+      const mat = mesh.material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else mat?.dispose();
+    });
+    this.forest = null;
+  }
+
+  /**
+   * Normals from world-space positions. The plane is a few units across and
+   * then scaled to kilometres, so a local-space normal turns a hillside into
+   * a blown-out wedge.
+   */
+  private writeGroundNormals(
+    pos: THREE.BufferAttribute,
+    scaleX: number,
+    scaleY: number,
+  ): void {
+    const geo = this.ground.geometry;
+    const index = geo.getIndex();
+    const normal = geo.getAttribute("normal") as THREE.BufferAttribute | undefined;
+    if (!index || !normal) {
+      geo.computeVertexNormals();
+      return;
+    }
+    const acc = new Float32Array(pos.count * 3);
+    const world = (i: number) => ({
+      x: pos.getX(i) * scaleX,
+      y: pos.getZ(i),
+      z: -pos.getY(i) * scaleY,
+    });
+    for (let t = 0; t < index.count; t += 3) {
+      const ia = index.getX(t);
+      const ib = index.getX(t + 1);
+      const ic = index.getX(t + 2);
+      const a = world(ia);
+      const b = world(ib);
+      const c = world(ic);
+      const ux = b.x - a.x;
+      const uy = b.y - a.y;
+      const uz = b.z - a.z;
+      const vx = c.x - a.x;
+      const vy = c.y - a.y;
+      const vz = c.z - a.z;
+      const nx = uy * vz - uz * vy;
+      const ny = uz * vx - ux * vz;
+      const nz = ux * vy - uy * vx;
+      acc[ia * 3] += nx;
+      acc[ia * 3 + 1] += ny;
+      acc[ia * 3 + 2] += nz;
+      acc[ib * 3] += nx;
+      acc[ib * 3 + 1] += ny;
+      acc[ib * 3 + 2] += nz;
+      acc[ic * 3] += nx;
+      acc[ic * 3 + 1] += ny;
+      acc[ic * 3 + 2] += nz;
+    }
+    for (let i = 0; i < pos.count; i++) {
+      const lx = acc[i * 3] * scaleX;
+      const ly = -acc[i * 3 + 2];
+      const lz = acc[i * 3 + 1] * scaleY;
+      const len = Math.hypot(lx, ly, lz) || 1;
+      normal.setXYZ(i, lx / len, ly / len, lz / len);
+    }
+    normal.needsUpdate = true;
+  }
+
+  /** Grass, rock, snow, forest, lake, and ocean. The skirt stays the base green. */
   private coverColor(
     painted: boolean,
     kind: number,
     soilV: number,
     vegV: number,
+    elev: number,
   ): [number, number, number] {
     if (!painted) return [this.groundColor.r, this.groundColor.g, this.groundColor.b];
-    if (kind >= 1.5) return [0.05, 0.16, 0.28];
-    if (kind >= 0.5) return [0.25, 0.52, 0.62];
+    if (kind >= 1.5) return [0.05, 0.2, 0.36];
+    if (kind >= 0.5) return [0.18, 0.46, 0.58];
     const soil = Math.max(0, Math.min(1, soilV));
     const veg = Math.max(0, Math.min(1, vegV));
-    const bareR = 0.55 + (0.32 - 0.55) * soil;
-    const bareG = 0.46 + (0.26 - 0.46) * soil;
-    const bareB = 0.28 + (0.16 - 0.28) * soil;
-    return [
-      bareR + (0.12 - bareR) * veg,
-      bareG + (0.32 - bareG) * veg,
-      bareB + (0.14 - bareB) * veg,
-    ];
+    const rock = Math.max(0, Math.min(1, (elev - 350) / 1800));
+    const snow = Math.max(0, Math.min(1, (elev - 2800) / 1400));
+    let r = 0.29 + (0.22 - 0.29) * soil;
+    let g = 0.4 + (0.3 - 0.4) * soil;
+    let b = 0.2 + (0.16 - 0.2) * soil;
+    r += (0.1 - r) * veg;
+    g += (0.28 - g) * veg;
+    b += (0.12 - b) * veg;
+    r += (0.48 - r) * rock;
+    g += (0.44 - g) * rock;
+    b += (0.4 - b) * rock;
+    r += (0.86 - r) * snow;
+    g += (0.88 - g) * snow;
+    b += (0.9 - b) * snow;
+    return [r, g, b];
   }
 
   setGrid(grid: Grid3D): void {
@@ -1552,7 +1767,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.groundY = -height / 2;
     this.domainSpan = Math.max(sx, sz);
     this.domainBox.scale.set(sx, height, sz);
-    this.ground.scale.set(sx * 1.12, sz * 1.12, 1);
+    // PlaneGeometry is 4 units wide. Scale so the domain fills it, with a small skirt.
+    this.ground.scale.set((sx * 1.12) / 4, (sz * 1.12) / 4, 1);
     this.ground.position.y = this.groundY;
     this.displaceGround();
     if (this.groundFlashMesh) {
