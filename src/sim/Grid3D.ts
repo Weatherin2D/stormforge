@@ -174,38 +174,21 @@ export function copyFullVolumeToDisplay(
     dst.set(src.subarray(0, need));
     return;
   }
-  // Max-pool each stride block (same layout as packVolumeRGBA).
+  // Same layout as packVolumeRGBA: X east, Y up, Z south.
   for (let k = 0; k < d.nz; k++) {
-    const k0 = Math.min(nz - 1, k * d.sz);
-    const k1 = Math.min(nz, k0 + d.sz);
+    const ks = Math.min(nz - 1, k * d.sz);
     for (let j = 0; j < d.ny; j++) {
-      const j0 = Math.min(ny - 1, j * d.sy);
-      const j1 = Math.min(ny, j0 + d.sy);
+      const js = Math.min(ny - 1, j * d.sy);
+      const srcRow = ks + nz * (ny - 1 - js);
       const dstRow = k + d.nz * (d.ny - 1 - j);
       for (let i = 0; i < d.nx; i++) {
-        const i0 = Math.min(nx - 1, i * d.sx);
-        const i1 = Math.min(nx, i0 + d.sx);
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let a = 0;
-        for (let kk = k0; kk < k1; kk++) {
-          for (let jj = j0; jj < j1; jj++) {
-            const srcRow = kk + nz * (ny - 1 - jj);
-            for (let ii = i0; ii < i1; ii++) {
-              const s = (ii + nx * srcRow) * 4;
-              if (src[s] > r) r = src[s];
-              if (src[s + 1] > g) g = src[s + 1];
-              if (src[s + 2] > b) b = src[s + 2];
-              if (src[s + 3] > a) a = src[s + 3];
-            }
-          }
-        }
+        const is = Math.min(nx - 1, i * d.sx);
+        const s = (is + nx * srcRow) * 4;
         const o = (i + d.nx * dstRow) * 4;
-        dst[o] = r;
-        dst[o + 1] = g;
-        dst[o + 2] = b;
-        dst[o + 3] = a;
+        dst[o] = src[s];
+        dst[o + 1] = src[s + 1];
+        dst[o + 2] = src[s + 2];
+        dst[o + 3] = src[s + 3];
       }
     }
   }

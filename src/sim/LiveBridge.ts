@@ -22,8 +22,6 @@ export interface LiveState {
   dThSfc: number;
   strikes: LightningStrike[];
   volume: Uint8Array | null;
-  /** MeteoLAB column map (display nx×ny RGBA), with the volume. */
-  columns: Uint8Array | null;
   map: Uint8Array | null;
   mapId: MapProductId | null;
   winds: SurfaceWindSample[] | null;

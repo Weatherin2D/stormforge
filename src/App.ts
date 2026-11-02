@@ -178,11 +178,11 @@ export class App {
                   Simulation speed
                   <select id="sim-speed">
                     <option value="1">Realtime</option>
-                    <option value="5">5×</option>
-                    <option value="15">15×</option>
-                    <option value="40" selected>40×</option>
-                    <option value="75">75×</option>
-                    <option value="100">100×</option>
+                    <option value="5">5ï¿½</option>
+                    <option value="15">15ï¿½</option>
+                    <option value="40" selected>40ï¿½</option>
+                    <option value="75">75ï¿½</option>
+                    <option value="100">100ï¿½</option>
                   </select>
                 </label>
                 <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
@@ -1802,9 +1802,6 @@ export class App {
           1,
           1,
           true,
-          this.solver
-            ? (out) => this.solver!.packCloudColumns(out)
-            : undefined,
         );
       }
       if (this.showRadar3d) {
@@ -1957,7 +1954,6 @@ export class App {
     if (st.ground) this.renderer.updateGroundCover(st.ground);
     if (st.volume && this.showClouds && !this.showRadar2d) {
       const vol = st.volume;
-      const cols = st.columns;
       this.renderer.updateVolume(
         (out) => {
           if (out.length === vol.length) out.set(vol);
@@ -1968,14 +1964,6 @@ export class App {
         },
         st.cloudMax,
         st.rainMax,
-        false,
-        cols
-          ? (out) => {
-              if (out.length === cols.length) out.set(cols);
-            }
-          : this.solver
-            ? (out) => this.solver!.packCloudColumns(out)
-            : undefined,
       );
     }
     if (st.map && st.mapId && this.radar2d && this.showRadar2d) {
@@ -2083,7 +2071,7 @@ export class App {
     if (this.solver && !this.paused) {
       this.liveDebt += wall;
       const live = this.ensureLive();
-      // Target rate is wall × speed. Coarse / hydrostatic grids can take a
+      // Target rate is wall ï¿½ speed. Coarse / hydrostatic grids can take a
       // larger catch-up chunk (solver CFL-splits); fine grids stay at 2 s so
       // the worker frees up for the next frame.
       const cells =

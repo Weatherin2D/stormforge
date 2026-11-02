@@ -172,8 +172,6 @@ export class CloudRainRenderer {
   private volumeTex: THREE.Data3DTexture | null = null;
   private volumeMesh: THREE.Mesh | null = null;
   private volumeData: Uint8Array | null = null;
-  private columnTex: THREE.DataTexture | null = null;
-  private columnData: Uint8Array | null = null;
   private cloudMat: VolumetricCloudMaterial | null = null;
   /** Empty string follows the sim sun. A preset name locks sun and look. */
   private lookdev: "" | keyof typeof LOOKDEV_PRESETS = "";
@@ -1559,14 +1557,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) return 0;
       const row = k + nz * (ny - 1 - j);
       const o = (i + nx * row) * 4;
-      // MeteoLAB pack: R cloud, G shafts, A ice share.
-      const cloud = data[o] / 255;
-      const shaft = data[o + 1] / 255;
-      const iceShare = data[o + 3] / 255;
       return (
-        cloud * (1 - iceShare) * sigL +
-        cloud * iceShare * sigI +
-        shaft * sigR
+        (data[o] / 255) * sigL +
+        (data[o + 1] / 255) * sigI +
+        (data[o + 2] / 255) * sigR
       );
     };
 
@@ -2086,19 +2080,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.ensureCloudShadowMap(disp.nx, disp.ny);
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
-    if (this.columnTex) this.columnTex.dispose();
-    this.columnData = new Uint8Array(disp.nx * disp.ny * 4);
-    this.columnTex = new THREE.DataTexture(
-      this.columnData as unknown as BufferSource,
-      disp.nx,
-      disp.ny,
-      THREE.RGBAFormat,
-      THREE.UnsignedByteType,
-    );
-    this.columnTex.minFilter = this.columnTex.magFilter = THREE.LinearFilter;
-    this.columnTex.wrapS = this.columnTex.wrapT = THREE.ClampToEdgeWrapping;
-    this.columnTex.unpackAlignment = 1;
-    this.columnTex.needsUpdate = true;
     this.precipitation.setBounds(sx, sz, this.groundY, height);
     this.precipitation.setVolume(this.volumeData, disp.nx, disp.ny, disp.nz);
 
@@ -2106,8 +2087,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const boxMax = new THREE.Vector3(sx / 2, this.groundY + height, sz / 2);
     this.cloudMat = new VolumetricCloudMaterial({
       fields: this.volumeTex,
-      columns: this.columnTex,
-      grid: new THREE.Vector3(disp.nx, disp.nz, disp.ny),
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
@@ -2269,7 +2248,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     cloudMax = 0,
     rainMax = 0,
     force = false,
-    packColumns?: (out: Uint8Array) => void,
   ): void {
     if (!this.volumeData || !this.volumeTex) return;
     const empty = cloudMax < 1e-6 && rainMax < 1e-6;
@@ -2281,15 +2259,12 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.lastVolumeMs = now;
     if (empty) {
       this.volumeData.fill(0);
-      this.columnData?.fill(0);
       this.volumeClear = true;
     } else {
       pack(this.volumeData);
-      if (packColumns && this.columnData) packColumns(this.columnData);
       this.volumeClear = false;
     }
     this.volumeTex.needsUpdate = true;
-    if (this.columnTex) this.columnTex.needsUpdate = true;
     this.volumeRevision++;
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     groundMat.roughness = 0.96;
@@ -2961,9 +2936,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     tex.type = THREE.UnsignedByteType;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    // MeteoLAB uses Repeat on S/T so half-texel samples at the rim stay smooth.
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.wrapR = THREE.ClampToEdgeWrapping;
     tex.unpackAlignment = 1;
     tex.generateMipmaps = false;
     tex.flipY = false;

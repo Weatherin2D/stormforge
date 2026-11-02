@@ -6,10 +6,8 @@
  * raymarches from the camera through the box in world space.
  *
  * Inputs
- *   uFields       MeteoLAB volume: R cloud, G shafts, B updraught/20, A ice share.
- *                 uFieldGain scales channels so dense cores sit near 1.0.
- *   uColumns      2D column map: R rotation, G anvilBase×presence, B presence, A cloud base.
- *   uGrid         display volume size (nx, nz_up, ny) matching Data3DTexture.
+ *   uFields       sim volume, spanning exactly [uBoxMin, uBoxMax]. R = cloud liquid, G = cloud ice/snow, B = rain, A = hail core.
+ *                 uFieldGain scales each channel so that "very dense" is about 1.0.
  *   uShapeNoise   64^3 MeteoLAB value-noise octaves (R/G/B = periods 8/16/32)
  *   uDetailNoise  same cube (kept for uniform compatibility)
  *
@@ -46,13 +44,11 @@ export const cloudFragmentShader = /* glsl */ `
 varying vec3 vWorldPos;
 
 uniform sampler3D uFields;
-uniform sampler2D uColumns;
 uniform sampler3D uShapeNoise;
 uniform sampler3D uDetailNoise;
 
 uniform vec3 uBoxMin;
 uniform vec3 uBoxMax;
-uniform vec3 uGrid; // (nx, nz_up, ny) — Data3DTexture width/height/depth
 
 // lighting (linear RGB)
 uniform vec3 uSunDir;      // unit vector pointing TOWARD the sun
@@ -231,32 +227,23 @@ float risingBillow(vec3 pKm, float wKm){
   );
 }
 
-// Cell-centred volume: texel centres already sit at (k+0.5)/N of the box.
-// Texture is Data3DTexture(nx, nz_up, ny) → uvw = (east, up, N→S).
-vec3 toTex(vec3 p){
-  vec3 s = max(uBoxMax - uBoxMin, vec3(1.0));
-  return vec3(
-    (p.x - uBoxMin.x) / s.x,
-    (p.y - uBoxMin.y) / s.y,
-    (p.z - uBoxMin.z) / s.z
-  );
-}
-vec4 fieldsAll(vec3 p){
-  vec4 raw = textureLod(uFields, toTex(p), 0.0);
-  // Gain on cloud / shafts / updraught; ice share stays 0..1 as packed.
-  return vec4(raw.rgb * uFieldGain, raw.a);
-}
-// Column map UV: east × N→S (volume's X and Z).
-vec2 colUV(vec3 p){
-  vec3 t = toTex(p);
-  return vec2(t.x, t.z);
+// Soft 5-tap filter on the packed volume — breaks stair-stepped voxel faces
+// before billow noise carves the cauliflower.
+vec3 sampleFieldsSoft(vec3 uvw){
+  ivec3 sz = textureSize(uFields, 0);
+  vec3 texel = 1.0 / max(vec3(sz), vec3(1.0));
+  vec3 sum = textureLod(uFields, uvw, 0.0).rgb;
+  sum += textureLod(uFields, uvw + vec3(texel.x, 0.0, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw - vec3(texel.x, 0.0, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw + vec3(0.0, texel.y, 0.0), 0.0).rgb;
+  sum += textureLod(uFields, uvw - vec3(0.0, texel.y, 0.0), 0.0).rgb;
+  return max(sum * 0.2 * uFieldGain, vec3(0.0));
 }
 
-// Mammatus under anvil base from the column map (MeteoLAB mammaDensity).
-float mammaDensity(vec3 p){
-  vec3 c = texture2D(uColumns, colUV(p)).rgb;
-  if(c.b < 0.02) return 0.0;
-  float h = c.g / max(c.b, 1e-4) * 20000.0 - p.y; // ANVIL_BASE_SCALE metres
+// Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
+float mammaDensity(vec3 p, float anvilBase, float anvilPresence){
+  if(anvilPresence < 0.02) return 0.0;
+  float h = anvilBase - p.y;
   if(h < 0.0 || h > uMammatusDepth) return 0.0;
   vec2 q = p.xz / uMammatusCell;
   vec2 cell = floor(q);
@@ -264,55 +251,21 @@ float mammaDensity(vec3 p){
   for(int j = -1; j <= 1; j++) for(int i = -1; i <= 1; i++){
     vec2 k = cell + vec2(float(i), float(j));
     vec3 r = fract(sin(vec3(dot(k, vec2(127.1, 311.7)), dot(k, vec2(269.5, 183.3)), dot(k, vec2(419.2, 371.9)))) * 43758.5);
-    float here = smoothstep(r.z * 0.8 + 0.1, r.z * 0.8 + 0.2, c.b);
+    float here = smoothstep(r.z * 0.8 + 0.1, r.z * 0.8 + 0.2, anvilPresence);
     reach = max(reach, (1.0 - smoothstep(0.1, 0.7, length(q - k - 0.5 - 0.35 * (r.xy - 0.5)))) * here);
   }
   reach *= uMammatusDepth;
   return smoothstep(0.0, 0.4, reach - h + 0.15) * 0.6;
 }
 
-float rotationAt(vec3 p){
-  return smoothstep(0.3, 0.65, texture2D(uColumns, colUV(p)).r) *
-    (1.0 - smoothstep(6000.0, 7500.0, p.y - uBoxMin.y));
-}
-
-// Exact MeteoLAB cloudDensity. p is metres; noise runs in km like MeteoLAB.
-// f = fieldsAll (R cloud, B updraught 0..1 of 20 m/s, A ice share).
-float cloudDensity(vec3 p, vec4 f){
-  float base = f.r;
-  if(base < 0.004) return 0.0;
-  vec3 pk = p * 0.001;
-  float cloudBase = texture2D(uColumns, colUV(p)).a * 10000.0; // BASE_SCALE
-  float aboveKm = ((p.y - uBoxMin.y) - cloudBase) * 0.001;
-  if(aboveKm < -0.2) return 0.0;
-  float rise = smoothstep(0.0, 0.5, aboveKm);
-  float under = smoothstep(-0.2, 0.15, aboveKm);
-  float vigor = smoothstep(0.05, 0.4, f.b);
-  float ice = smoothstep(0.5, 0.95, f.a);
-  ice *= 1.0 - vigor;
-  float n = vigor + ice < 1.0
-    ? fbm(pk * 1.15 + vec3(0.0, -uTime * 0.0015, 0.0))
-    : 0.0;
-  if(vigor > 0.0){
-    float spin = rotationAt(p);
-    float tower = spin < 1.0 ? min(1.0, risingBillow(pk, f.b * 0.02) * 1.5) : 0.0;
-    if(spin > 0.0) tower = mix(tower, 0.35 + 0.65 * fbm(pk * vec3(0.35, 3.2, 0.35)), spin);
-    n = mix(n, tower, vigor);
-  }
-  if(ice > 0.0) n = mix(n, fbm(pk * vec3(0.55, 2.8, 0.55) + vec3(uTime * 0.0004, 0.0, 0.0)), ice);
-  float erode = mix(mix(0.42, 0.62, vigor), 0.3, ice) * mix(0.2, 1.0, rise) *
-    mix(uErosionIce, uErosionLiquid, 1.0 - ice);
-  float d = base * 1.35 - (1.0 - n) * erode * (1.0 - base * 0.6);
-  return clamp(d * (1.0 + 4.0 * vigor) * mix(1.0, 0.75, ice), 0.0, 1.0) * under;
-}
-
 // Precipitation shaft extinction (1/m): MeteoLAB curtains, uShaftMax in 1/km.
+// Soft intensity gate so drizzle (~few dBZ) still draws a very transparent curtain.
 float shaftDensity(vec3 p, float rain){
   if(rain <= 0.0) return 0.0;
-  vec3 pk = p * 0.001;
-  vec3 n = octaves(vec3(pk.x * 2.4, pk.y * 0.08 + uTime * 0.0009, pk.z * 2.4) + vec3(5.3, 0.0, 2.9));
-  float streak = smoothstep(0.3, 0.75, n.g * 0.7 + n.b * 0.3);
-  float km = rain * uShaftMax * mix(0.15, 2.0, streak) * smoothstep(0.0, 0.5, rain * 12.0 + n.r - 0.5);
+  vec3 n = octaves(vec3(p.x * 0.0024, p.y * 0.00008 + uTime * 0.0009, p.z * 0.0024) + vec3(5.3, 0.0, 2.9));
+  float streak = smoothstep(0.22, 0.7, n.g * 0.7 + n.b * 0.3);
+  float gate = smoothstep(0.0, 0.4, rain * 55.0 + n.r * 0.35 - 0.08);
+  float km = rain * uShaftMax * mix(0.35, 2.0, streak) * gate;
   return km * 0.001;
 }
 
@@ -346,50 +299,130 @@ vec3 rainPhase(float c){
 
 // ---------------------------------------------------------------- medium
 
-// Extinction per species at world position p, in 1/m: (liquid, ice, rain/shaft).
-// detail>0 applies MeteoLAB billow carving; detail=0 is the raw packed field
-// (cheap light / ambient probes).
+// Extinction per species at world position p, in 1/m: (liquid, ice, rain).
+// detail in 0..1 blends the noise erosion in (0 = raw sim field, used for cheap light/ambient samples).
 vec3 sampleSigma(vec3 p, float detail) {
-  vec4 f = fieldsAll(p);
-  float cloud = f.r;
-  float shaft = f.g;
-  float iceShare = clamp(f.a, 0.0, 1.0);
+  vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
+  // Soft field sample when carving detail — raw for cheap light probes.
+  vec3 f = detail > 0.01
+    ? sampleFieldsSoft(uvw)
+    : max(textureLod(uFields, uvw, 0.0).rgb * uFieldGain, vec3(0.0));
+  float liq = f.x;
+  float ice = f.y;
+  float rain = f.z;
 
-  float carved = cloud;
-  if (detail > 0.01 && cloud >= 0.004) {
-    carved = cloudDensity(p, f);
-  } else if (detail > 0.01) {
-    carved = 0.0;
+  // Estimate anvil base: the lowest height where ice is significant in this column.
+  // Approximate by checking a few samples above the current point.
+  float anvilBase = 0.0, anvilPresence = 0.0;
+  if (ice > 0.002) {
+    float iceAbove = 0.0;
+    int steps = 0;
+    for (int s = 1; s <= 6; s++) {
+      vec3 up = p + vec3(0.0, float(s) * 500.0, 0.0);
+      if (up.y < uBoxMax.y) {
+        vec3 uvw2 = (up - uBoxMin) / (uBoxMax - uBoxMin);
+        vec3 f2 = textureLod(uFields, uvw2, 0.0).rgb * uFieldGain;
+        if (f2.y > 0.002) { iceAbove += f2.y; steps++; }
+      }
+    }
+    if (steps > 0) {
+      anvilPresence = min(1.0, iceAbove / float(steps));
+      anvilBase = p.y + float(steps) * 500.0 * 0.5; // rough mid of ice layer
+    }
   }
-  // Mammatus under anvil (only where the packed cloud is thin).
-  float mamma = 0.0;
-  if (detail > 0.01 && p.y > uBoxMin.y + 5000.0 && cloud < 0.004) {
-    mamma = mammaDensity(p);
+
+  if (detail > 0.01 && (liq + ice + rain) > 0.002) {
+    // MeteoLAB cloudDensity — world coords in km. Do not advect by uNoiseOffset
+    // (wind*time): that shears billows into long streaks. MeteoLAB only scrolls
+    // a tiny time term inside fbm / risingBillow.
+    vec3 pk = p * 0.001;
+    float base = clamp(liq + ice, 0.0, 1.0);
+    if (base >= 0.004) {
+      float vigor = smoothstep(0.05, 0.4, liq);
+      float iceFrac = smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3));
+      iceFrac *= 1.0 - vigor;
+      // Without a column-base map, erode sides/top fully (rise=1); flat base still
+      // comes from the sim field itself.
+      float rise = 1.0;
+      float n = vigor + iceFrac < 1.0
+        ? fbm(pk * 1.15 + vec3(0.0, -uTime * 0.0015, 0.0))
+        : 0.0;
+      if (vigor > 0.0) {
+        // f.b * 0.02 in MeteoLAB (B = updraught 0..1 of 20 m/s → km/s).
+        float tower = min(1.0, risingBillow(pk, vigor * 0.02) * 1.5);
+        n = mix(n, tower, vigor);
+      }
+      if (iceFrac > 0.0) {
+        // Milder anisotropy than MeteoLAB's 2.8 — Stormforge lacks rotation/columns
+        // so full vertical squash read as horizon-parallel stretch bands.
+        n = mix(
+          n,
+          fbm(pk * vec3(0.7, 1.6, 0.7) + vec3(uTime * 0.0004, 0.0, 0.0)),
+          iceFrac
+        );
+      }
+      // Towers still cauliflower; thin stratus must not go swiss-cheese —
+      // low-base decks used to erase whole patches wherever billow noise dipped.
+      float erode =
+        mix(mix(0.22, 0.62, vigor), 0.28, iceFrac) *
+        mix(0.2, 1.0, rise) *
+        mix(uErosionIce, uErosionLiquid, 1.0 - iceFrac) *
+        detail;
+      erode *= mix(0.3, 1.0, smoothstep(0.06, 0.4, base));
+      float d = base * 1.35 - (1.0 - n) * erode * (1.0 - base * 0.6);
+      // Keep a floor of the packed field so noise valleys stay translucent, not voids.
+      d = max(d, base * mix(0.55, 0.12, vigor));
+      float carved = clamp(
+        d * (1.0 + 4.0 * vigor) * mix(1.0, 0.75, iceFrac),
+        0.0,
+        1.0
+      );
+      float share = max(liq + ice, 1e-6);
+      liq = carved * (liq / share);
+      ice = carved * (ice / share);
+    }
+
+    // Mammatus under ice anvil (MeteoLAB mammaDensity).
+    if (ice > 0.002 && anvilPresence > 0.02) {
+      float mamma = mammaDensity(p, anvilBase, anvilPresence);
+      ice = max(ice, mamma * 0.6);
+    }
+
+    // Rain: scrolling sheared streaks via the same value-noise octaves.
+    if (rain > 0.0004) {
+      float rainCore = smoothstep(0.002, 0.45, rain);
+      rain = mix(rain, max(rain, rainCore * 0.35), 0.35);
+      vec3 sheared = p + uRainWindShear * (p.y - uBoxMin.y);
+      vec3 pkR = sheared * 0.001;
+      float streak = fbm(vec3(pkR.x * 1.8, pkR.y * 0.04 - uTime * 0.001 * uRainFallSpeed, pkR.z * 1.8));
+      float edgeMask = 1.0 - rainCore;
+      rain *= mix(1.0, mix(0.45, 1.4, streak), detail * (0.35 + 0.65 * edgeMask));
+      float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
+      rain += rainCore * groundFade * 0.35;
+      rain = clamp(rain, 0.0, 1.0);
+    }
   }
-  carved = max(carved, mamma);
 
-  float liq = carved * (1.0 - iceShare);
-  float ice = carved * iceShare;
-  float rain = shaft;
-
-  // Domain-edge fade (MeteoLAB: ~1 km to the side wall; shafts over ~3–4 km).
+  // Domain-edge fade (MeteoLAB: cloud fades over last ~1 km to the side wall).
   vec2 side = min(p.xz - uBoxMin.xz, uBoxMax.xz - p.xz);
   float toWall = min(side.x, side.y);
   float cloudFade = smoothstep(250.0, 1250.0, toWall);
   float shaftFade = smoothstep(500.0, 4000.0, toWall);
   shaftFade *= shaftFade;
 
-  vec3 sigma = vec3(liq, ice, 0.0) * uSigma;
+  vec3 sigma = vec3(liq, ice, rain) * uSigma;
   sigma.xy *= cloudFade;
-  sigma.z += shaftDensity(p, rain) * shaftFade;
+  float shaft = shaftDensity(p, rain) * shaftFade;
+  sigma.z += shaft;
   return sigma;
 }
 
 // ---------------------------------------------------------------- lighting
 
-// Former hail-core channel is now ice share — no separate hail extinction.
+// Hail-core extinction. A is packed separately so a dense core is not eroded like anvil ice.
 float hailSigma(vec3 p) {
-  return 0.0;
+  vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
+  return max(textureLod(uFields, uvw, 0.0).a, 0.0) * uFieldGain.x;
 }
 
 // Optical depth from p toward the sun. Steps grow exponentially so the last sample is long
@@ -479,12 +512,14 @@ void main() {
     if (tSample > tFar) tSample = tFar;
     vec3 p = ro + rd * tSample;
 
-    // MeteoLAB empty-space probe: packed cloud (R) or mammatus under anvil.
-    vec4 field = fieldsAll(p);
-    float mammaHere = p.y > uBoxMin.y + 5000.0 && field.r < 0.004
-      ? mammaDensity(p) : 0.0;
-    bool cloudy = field.r >= 0.004 || mammaHere > 0.0;
-    float hailHere = 0.0;
+    // cheap empty-space probe: one fetch of the raw field, no noise
+    vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
+    vec4 field = textureLod(uFields, uvw, 0.0);
+    vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
+    float hailHere = max(field.a * uFieldGain.x, 0.0);
+    // Low threshold so thin stratus / drizzle decks are not treated as empty
+    // and coarse-skipped into holes.
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.001;
 
     // MeteoLAB-style refine: step back into the slab with fine steps so a
     // distant thin deck is not skipped between coarse samples.

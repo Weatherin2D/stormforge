@@ -75,7 +75,6 @@ let statsAge = 0;
 
 function publish(extra: {
   volume: Uint8Array | null;
-  columns?: Uint8Array | null;
   map: Uint8Array | null;
   mapId: MapProductId | null;
   winds: SurfaceWindSample[] | null;
@@ -100,7 +99,6 @@ function publish(extra: {
   const stats = cachedStats;
   const transfers: Transferable[] = [];
   if (extra.volume) transfers.push(extra.volume.buffer);
-  if (extra.columns) transfers.push(extra.columns.buffer);
   if (extra.map) transfers.push(extra.map.buffer);
   if (extra.swath) transfers.push(extra.swath.buffer);
   if (extra.coldPool) transfers.push(extra.coldPool.buffer);
@@ -124,7 +122,6 @@ function publish(extra: {
     dThSfc: surfaceDth(solver),
     strikes: extra.strikes,
     volume: extra.volume,
-    columns: extra.columns ?? null,
     map: extra.map,
     mapId: extra.mapId,
     winds: extra.winds,
@@ -240,15 +237,12 @@ self.onmessage = (ev: MessageEvent) => {
   const mappedFields = solver.viewFields;
   const strikes = msg.lightning ? solver.rollDisplayLightning(msg.wall) : [];
   let volume: Uint8Array | null = null;
-  let columns: Uint8Array | null = null;
   if (msg.wantVolume) {
     const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
     // Display texture is at most 128×128×48. A full-grid buffer is rejected
     // by the renderer, which is why clouds vanished above that size.
     volume = new Uint8Array(d.nx * d.ny * d.nz * 4);
     solver.packVolumeRGBA(volume);
-    columns = new Uint8Array(d.nx * d.ny * 4);
-    solver.packCloudColumns(columns);
   }
   let map: Uint8Array | null = null;
   if (msg.map) {
@@ -292,7 +286,6 @@ self.onmessage = (ev: MessageEvent) => {
     : null;
   publish({
     volume,
-    columns,
     map,
     mapId: msg.map,
     winds,
