@@ -255,12 +255,15 @@ export class SetupScreen {
         </div>
 
         <aside class="setup-card setup-sounding">
-          <h2>Sounding &amp; fronts</h2>
-          <p class="hint setup-sounding-desc">
-            Drag T/Td and hodograph tips, pick a preset, or import — fronts live below the charts.
+          <div class="setup-pane-tabs" role="tablist">
+            <button type="button" id="sf-pane-sounding" class="active" role="tab">Sounding</button>
+            <button type="button" id="sf-pane-map" role="tab">Land &amp; water</button>
+          </div>
+          <p class="hint setup-sounding-desc" id="sf-pane-hint">
+            Drag T/Td and hodograph tips, pick a preset, or import. Terrain, lakes, and the nest are on Land &amp; water.
           </p>
           <div id="sf-creator-host"></div>
-          <div id="sf-fronts-host" class="fronts-embedded-host"></div>
+          <div id="sf-fronts-host" class="fronts-embedded-host" hidden></div>
         </aside>
       </div>
     `;
@@ -277,6 +280,26 @@ export class SetupScreen {
     this.root.querySelector("#sf-creator-host")!.appendChild(this.creator.root);
     this.fronts.resize();
     this.fronts.setTerrainCeiling(12000);
+    const soundingPane = this.root.querySelector("#sf-pane-sounding") as HTMLButtonElement;
+    const mapPane = this.root.querySelector("#sf-pane-map") as HTMLButtonElement;
+    const creatorHost = this.root.querySelector("#sf-creator-host") as HTMLElement;
+    const frontsHost = this.root.querySelector("#sf-fronts-host") as HTMLElement;
+    const paneHint = this.root.querySelector("#sf-pane-hint") as HTMLElement;
+    const showMap = (on: boolean) => {
+      this.root.querySelector(".setup-sounding")?.classList.toggle("show-map", on);
+      soundingPane.classList.toggle("active", !on);
+      mapPane.classList.toggle("active", on);
+      soundingPane.setAttribute("aria-selected", on ? "false" : "true");
+      mapPane.setAttribute("aria-selected", on ? "true" : "false");
+      creatorHost.hidden = on;
+      frontsHost.hidden = !on;
+      paneHint.textContent = on
+        ? "Pick Terrain, then Raise or Lower, and drag on the map. Nest draws one finer box."
+        : "Drag T/Td and hodograph tips, pick a preset, or import. Terrain, lakes, and the nest are on Land & water.";
+      if (on) this.fronts.resize();
+    };
+    soundingPane.addEventListener("click", () => showMap(false));
+    mapPane.addEventListener("click", () => showMap(true));
 
     const monthNames = [
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",

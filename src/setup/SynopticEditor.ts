@@ -129,26 +129,17 @@ export class SynopticEditor {
       .join(" ");
     this.root.tabIndex = 0;
     this.root.innerHTML = `
-      ${compact ? "" : "<h2>Fronts</h2>"}
+      ${compact || embedded ? "" : "<h2>Fronts</h2>"}
       ${
-        compact
+        compact || embedded
           ? ""
           : `<p class="hint fronts-desc">
         Draw a front where it should sit. The air on the left of your stroke
         is the cold or dry side. Triangles point the way it will move.
       </p>`
       }
-      <div class="front-tools" id="sf-front-tools">
-        <button type="button" data-tool="select">Select</button>
-        <button type="button" data-tool="cold" class="active">Cold</button>
-        <button type="button" data-tool="warm">Warm</button>
-        <button type="button" data-tool="stationary">Stationary</button>
-        <button type="button" data-tool="dryline">Dryline</button>
-        <button type="button" data-tool="outflow">Outflow</button>
-        <button type="button" data-tool="low">Low</button>
-        <button type="button" data-tool="high">High</button>
-      </div>
-      <label class="front-strength">
+      <div class="surface-block">
+      <label class="surface-field">
         Layer
         <select id="sf-cover-layer">
           <option value="terrain" selected>Terrain</option>
@@ -174,22 +165,33 @@ export class SynopticEditor {
         <button type="button" data-preset="lake">Lake basin</button>
         <button type="button" data-preset="forest">Forest</button>
       </div>
+      <label class="surface-field" id="sf-cover-slider">
+        <span id="sf-cover-label">Raise per stroke (m)</span>
+        <input id="sf-sst" type="range" min="40" max="200" step="20" value="80" />
+        <span id="sf-sst-val">80</span>
+      </label>
+      <label class="surface-field">
+        Nest refinement
+        <select id="sf-nest-refine">
+          <option value="2" selected>2×</option>
+          <option value="3">3×</option>
+        </select>
+      </label>
+      </div>
+      <div class="front-tools" id="sf-front-tools">
+        <button type="button" data-tool="select">Select</button>
+        <button type="button" data-tool="cold" class="active">Cold</button>
+        <button type="button" data-tool="warm">Warm</button>
+        <button type="button" data-tool="stationary">Stationary</button>
+        <button type="button" data-tool="dryline">Dryline</button>
+        <button type="button" data-tool="outflow">Outflow</button>
+        <button type="button" data-tool="low">Low</button>
+        <button type="button" data-tool="high">High</button>
+      </div>
         <canvas id="sf-front-canvas"></canvas>
         <label class="front-marine">
           <input id="sf-front-marine" type="checkbox" checked />
           Southeast sea
-        </label>
-        <label class="front-strength" id="sf-cover-slider">
-          <span id="sf-cover-label">Raise per stroke (m)</span>
-          <input id="sf-sst" type="range" min="40" max="200" step="20" value="80" />
-          <span id="sf-sst-val">80</span>
-        </label>
-        <label class="front-strength">
-          Nest refinement
-          <select id="sf-nest-refine">
-            <option value="2" selected>2×</option>
-            <option value="3">3×</option>
-          </select>
         </label>
         <label class="front-marine">
           <input id="sf-synoptic-toggle" type="checkbox" />
