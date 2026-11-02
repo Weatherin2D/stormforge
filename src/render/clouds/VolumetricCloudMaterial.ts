@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { cloudFragmentShader, cloudVertexShader } from './cloudShader';
-import { createCloudNoise } from './noiseTextures';
+import { noiseTexture } from '../noise';
 import { computeSkyLighting } from './sunLighting';
 
 /** Everything that changes how the cloud looks, without touching the sim. All lengths in metres. */
@@ -42,9 +42,9 @@ export const DEFAULT_LOOK: CloudLook = {
   sigmaLiquid: 0.0022,
   sigmaIce: 0.00055,
   sigmaRain: 0.0012,
-  // Stronger liquid billow carve — softens voxel blocks into cauliflower lobes.
-  erosionLiquid: 0.88,
-  erosionIce: 0.28,
+  // MeteoLAB cloudDensity uses fixed carve amounts; these knobs scale them.
+  erosionLiquid: 1.0,
+  erosionIce: 1.0,
   iceStretch: [0.55, 2.8, 0.55],
   phaseLiquid: [0.75, 0.15],
   phaseIce: [0.75, 0.15],
@@ -57,9 +57,9 @@ export const DEFAULT_LOOK: CloudLook = {
   ambientAtten: 1.0,
   hazeDensity: 1.5e-5,
   exposure: 1.05,
-  // Smaller noise tiles → puffier mid-scale lobes on a ~1 km sim grid.
-  shapeTileMeters: 4800,
-  detailTileMeters: 900,
+  // Unused by MeteoLAB value-noise path (coords are km via p*0.001).
+  shapeTileMeters: 8000,
+  detailTileMeters: 2000,
   stepSize: 32,
   lodDistance: 14000,
   detailFade: [4500, 24000],
@@ -96,7 +96,8 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   private frame = 0;
 
   constructor(opts: VolumetricCloudOptions) {
-    const noise = createCloudNoise();
+    // Exact MeteoLAB noise cube (value-noise octaves in RGB) — not Perlin-Worley.
+    const noise = noiseTexture();
     const look: CloudLook = { ...DEFAULT_LOOK, ...opts.look };
     const q = opts.quality ?? {};
 
@@ -111,8 +112,8 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       },
       uniforms: {
         uFields: { value: opts.fields },
-        uShapeNoise: { value: noise.shape },
-        uDetailNoise: { value: noise.detail },
+        uShapeNoise: { value: noise },
+        uDetailNoise: { value: noise },
         uBoxMin: { value: opts.boxMin.clone() },
         uBoxMax: { value: opts.boxMax.clone() },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },

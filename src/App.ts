@@ -237,13 +237,13 @@ export class App {
                   </label>
                   <label>
                     Liquid billow
-                    <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="0.6" />
-                    <span id="cloud-erosion-val">0.60</span>
+                    <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="1" />
+                    <span id="cloud-erosion-val">1.00</span>
                   </label>
                   <label>
                     Ice fibres
-                    <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.25" />
-                    <span id="cloud-erosion-ice-val">0.25</span>
+                    <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="1" />
+                    <span id="cloud-erosion-ice-val">1.00</span>
                   </label>
                   <label>
                     Rain shaft thickness
@@ -1523,8 +1523,8 @@ export class App {
       gain: 1,
       sigmaLiquid: 0.08,
       sigmaRain: 0.18,
-      erosionLiquid: 0.6,
-      erosionIce: 0.25,
+      erosionLiquid: 1,
+      erosionIce: 1,
     };
 
     const lookPreset =

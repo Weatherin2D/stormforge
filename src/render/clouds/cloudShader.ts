@@ -8,8 +8,8 @@
  * Inputs
  *   uFields       sim volume, spanning exactly [uBoxMin, uBoxMax]. R = cloud liquid, G = cloud ice/snow, B = rain, A = hail core.
  *                 uFieldGain scales each channel so that "very dense" is about 1.0.
- *   uShapeNoise   64^3 tileable Perlin-Worley (R) + Worley billows (GBA)
- *   uDetailNoise  32^3 tileable Worley billows (RGB)
+ *   uShapeNoise   64^3 MeteoLAB value-noise octaves (R/G/B = periods 8/16/32)
+ *   uDetailNoise  same cube (kept for uniform compatibility)
  *
  * Compile-time defines (set through material.defines, see VolumetricCloudMaterial):
  *   MAX_STEPS, LIGHT_STEPS, AMBIENT_STEPS, MS_OCTAVES
@@ -185,24 +185,28 @@ float dualLobe(float c, vec2 g, float s) {
   return mix(hg(c, g.x * s), hg(c, -g.y * s), uBackWeight);
 }
 
-// Three octaves of tileable value noise baked in uNoise (shape noise): at x the octaves of
-// lattice spacing 1, 1/2 and 1/4 in R, G, B, in one fetch.
-vec3 octaves(vec3 x){ return textureLod(uShapeNoise, x * 0.125, 0.0).rgb; }
+// MeteoLAB noise.ts octaves: lattice periods 1, 1/2, 1/4 in R,G,B. NOISE_TURN
+// breaks the wallpaper repeat when looking down on a whole anvil.
+const mat3 NOISE_TURN = mat3(
+  0.5731, 0.7403, -0.3513,
+  -0.6090, 0.6716, 0.4219,
+  0.5483, -0.0279, 0.8358
+);
+vec3 octaves(vec3 x){ return textureLod(uShapeNoise, NOISE_TURN * x * 0.125, 0.0).rgb; }
 float fbm(vec3 x){ return dot(octaves(x), vec3(0.55, 0.3, 0.15)); }
 
-// Billow noise: rounded lobes meeting in creases, the cauliflower of a growing tower.
+// Billow noise (|2n-1|): rounded lobes meeting in creases — cauliflower towers.
 float billow(vec3 x){
   vec3 o = octaves(x);
   return abs(o.r * 2.0 - 1.0) * 0.6 + abs(o.g * 2.0 - 1.0) * 0.28 + o.b * 0.12;
 }
 
-// The billows rise with the updraught (w in km/s, MeteoLAB): two copies half a
-// period apart cross-fade so towers never stretch. p is metres → km via *0.0009.
+// Rising billows. p is in km (MeteoLAB world units); w is km/s of updraught.
 const float BILLOW_PERIOD = 240.0;
-float risingBillow(vec3 p, float wKm){
+float risingBillow(vec3 pKm, float wKm){
   float a = fract(uTime / BILLOW_PERIOD), b = fract(uTime / BILLOW_PERIOD + 0.5);
   float rise = 0.5 * wKm * BILLOW_PERIOD;
-  vec3 q = p * 0.0009;
+  vec3 q = pKm * 0.9;
   return mix(
     billow(q - vec3(0.0, rise * a * 0.9, 0.0)),
     billow(q - vec3(0.0, rise * b * 0.9, 0.0) + vec3(5.2, 1.3, 7.9)),
@@ -315,76 +319,64 @@ vec3 sampleSigma(vec3 p, float detail) {
   }
 
   if (detail > 0.01 && (liq + ice + rain) > 0.002) {
-    vec3 rel = p + uNoiseOffset;
-    vec4 sh = textureLod(uShapeNoise, rel * uShapeFreq, 0.0);
-
-    // Liquid: MeteoLAB cloudDensity-style carve — rising cauliflower billows with
-    // a soft puff edge so the sim grid does not read as stacked blocks.
-    if (liq > 0.002) {
-      float vigor = smoothstep(0.05, 0.42, liq);
-      float iceShare = smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3));
-      iceShare *= 1.0 - vigor;
-
-      // Soft cumulus fbm (p in metres → ~km via 0.00115).
-      float n = fbm(p * 0.00115 + vec3(0.0, -uTime * 1.5e-6, 0.0));
-      float billowLow = sh.g * 0.625 + sh.b * 0.25 + sh.a * 0.125;
-      vec4 dt = textureLod(uDetailNoise, rel * uDetailFreq, 0.0);
-      float billowHigh = dt.r * 0.625 + dt.g * 0.25 + dt.b * 0.125;
-      float bill = mix(billowLow, billowHigh, 0.55 * detail);
-      bill = mix(bill, sh.r, 0.22 * detail);
-
+    // MeteoLAB cloudDensity — world coords in km. Stormforge packs liquid/ice/rain
+    // separately; MeteoLAB packs combined cloud (R), updraught (B), ice share (A).
+    // Map: base = liquid+ice, vigor from liquid (tower proxy), iceFrac from ice share.
+    vec3 pk = (p + uNoiseOffset) * 0.001;
+    float base = clamp(liq + ice, 0.0, 1.0);
+    if (base >= 0.004) {
+      float vigor = smoothstep(0.05, 0.4, liq);
+      float iceFrac = smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3));
+      iceFrac *= 1.0 - vigor;
+      // Without a column-base map, erode sides/top fully (rise=1); flat base still
+      // comes from the sim field itself.
+      float rise = 1.0;
+      float n = vigor + iceFrac < 1.0
+        ? fbm(pk * 1.15 + vec3(0.0, -uTime * 0.0015, 0.0))
+        : 0.0;
       if (vigor > 0.0) {
-        // w ≈ 0.02 km/s at full vigor (MeteoLAB: f.b * 0.02 with B = updraught).
-        float tower = min(1.0, risingBillow(p, vigor * 0.02) * 1.55);
-        tower = mix(tower, bill, 0.4);
+        // f.b * 0.02 in MeteoLAB (B = updraught 0..1 of 20 m/s → km/s).
+        float tower = min(1.0, risingBillow(pk, vigor * 0.02) * 1.5);
         n = mix(n, tower, vigor);
       }
-
-      // Stronger erosion in vigorous towers, gentler in ice-dominated air.
-      float erode = mix(mix(0.42, 0.78, vigor), 0.28, iceShare) * uErosionLiquid * detail;
-      float d = liq * 1.4 - (1.0 - n) * erode * (1.0 - liq * 0.55);
-      liq = clamp(d * (1.0 + 3.6 * vigor) * mix(1.0, 0.75, iceShare), 0.0, 1.0);
-      // Soft outer lobe — kills hard voxel silhouettes.
-      liq = smoothstep(0.015, 0.22, liq) * mix(0.55, 1.0, smoothstep(0.15, 0.65, n));
-    }
-
-    // Ice: stretched along the wind, so it reads as smooth fibres and streaks instead of lumps.
-    if (ice > 0.002) {
-      vec3 perp = vec3(-uWindDir.z, 0.0, uWindDir.x);
-      vec3 q = vec3(dot(rel, uWindDir), rel.y, dot(rel, perp)) * uShapeFreq * uIceStretch;
-      q += (sh.rgb - 0.5) * 0.4; // domain warp so the streaks wander
-      vec4 fi = textureLod(uShapeNoise, q, 0.0);
-      float fibre = fi.g * 0.5 + fi.b * 0.3 + fi.a * 0.2;
-      vec4 dt2 = textureLod(uDetailNoise, rel * uDetailFreq * 1.5, 0.0);
-      fibre = mix(fibre, dt2.r * 0.6 + dt2.g * 0.4, 0.35 * detail);
-      // Soft fibrous carve (gentler than liquid so anvils stay smooth).
-      float erodeI = (1.0 - fibre) * uErosionIce * detail * 0.85;
-      ice = clamp(ice * 1.15 - erodeI * (1.0 - ice * 0.5), 0.0, 1.0);
-      ice *= mix(0.75, 1.0, smoothstep(0.15, 0.7, fibre));
-      ice *= mix(1.0, 0.75, smoothstep(0.5, 0.95, ice / max(liq + ice, 1e-3)));
-      ice = smoothstep(0.01, 0.16, ice) * ice;
-
-      // Mammatus: rounded pouches hanging under the anvil base.
-      if (anvilPresence > 0.02) {
-        float mamma = mammaDensity(p, anvilBase, anvilPresence);
-        liq += mamma * 0.5;
+      if (iceFrac > 0.0) {
+        n = mix(
+          n,
+          fbm(pk * vec3(0.55, 2.8, 0.55) + vec3(uTime * 0.0004, 0.0, 0.0)),
+          iceFrac
+        );
       }
+      float erode =
+        mix(mix(0.42, 0.62, vigor), 0.3, iceFrac) *
+        mix(0.2, 1.0, rise) *
+        mix(uErosionIce, uErosionLiquid, 1.0 - iceFrac) *
+        detail;
+      float d = base * 1.35 - (1.0 - n) * erode * (1.0 - base * 0.6);
+      float carved = clamp(
+        d * (1.0 + 4.0 * vigor) * mix(1.0, 0.75, iceFrac),
+        0.0,
+        1.0
+      );
+      float share = max(liq + ice, 1e-6);
+      liq = carved * (liq / share);
+      ice = carved * (ice / share);
     }
 
-    // Rain: contrast + scrolling sheared streaks (shaft extinction added below).
-    // Keep a soft floor so light drizzle is not crushed before shaftDensity.
+    // Mammatus under ice anvil (MeteoLAB mammaDensity).
+    if (ice > 0.002 && anvilPresence > 0.02) {
+      float mamma = mammaDensity(p, anvilBase, anvilPresence);
+      ice = max(ice, mamma * 0.6);
+    }
+
+    // Rain: scrolling sheared streaks via the same value-noise octaves.
     if (rain > 0.0004) {
       float rainCore = smoothstep(0.002, 0.45, rain);
       rain = mix(rain, max(rain, rainCore * 0.35), 0.35);
-
-      vec3 sheared = rel + uRainWindShear * (p.y - uBoxMin.y);
-      vec3 qr = vec3(sheared.x * uShapeFreq * 1.8,
-                     (sheared.y - uTime * uRainFallSpeed) * uShapeFreq * 0.04,
-                     sheared.z * uShapeFreq * 1.8);
-      float streak = textureLod(uShapeNoise, qr, 0.0).g;
+      vec3 sheared = p + uNoiseOffset + uRainWindShear * (p.y - uBoxMin.y);
+      vec3 pkR = sheared * 0.001;
+      float streak = fbm(vec3(pkR.x * 1.8, pkR.y * 0.04 - uTime * 0.001 * uRainFallSpeed, pkR.z * 1.8));
       float edgeMask = 1.0 - rainCore;
       rain *= mix(1.0, mix(0.45, 1.4, streak), detail * (0.35 + 0.65 * edgeMask));
-
       float groundFade = 1.0 - smoothstep(0.0, 150.0, p.y - uBoxMin.y);
       rain += rainCore * groundFade * 0.35;
       rain = clamp(rain, 0.0, 1.0);

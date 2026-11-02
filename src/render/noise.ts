@@ -1,26 +1,20 @@
 import * as THREE from 'three'
+import { mulberry32 } from './noiseMath'
 
 /** Size of the noise cube, texels; the octaves' lattice periods in texels (R, G, B). */
 export const NOISE_SIZE = 64
 const PERIODS = [8, 16, 32] as const
 /**
  * Each octave's lattice shifted (texels): nested lattices whose points coincide put a value peak of every octave at the
- * same places, a regular grid the eye finds.
+ * same places, a regular grid the eye finds (the testers' 15.10.2026, seen from above over a whole anvil).
  */
 const OFFSETS = [[0, 0, 0], [5, 11, 3], [13, 7, 21]] as const
 
-function mulberry32(seed: number) {
-  return () => {
-    seed |= 0; seed = seed + 0x6d2b79f5 | 0
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed)
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t
-    return ((t ^ t >>> 14) >>> 0) / 4294967296
-  }
-}
-
 /**
- * Tileable value noise baked into a 3D texture for the cloud's sub-grid detail and the ground's land pattern:
- * in R, G and B three octaves of lattice period 8, 16 and 32 texels in a 64-texel cube.
+ * Tileable value noise baked into a 3D texture for the cloud's sub-grid detail: in R, G and B three octaves of lattice
+ * period 8, 16 and 32 texels in a 64-texel cube (smoothstep-interpolated random values on the lattice, wrapping at the
+ * cube's sides), so the shader gets a whole three-octave fbm or billow from one texture fetch instead of 24 hashes:
+ * the noise was most of the cost of the cloud march once the march took fine steps inside the cloud.
  */
 export function noiseTexture(seed = 7) {
   const n = NOISE_SIZE, data = new Uint8Array(n * n * n * 4), smooth = (t: number) => t * t * (3 - 2 * t)
