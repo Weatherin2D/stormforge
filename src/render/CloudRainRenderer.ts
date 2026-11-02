@@ -1637,9 +1637,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       return kind[ix + nx * iy] ?? 0;
     };
     const spots: { x: number; z: number; y: number; s: number; yaw: number }[] = [];
-    const maxTrees = 4000;
     const consider = (worldX: number, worldZ: number, salt: number) => {
-      if (spots.length >= maxTrees) return;
       const u = worldX / sx + 0.5;
       const v = 0.5 - worldZ / sz;
       if (u < 0.02 || u > 0.98 || v < 0.02 || v > 0.98) return;
@@ -1656,8 +1654,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
         yaw: hash(salt + 5, salt + 8) * Math.PI * 2,
       });
     };
-    for (let j = 0; j < rows && spots.length < maxTrees; j++) {
-      for (let i = 0; i < cols && spots.length < maxTrees; i++) {
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
         const jx = (hash(i, j) - 0.5) * spacing * 0.85;
         const jz = (hash(i + 4, j + 9) - 0.5) * spacing * 0.85;
         const worldX = -sx / 2 + (i + 0.5) * spacing + jx;
@@ -1669,6 +1667,15 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
           consider(worldX + spacing * 0.42, worldZ - spacing * 0.33, i + cols * j + 9000);
         }
       }
+    }
+    // A hard cap used to stop the scan halfway across the domain. Thin evenly instead.
+    const cap = 20000;
+    if (spots.length > cap) {
+      const stride = Math.ceil(spots.length / cap);
+      const kept: typeof spots = [];
+      for (let n = 0; n < spots.length; n += stride) kept.push(spots[n]);
+      spots.length = 0;
+      spots.push(...kept);
     }
     if (spots.length === 0) return;
     const trunkGeo = new THREE.CylinderGeometry(1.1, 1.6, 14, 5);
