@@ -52,6 +52,7 @@ import {
   type NestRect,
   type SurfaceSpec,
 } from "./surface";
+import { getAdvanced } from "./AdvancedSettings";
 
 export type LightningKind = "negcg" | "poscg" | "spider" | "ic" | "sprite";
 
@@ -319,8 +320,9 @@ export class FluidSolver implements SimBackend {
         this.fields.v0,
         this.grid.dz,
       );
-      this.frameU = m.u;
-      this.frameV = m.v;
+      const gain = Math.max(0.2, getAdvanced().followStormGain);
+      this.frameU = m.u * gain;
+      this.frameV = m.v * gain;
       this.applyFrameToWinds(true);
       this.followStorm = true;
     } else {
@@ -394,12 +396,18 @@ export class FluidSolver implements SimBackend {
 
   /** Inject a new near-surface initiation bubble into the running sim. */
   respawnBubble(opts?: Partial<InitOptions>): void {
+    const S = getAdvanced();
     const strength =
-      opts?.bubbleStrength ?? this.lastBubbleOpts.bubbleStrength ?? 3;
+      (opts?.bubbleStrength ?? this.lastBubbleOpts.bubbleStrength ?? 3) *
+      S.bubbleStrengthScale;
+    const radius =
+      (opts?.bubbleRadiusFrac ?? this.lastBubbleOpts.bubbleRadiusFrac ?? 0.18) *
+      S.bubbleRadiusScale;
     const merged: InitOptions = {
       ...this.lastBubbleOpts,
       ...opts,
       bubbleStrength: Math.max(0.5, strength),
+      bubbleRadiusFrac: Math.max(0.05, Math.min(0.45, radius)),
     };
     this.lastBubbleOpts = merged;
     spawnInitBubble(this.grid, this.fields, merged);
@@ -442,17 +450,19 @@ export class FluidSolver implements SimBackend {
     const wind = isHydrostatic
       ? maxHorz
       : Math.max(maxHorz, maxVert) + (hasFall ? 6 : 1);
+    const adv = getAdvanced();
     const cflLen = isHydrostatic ? horiz : Math.min(horiz, dz);
-    const hMax = Math.max(1e-3, (0.85 * cflLen) / Math.max(wind, 1));
+    const cflSafe = 0.85 * Math.max(0.5, Math.min(1.5, adv.cflSafety));
+    const hMax = Math.max(1e-3, (cflSafe * cflLen) / Math.max(wind, 1));
     let sub = Math.max(1, Math.ceil(dt / hMax));
     // Hard cap keeps a busy high-res frame from exploding into 50+ substeps.
     const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
     const subCap = isHydrostatic ? 4 : cellsNow > 700_000 ? 5 : cellsNow > 400_000 ? 7 : 12;
     if (sub > subCap) sub = subCap;
-    const h = dt / sub;
+    const h = (dt * Math.max(0.5, Math.min(2, adv.physicsPace))) / sub;
     // Large / coarse domains run slow column physics once per outer step.
     const nCells = this.grid.nx * this.grid.ny * this.grid.nz;
-    const slowEvery =
+    const slowBase =
       isHydrostatic || nCells > 700_000
         ? 0
         : nCells > 400_000
@@ -460,11 +470,24 @@ export class FluidSolver implements SimBackend {
           : nCells > 180_000
             ? 2
             : 1;
+    const slowEvery =
+      slowBase <= 0
+        ? 0
+        : Math.max(1, Math.round(slowBase / Math.max(0.4, adv.slowPhysicsCadence)));
     let slowDebt = 0;
     for (let s = 0; s < sub; s++) {
       if (!isHydrostatic) this.applyBuoyancy(h);
+      if (adv.wDamping > 1.01) {
+        const wd = Math.min(0.08, (adv.wDamping - 1) * 0.02 * h);
+        if (wd > 0) {
+          const ww = this.fields.w;
+          for (let i = 0; i < ww.length; i++) ww[i] *= 1 - wd;
+        }
+      }
       this.advectVelocity(h);
-      if (this.vorticityStrength > 0) this.applyVorticityConfinement(h);
+      const vort =
+        this.vorticityStrength * Math.max(0, adv.vorticityBoost);
+      if (vort > 0) this.applyVorticityConfinement(h, vort);
       this.project(h);
       this.applyTerrain(h);
       this.advectScalars(h);
@@ -546,7 +569,13 @@ export class FluidSolver implements SimBackend {
     // The fronts are a slow relaxation of the pattern onto the fields, so
     // they are put back once per step rather than once per sub-step.
     // A nest receives that pattern through its boundary, not a second copy.
-    if (!this.nestChild) stepSynopticForcing(this.grid, this.fields, dt);
+    if (!this.nestChild) {
+      const force =
+        dt *
+        Math.max(0.2, getAdvanced().synopticForce) *
+        Math.max(0.2, getAdvanced().frontForce);
+      stepSynopticForcing(this.grid, this.fields, force);
+    }
     this.stepNest(dt);
   }
 
@@ -554,7 +583,8 @@ export class FluidSolver implements SimBackend {
   private applyBuoyancy(dt: number): void {
     const { nx, ny, nz } = this.grid;
     const f = this.fields;
-    const g = G;
+    const g = G * getAdvanced().buoyancyScale;
+    const coldPool = getAdvanced().coldPoolStrength;
 
     for (let k = 1; k < nz; k++) {
       const th0a = f.theta0[k - 1];
@@ -582,7 +612,11 @@ export class FluidSolver implements SimBackend {
               f.qg[ida] + f.qg[idb] +
               f.qh[ida] + f.qh[idb]);
           const buoy =
-            g * ((thv - thv0) / Math.max(1, thv0) - qc - 1.6 * qr - cold);
+            g *
+            ((thv - thv0) / Math.max(1, thv0) -
+              qc -
+              1.6 * qr * coldPool -
+              cold * coldPool);
           f.w[this.grid.wIdx(i, j, k)] += buoy * dt;
         }
       }
@@ -1669,11 +1703,11 @@ export class FluidSolver implements SimBackend {
   }
 
   /** Vorticity confinement: amplifies existing rotation to counteract numerical diffusion. */
-  private applyVorticityConfinement(dt: number): void {
+  private applyVorticityConfinement(dt: number, strength?: number): void {
     const g = this.grid;
     const { nx, ny, nz, dx, dy, dz } = g;
     const f = this.fields;
-    const eps = this.vorticityStrength;
+    const eps = strength ?? this.vorticityStrength;
     const vc = this.vortScratch; // nx*ny*nz * 3: (wx, wy, wz) curl at cell centres
     const n = nx * ny * nz;
     vc.fill(0);
@@ -1731,11 +1765,12 @@ export class FluidSolver implements SimBackend {
     const { nx, ny, nz } = g;
     const f = this.fields;
 
+    const sponge = getAdvanced().spongeStrength;
     // Upper lid sponge (cell centers for θ; faces for wind)
     const kSponge = Math.floor(nz * 0.75);
     for (let k = kSponge; k < nz; k++) {
       const t = (k - kSponge) / Math.max(1, nz - 1 - kSponge);
-      const damp = 0.05 * t * t * dt;
+      const damp = 0.05 * t * t * dt * sponge;
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           f.theta[g.idx(i, j, k)] +=
@@ -1770,7 +1805,7 @@ export class FluidSolver implements SimBackend {
         const dEdge = Math.min(di, dj);
         if (dEdge >= rim) continue;
         const t = 1 - dEdge / rim;
-        const damp = Math.min(0.85, 0.12 * t * t * dt);
+        const damp = Math.min(0.85, 0.12 * t * t * dt * sponge);
         if (damp <= 0) continue;
         for (let k = 0; k < nz; k++) {
           const id = g.idx(i, j, k);
@@ -1893,10 +1928,11 @@ export class FluidSolver implements SimBackend {
     const nxny = nx * ny;
     const q = this.charge;
     const dest = this.tmpCharge;
-    const recomb = Math.exp(-dt / 600);
+    const S = getAdvanced();
+    const recomb = Math.exp(-dt / (600 / Math.max(0.3, S.recombination)));
     const T_REV = 258.15;
     const T_MELT = 273.15;
-    const CAP = 40;
+    const CAP = S.chargeCap;
 
     for (let k = 0; k < nz; k++) {
       const p = f.p0[k];
@@ -1914,7 +1950,13 @@ export class FluidSolver implements SimBackend {
               const rimerN = Math.min(1, rimer / 2e-3);
               const iceN = Math.min(1, ice / 4e-4);
               const lwcN = Math.min(1, f.qc[id] / 5e-4);
-              const mag = 1.1 * rimerN * iceN * (0.25 + 0.75 * lwcN) * dt;
+              const mag =
+                1.1 *
+                S.chargeRate *
+                rimerN *
+                iceN *
+                (0.25 + 0.75 * lwcN) *
+                dt;
               if (T < T_REV) {
                 c -= mag * 0.58;
                 if (k + 1 < nz) q[id + nxny] += mag * 0.48;
@@ -1991,7 +2033,7 @@ export class FluidSolver implements SimBackend {
     }
     q.set(dest);
 
-    const flashDecay = Math.exp(-dt / 300);
+    const flashDecay = Math.exp(-dt / Math.max(60, getAdvanced().flashDecay));
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
         const ij = i + j * nx;
@@ -2040,7 +2082,7 @@ export class FluidSolver implements SimBackend {
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
         const ij = i + j * nx;
-        if (this.chargeCol[ij] < 0.45) continue;
+        if (this.chargeCol[ij] < getAdvanced().flashThreshold) continue;
 
         let qLower = 0;
         let qMid = 0;
@@ -2089,13 +2131,14 @@ export class FluidSolver implements SimBackend {
         if (!kPosL) kPosL = Math.max(1, Math.floor(kNeg * 0.45));
 
         let anvil = 0;
+        const anvilGate = 0.3 / Math.max(0.25, getAdvanced().anvilBias);
         for (let dj = -1; dj <= 1; dj++) {
           for (let di = -1; di <= 1; di++) {
             if (!di && !dj) continue;
             const ni = i + di;
             const nj = j + dj;
             if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
-            if (this.chargeCol[ni + nj * nx] > 0.3) anvil++;
+            if (this.chargeCol[ni + nj * nx] > anvilGate) anvil++;
           }
         }
 
@@ -2121,10 +2164,11 @@ export class FluidSolver implements SimBackend {
         const rate = Math.min(36, 2 + eBest * 3);
         if (Math.random() > 1 - Math.exp(-(rate / 60) * dt)) continue;
 
-        const wIc = eIc * 1.6;
-        const wNeg = eNeg * 0.85;
-        const wPos = ePos * 0.28;
-        const wSpi = eSpi * 0.4;
+        const cg = Math.max(0.2, getAdvanced().cgFraction);
+        const wIc = eIc * 1.6 / cg;
+        const wNeg = eNeg * 0.85 * cg;
+        const wPos = ePos * 0.28 * cg;
+        const wSpi = eSpi * 0.4 * getAdvanced().anvilBias;
         const tot = wIc + wNeg + wPos + wSpi;
         let r = Math.random() * Math.max(1e-6, tot);
         let kind: LightningKind = "ic";
@@ -2405,9 +2449,10 @@ export class FluidSolver implements SimBackend {
     const g = this.grid;
     const f = this.fields;
     const { nx, ny, nz, dx, dy } = g;
-    const aw = relaxFactor(dt, TERRAIN_TAU);
-    const asst = relaxFactor(dt, SST_TAU);
-    const drag = relaxFactor(dt, 280);
+    const S = getAdvanced();
+    const aw = relaxFactor(dt, TERRAIN_TAU / Math.max(0.3, S.terrainTau));
+    const asst = relaxFactor(dt, SST_TAU / Math.max(0.3, S.sstTau));
+    const drag = relaxFactor(dt, 280 / Math.max(0.2, S.terrainDrag));
     const water = this.waterGrid;
     const hAt = (ii: number, jj: number) =>
       height[
@@ -2444,12 +2489,18 @@ export class FluidSolver implements SimBackend {
         const kWind = kOpen < nz ? kOpen : nz - 1;
         const uSurf = g.uCenter(f.u, i, j, kWind);
         const vSurf = g.vCenter(f.v, i, j, kWind);
-        const target0 = orographicW(height, nx, ny, i, j, dx, dy, uSurf, vSurf);
+        const target0 =
+          orographicW(height, nx, ny, i, j, dx, dy, uSurf, vSurf) *
+          S.orographicLift;
         // Lift decays over ~3 layers so hills force a deeper wave than one face.
-        for (let dk = 0; dk < 4 && kOpen + dk < nz; dk++) {
+        const waveLayers = Math.max(
+          1,
+          Math.min(6, Math.round(4 * S.leeWaveDepth)),
+        );
+        for (let dk = 0; dk < waveLayers && kOpen + dk < nz; dk++) {
           const k = kOpen + dk;
           const face = g.wIdx(i, j, k);
-          const decay = Math.exp(-dk * 0.85);
+          const decay = Math.exp(-dk * (0.85 / Math.max(0.5, S.leeWaveDepth)));
           const tgt = target0 * decay;
           const mix = aw * (dk === 0 ? 1 : 0.55 * decay);
           f.w[face] += (tgt - f.w[face]) * mix;
@@ -2459,7 +2510,9 @@ export class FluidSolver implements SimBackend {
         if (kOpen < nz && drag > 0) {
           const rough =
             0.35 +
-            0.45 * (this.vegGrid ? Math.min(1, this.vegGrid[s]) : 0) +
+            0.45 *
+              (this.vegGrid ? Math.min(1, this.vegGrid[s]) : 0) *
+              S.roughnessVeg +
             0.35 * Math.min(1, slope * 40);
           const dragHere = Math.min(0.45, drag * rough);
           const ku = g.uIdx(i, j, kOpen);
@@ -2481,14 +2534,19 @@ export class FluidSolver implements SimBackend {
           const sx = dhdx * invS;
           const sy = dhdy * invS;
           // Positive dTh → accelerate uphill; cold pools drain downhill.
-          const accel = Math.max(-4, Math.min(4, dTh * 0.085)) * G * slope;
+          const accel =
+            Math.max(-4, Math.min(4, dTh * 0.085)) *
+            G *
+            slope *
+            S.slopeWind;
           const force = accel * Math.min(1, dt);
           f.u[g.uIdx(i, j, kOpen)] += sx * force * 0.5;
           f.u[g.uIdx(i + 1, j, kOpen)] += sx * force * 0.5;
           f.v[g.vIdx(i, j, kOpen)] += sy * force * 0.5;
           f.v[g.vIdx(i, j + 1, kOpen)] += sy * force * 0.5;
           // Continuity: climbing air lifts at the first open face.
-          f.w[g.wIdx(i, j, kOpen)] += Math.max(0, dTh) * slope * 0.15 * Math.min(1, dt);
+          f.w[g.wIdx(i, j, kOpen)] +=
+            Math.max(0, dTh) * slope * 0.15 * S.slopeWind * Math.min(1, dt);
         }
 
         const kind = this.kindGrid ? this.kindGrid[s] : 0;
@@ -2508,7 +2566,10 @@ export class FluidSolver implements SimBackend {
         } else if (kOpen < nz && this.soilGrid) {
           const soil = this.soilGrid[s];
           const veg = this.vegGrid ? this.vegGrid[s] : 0;
-          const supply = soil * (0.25 + 0.75 * veg);
+          const supply =
+            soil *
+            S.soilMoistureFlux *
+            (0.25 + 0.75 * veg * S.vegMoistureFlux);
           if (supply > 0.04) {
             const id = g.idx(i, j, kOpen);
             const p = f.p0[kOpen];

@@ -29,6 +29,18 @@ const RAIN_FALL = 12.0;
 /** How strongly rain follows the environmental wind (0–1). Snow is higher, hail lower. */
 const WIND_DRAG = 0.7;
 
+export interface PrecipTune {
+  spawn: number;
+  rainFall: number;
+  snowFall: number;
+  windDrag: number;
+  meltDepth: number;
+  rainSize: number;
+  snowSize: number;
+  streak: number;
+  opacity: number;
+}
+
 const vertexShader = /* glsl */ `
 attribute float aMelt;
 attribute float aKind;
@@ -120,6 +132,18 @@ export class PrecipitationParticles {
 
   private windEast = 0;
   private windNorth = 0;
+
+  private tune: PrecipTune = {
+    spawn: 1,
+    rainFall: 1,
+    snowFall: 1,
+    windDrag: 1,
+    meltDepth: MELT_DEPTH,
+    rainSize: 1,
+    snowSize: 1,
+    streak: 1,
+    opacity: 1,
+  };
 
   private readonly material: THREE.ShaderMaterial;
 
@@ -231,9 +255,15 @@ export class PrecipitationParticles {
     this.advance(dt);
   }
 
+  setTune(partial: Partial<PrecipTune>): void {
+    Object.assign(this.tune, partial);
+    const op = Math.max(0.05, Math.min(2, this.tune.opacity));
+    this.material.opacity = Math.min(1, op);
+  }
+
   private meltAt(y: number): number {
     if (this.freezeWorldY === null) return 1;
-    let m = (this.freezeWorldY - y) / MELT_DEPTH;
+    let m = (this.freezeWorldY - y) / Math.max(50, this.tune.meltDepth);
     if (m < 0) m = 0;
     else if (m > 1) m = 1;
     return m;
@@ -242,9 +272,9 @@ export class PrecipitationParticles {
   /** 0 snow, 1 rain, 2 hail. */
   private fallSpeed(kind: number, size: number, melt: number): number {
     if (kind >= 2) return 22 + 28 * size;
-    if (kind === 1) return RAIN_FALL;
-    const snow = SNOW_FALL * (0.65 + 0.7 * size);
-    return snow + (RAIN_FALL - snow) * melt;
+    if (kind === 1) return RAIN_FALL * this.tune.rainFall;
+    const snow = SNOW_FALL * this.tune.snowFall * (0.65 + 0.7 * size);
+    return snow + (RAIN_FALL * this.tune.rainFall - snow) * melt;
   }
 
   private emit(dt: number): void {
@@ -253,7 +283,7 @@ export class PrecipitationParticles {
     const { dnx, dny, dnz } = this;
     if (dnx < 1 || dny < 1 || dnz < 1) return;
 
-    this.spawnDebt += dt * SPAWN_RATE;
+    this.spawnDebt += dt * SPAWN_RATE * this.tune.spawn;
     let attempts = Math.min(240, this.spawnDebt | 0);
     this.spawnDebt -= attempts;
 
@@ -331,13 +361,25 @@ export class PrecipitationParticles {
       return { k: hailK, kind: 2, size };
     }
     if (snowV > PACK_EMPTY && (snowV >= rainV * 0.25 || rainV <= PACK_EMPTY || Math.random() < 0.4)) {
-      return { k: snowK, kind: 0, size: 0.35 + Math.random() * 0.65 };
+      return {
+        k: snowK,
+        kind: 0,
+        size: (0.35 + Math.random() * 0.65) * this.tune.snowSize,
+      };
     }
     if (rainV > PACK_EMPTY) {
-      return { k: rainK, kind: 1, size: 0.35 + Math.random() * 0.65 };
+      return {
+        k: rainK,
+        kind: 1,
+        size: (0.35 + Math.random() * 0.65) * this.tune.rainSize,
+      };
     }
     if (snowV > PACK_EMPTY) {
-      return { k: snowK, kind: 0, size: 0.35 + Math.random() * 0.65 };
+      return {
+        k: snowK,
+        kind: 0,
+        size: (0.35 + Math.random() * 0.65) * this.tune.snowSize,
+      };
     }
     return null;
   }
@@ -369,8 +411,9 @@ export class PrecipitationParticles {
         this.kind[p] = 1;
         melt = 1;
       }
-      const fall = this.fallSpeed(kind, size, melt);
-      const drag = kind >= 2 ? 0.18 : kind < 0.5 ? 0.9 : WIND_DRAG;
+      const fall = this.fallSpeed(kind, size, melt) * Math.max(0.4, this.tune.streak);
+      const drag =
+        (kind >= 2 ? 0.18 : kind < 0.5 ? 0.9 : WIND_DRAG) * this.tune.windDrag;
       const age = (this.age[p] += dt);
       let ny = y - fall * dt;
       let nx = pos[o] + this.windEast * drag * dt;

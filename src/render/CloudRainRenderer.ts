@@ -1194,15 +1194,112 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.cloudMat.setFieldGain(this.tune.gain);
     this.cloudMat.setLook({
       sigmaLiquid: this.tune.sigmaLiquid,
-      sigmaRain: this.tune.sigmaRain,
-      erosionLiquid: this.tune.erosionLiquid,
+      sigmaRain: this.tune.sigmaRain * this.advRainShaft,
+      erosionLiquid: this.tune.erosionLiquid * this.advSoftness,
       erosionIce: this.tune.erosionIce,
       mammatusDepth: this.tune.mammatusDepth,
       mammatusCell: this.tune.mammatusCell,
-      shaftMax: this.tune.shaftMax,
+      shaftMax: this.tune.shaftMax * this.advRainShaft,
       freezing: this.tune.freezing,
       shadowProbes: this.tune.shadowProbes,
     });
+  }
+
+  private advSoftness = 1;
+  private advRainShaft = 1;
+  private boltBrightScale = 1;
+  private boltLifeScale = 1;
+  private boltWidthScale = 1;
+
+  /** Push advanced display / precip / lightning knobs into the live renderer. */
+  applyAdvanced(s: {
+    exposure: number;
+    hazeDensity: number;
+    ambientStrength: number;
+    ambientAtten: number;
+    powder: number;
+    powderLength: number;
+    stepSize: number;
+    lodDistance: number;
+    detailFadeNear: number;
+    detailFadeFar: number;
+    shadowProbes: number;
+    sigmaIce: number;
+    mammatusDepth: number;
+    mammatusCell: number;
+    shaftMax: number;
+    iceStretchX: number;
+    iceStretchY: number;
+    iceStretchZ: number;
+    phaseLiquidFwd: number;
+    phaseLiquidBack: number;
+    backWeight: number;
+    multiScatterA: number;
+    multiScatterB: number;
+    multiScatterC: number;
+    cloudSoftness: number;
+    anvilOpacity: number;
+    rainShaftOpacity: number;
+    fogStrength: number;
+    groundBrightness: number;
+    precipSpawn: number;
+    rainFallVisual: number;
+    snowFallVisual: number;
+    precipWindDrag: number;
+    meltDepth: number;
+    rainSize: number;
+    snowSize: number;
+    precipStreak: number;
+    dropletOpacity: number;
+    dropletSize: number;
+    boltBrightness: number;
+    boltDuration: number;
+    boltThickness: number;
+  }): void {
+    this.advSoftness = s.cloudSoftness;
+    this.advRainShaft = s.rainShaftOpacity;
+    this.boltBrightScale = s.boltBrightness;
+    this.boltLifeScale = s.boltDuration;
+    this.boltWidthScale = s.boltThickness;
+    this.tune.mammatusDepth = s.mammatusDepth;
+    this.tune.mammatusCell = s.mammatusCell;
+    this.tune.shaftMax = s.shaftMax;
+    this.tune.shadowProbes = s.shadowProbes;
+    this.precipitation.setTune({
+      spawn: s.precipSpawn,
+      rainFall: s.rainFallVisual,
+      snowFall: s.snowFallVisual,
+      windDrag: s.precipWindDrag,
+      meltDepth: s.meltDepth,
+      rainSize: s.rainSize * s.dropletSize,
+      snowSize: s.snowSize * s.dropletSize,
+      streak: s.precipStreak,
+      opacity: s.dropletOpacity,
+    });
+    this.cloudMat?.setLook({
+      exposure: s.exposure,
+      hazeDensity: s.hazeDensity * s.fogStrength,
+      ambientStrength: s.ambientStrength,
+      ambientAtten: s.ambientAtten,
+      powder: s.powder,
+      powderLength: s.powderLength,
+      stepSize: s.stepSize,
+      lodDistance: s.lodDistance,
+      detailFade: [s.detailFadeNear, s.detailFadeFar],
+      shadowProbes: s.shadowProbes,
+      sigmaIce: s.sigmaIce * s.anvilOpacity,
+      mammatusDepth: s.mammatusDepth,
+      mammatusCell: s.mammatusCell,
+      shaftMax: s.shaftMax * s.rainShaftOpacity,
+      iceStretch: [s.iceStretchX, s.iceStretchY, s.iceStretchZ],
+      phaseLiquid: [s.phaseLiquidFwd, s.phaseLiquidBack],
+      backWeight: s.backWeight,
+      multiScatter: [s.multiScatterA, s.multiScatterB, s.multiScatterC],
+      erosionLiquid: this.tune.erosionLiquid * s.cloudSoftness,
+      sigmaRain: this.tune.sigmaRain * s.rainShaftOpacity,
+    });
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    groundMat.color.setScalar(Math.max(0.2, Math.min(1.6, s.groundBrightness)));
   }
 
   private syncSky(): void {
@@ -2507,19 +2604,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       endY: to.y,
       endZ,
       age: 0,
-      life,
+      life: life * this.boltLifeScale,
       seed,
       course: c,
       isCg,
       channel,
       brightness:
-        kind === "poscg"
+        (kind === "poscg"
           ? 1.05 + Math.random() * 0.35
           : kind === "spider"
             ? 1.0 + Math.random() * 0.3
             : kind === "ic"
               ? 1.05 + Math.random() * 0.35
-              : 0.7 + Math.random() * 0.5,
+              : 0.7 + Math.random() * 0.5) * this.boltBrightScale,
     });
     if (this.liveBolts.length > 6) this.liveBolts.length = 6;
     if (kind === "sprite" && this.spriteView) {
@@ -2655,10 +2752,11 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
   }
 
   private kindWidths(kind: LightningKind): { core: number; glow: number } {
-    if (kind === "poscg") return { core: 22, glow: 130 };
-    if (kind === "negcg") return { core: 12, glow: 70 };
-    if (kind === "spider") return { core: 14, glow: 90 };
-    return { core: 13, glow: 85 };
+    const s = this.boltWidthScale;
+    if (kind === "poscg") return { core: 22 * s, glow: 130 * s };
+    if (kind === "negcg") return { core: 12 * s, glow: 70 * s };
+    if (kind === "spider") return { core: 14 * s, glow: 90 * s };
+    return { core: 13 * s, glow: 85 * s };
   }
 
   private applyKindTint(kind: LightningKind): void {

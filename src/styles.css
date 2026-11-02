@@ -739,7 +739,7 @@ label {
   top: 52px;
   left: 12px;
   z-index: 40;
-  width: min(340px, calc(100% - 24px));
+  width: min(380px, calc(100% - 24px));
   max-height: calc(100% - 72px);
   overflow: auto;
   display: flex;
@@ -862,6 +862,30 @@ label {
   color: var(--text);
   min-width: 2.8rem;
   text-align: right;
+}
+
+.advanced-tune label {
+  grid-template-columns: 108px 1fr auto;
+}
+
+.advanced-tune .adv-name {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.2;
+}
+
+.advanced-tune .adv-val {
+  min-width: 3.4rem;
+}
+
+.advanced-reset-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.35rem 0 0.15rem;
+}
+
+.advanced-reset-row button {
+  font-size: 0.75rem;
 }
 
 .sun-controls {

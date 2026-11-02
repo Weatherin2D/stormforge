@@ -22,6 +22,12 @@ import { sampleSurfaceWinds } from "./sim/surfaceWinds";
 import { FrameStore } from "./sim/FrameStore";
 import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
 import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
+import {
+  getAdvanced,
+  mountAdvancedSettingsUI,
+  replaceAdvanced,
+  type AdvancedValues,
+} from "./sim/AdvancedSettings";
 import { unpackVortexLevels } from "./sim/fieldPack";
 import {
   buildHeights,
@@ -80,6 +86,7 @@ export class App {
   /** Freeze sun/clock only; simulation keeps running. */
   private clockPaused = false;
   private lightningFreq = 1;
+  private advancedSync: { syncFromStore: () => void } | null = null;
   private raf = 0;
   private lastTs = 0;
   private runName = "Stormforge Run";
@@ -296,6 +303,7 @@ export class App {
                 </div>
               </div>
             </details>
+            <div id="advanced-settings-host"></div>
           </div>
           <div class="viewport-hint" id="viewport-hint">
             <span id="look-hint">Drag to look � scroll to zoom</span>
@@ -909,6 +917,16 @@ export class App {
     liveMonth.addEventListener("input", applyLiveSun);
     liveDaylen.addEventListener("input", applyLiveSun);
 
+    const advHost = this.simScreen.querySelector(
+      "#advanced-settings-host",
+    ) as HTMLElement | null;
+    if (advHost) {
+      this.advancedSync = mountAdvancedSettingsUI(advHost, () => {
+        this.applyAdvancedSettings();
+      });
+      this.applyAdvancedSettings();
+    }
+
     const applyFrontsBtn = q("#btn-apply-fronts");
     applyFrontsBtn.addEventListener("click", () => {
       if (!this.frontEditor) return;
@@ -1416,6 +1434,7 @@ export class App {
     this.radar2d.setWindsVisible(false);
     this.renderer.setWindsVisible(false);
     this.renderer.setDropletsVisible(this.showDroplets);
+    this.applyAdvancedSettings();
     this.mapBucket = -1;
     this.mapPackedProduct = null;
 
@@ -1514,6 +1533,12 @@ export class App {
     }
   }
 
+  /** Push the live advanced slider store into renderer (and stored physics knobs). */
+  private applyAdvancedSettings(): void {
+    const s = getAdvanced();
+    this.renderer?.applyAdvanced(s);
+  }
+
   // -- Save / Load -------------------------------------------------------------
 
   /** Collect current state and trigger a .sfz download. */
@@ -1575,6 +1600,7 @@ export class App {
         cloudTune: { ...tune },
         lightningFreq: this.lightningFreq,
         clockPaused: this.clockPaused,
+        advanced: { ...getAdvanced() },
       },
     };
 
@@ -1671,6 +1697,13 @@ export class App {
     if (lfEl) lfEl.value = String(lf);
     const lfVal = this.simScreen.querySelector("#lightning-freq-val") as HTMLElement | null;
     if (lfVal) lfVal.textContent = Math.round(lf * 100) + "%";
+
+    // -- Advanced settings -----------------------------------------------------
+    if (v.advanced) {
+      replaceAdvanced(v.advanced as AdvancedValues);
+      this.advancedSync?.syncFromStore();
+      this.applyAdvancedSettings();
+    }
 
     // -- Clock pause -----------------------------------------------------------
     this.setClockPaused(v.clockPaused);

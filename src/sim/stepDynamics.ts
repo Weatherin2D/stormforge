@@ -12,6 +12,7 @@ import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { esatFast, mixingRatio } from "./thermo";
 import { sampleSynoptic, getActiveSynoptic } from "./synoptic";
+import { getAdvanced } from "./AdvancedSettings";
 
 
 /**
@@ -77,7 +78,10 @@ export function stepBLMixing(
 
   // Mixing coefficient: stronger near surface, weaker aloft
   // ~0.05 per step at k=0, decaying exponentially
-  const mixBase = Math.min(0.06, 0.015 * dt);
+  const mixBase =
+    Math.min(0.06, 0.015 * dt) *
+    getAdvanced().vertMixing *
+    getAdvanced().horizMixing;
 
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {

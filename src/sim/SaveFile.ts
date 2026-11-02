@@ -12,6 +12,7 @@
 
 import type { SetupValues } from "../setup/SetupScreen";
 import type { MapProductId } from "./mapProducts";
+import type { AdvancedValues } from "./AdvancedSettings";
 
 /** Persisted render/display state. */
 export interface SavedView {
@@ -33,6 +34,8 @@ export interface SavedView {
   };
   lightningFreq: number;
   clockPaused: boolean;
+  /** Optional advanced slider bag (additive; older saves omit it). */
+  advanced?: Partial<AdvancedValues>;
 }
 
 /** Top-level save document. */

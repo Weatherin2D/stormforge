@@ -1,6 +1,7 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { TFromTheta, qsat } from "./thermo";
+import { getAdvanced } from "./AdvancedSettings";
 
 export interface RadiationOptions {
   enabled: boolean;
@@ -218,18 +219,20 @@ export function applySurfaceRadiation(
   if (!opts.enabled || dt <= 0) return;
 
   const { nx, ny, nz, dx, dy } = grid;
+  const adv = getAdvanced();
   const cosZ = cosZenith(opts.latitudeDeg, opts.month, opts.solarHour);
   const sunFlat = Math.max(0, cosZ);
   // Soft optical path: low sun still heats, but less than Lambert flat.
-  const airMass = sunFlat / (sunFlat + 0.12);
+  const airMass = sunFlat / (sunFlat + Math.max(0.02, adv.airMassSoft));
   const sun = sunDirection(opts.latitudeDeg, opts.month, opts.solarHour);
 
-  const pace = Math.max(1, opts.diurnalSpeed);
+  const pace = Math.max(1, opts.diurnalSpeed) * Math.max(0.2, adv.radiationPace);
   // Peak SW ~3.6 K per solar-hour at overhead sun on dry land.
-  const swPeakKs = (3.6 * pace) / 3600;
+  const swPeakKs = ((3.6 * pace) / 3600) * adv.swHeating;
   // IR always on; night net cool ~1.6 K per solar-hour over land.
-  const lwLandKs = (1.6 * pace) / 3600;
-  const lwWaterKs = (0.55 * pace) / 3600;
+  const night = sunFlat < 0.05 ? adv.nightCoolBoost : 1;
+  const lwLandKs = ((1.6 * pace) / 3600) * adv.lwLandCooling * night;
+  const lwWaterKs = ((0.55 * pace) / 3600) * adv.lwWaterCooling * night;
 
   const useMask = landMask !== undefined && landMask.length >= nx * ny;
   const height = ctx?.height && ctx.height.length >= nx * ny ? ctx.height : null;
@@ -267,18 +270,27 @@ export function applySurfaceRadiation(
         const ny_ = 1;
         const nz_ = dhdy;
         const nlen = Math.hypot(nx_, ny_, nz_) || 1;
-        slopeSun = Math.max(
+        const aspect = Math.max(
           0,
           (sun.x * nx_ + sun.y * ny_ + sun.z * nz_) / nlen,
         );
+        slopeSun =
+          sunFlat * (1 - Math.min(1, adv.slopeAspectGain)) +
+          aspect * Math.min(1, adv.slopeAspectGain);
       }
 
       // Bowen-like split: moist / vegetated land evaporates → less sensible heat.
-      const evaporative = isWater
-        ? 0.85
-        : Math.min(0.9, 0.15 + 0.55 * soilM + 0.35 * vegM);
+      const evaporative = Math.min(
+        0.95,
+        (isWater
+          ? 0.85
+          : Math.min(0.9, 0.15 + 0.55 * soilM + 0.35 * vegM)) *
+          (isWater ? adv.evaporativeWater : adv.evaporativeLand),
+      );
       const sensibleFrac = 1 - evaporative;
-      const albedo = isWater ? 0.06 : 0.18 + 0.1 * vegM;
+      const albedo = isWater
+        ? adv.waterAlbedo
+        : adv.landAlbedo + 0.1 * vegM;
       const swAbs =
         swPeakKs * slopeSun * airMass * (1 - albedo) * (isWater ? 0.35 : land);
 
@@ -295,11 +307,15 @@ export function applySurfaceRadiation(
       const sensKs = swAbs * sensibleFrac - lw;
       // Latent: raise qv toward a land/water target instead of dumping into θ.
       const latFrac = swAbs * evaporative;
+      const depthSpan = Math.max(
+        2,
+        Math.round(kSpan * Math.max(0.4, adv.heatDepth)),
+      );
 
-      for (let dk = 0; dk < kSpan; dk++) {
+      for (let dk = 0; dk < depthSpan; dk++) {
         const k = k0 + dk;
         if (k >= nz) break;
-        const wgt = Math.exp(-dk / 1.35);
+        const wgt = Math.exp(-dk / (1.35 * Math.max(0.5, adv.heatDepth)));
         if (wgt < 0.07) continue;
         const id = grid.idx(i, j, k);
         const th0 = fields.theta0[k];

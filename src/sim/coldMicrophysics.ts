@@ -17,6 +17,7 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { CP, LV, RV, esatFast, mixingRatio } from "./thermo";
+import { getAdvanced } from "./AdvancedSettings";
 
 export const LF = 3.34e5;
 export const LS = LV + LF;
@@ -109,9 +110,9 @@ function qsatLiquid(tc: number, p: number): number {
 
 /** Crystals per m³ from Cooper (1986), capped at 250 L⁻¹. */
 export function cooperCrystals(tc: number): number {
-  return tc >= NUCLEATION_START
-    ? 0
-    : Math.min(MAX_NUCLEATED, 5 * Math.exp(0.304 * -tc));
+  if (tc >= NUCLEATION_START) return 0;
+  const n = Math.min(MAX_NUCLEATED, 5 * Math.exp(0.304 * -tc));
+  return n * getAdvanced().iceNucleation;
 }
 
 /** Mean cloud-ice crystal diameter, m (solid spheres). */
@@ -329,10 +330,12 @@ function snowProcesses(
   const tk = theta[i] * exner;
   const tc = tk - T0;
   if (tc < 0 && ice[i] > 0) {
+    const S = getAdvanced();
     const auto =
       ICE_AUTOCONVERSION_RATE *
+      S.iceAutoconvRate *
       Math.exp(0.025 * tc) *
-      Math.max(0, ice[i] - ICE_AUTOCONVERSION_THRESHOLD);
+      Math.max(0, ice[i] - ICE_AUTOCONVERSION_THRESHOLD * S.iceAutoconvThresh);
     const moved = Math.min(ice[i], auto * dt);
     ice[i] -= moved;
     snow[i] += moved;
@@ -358,7 +361,10 @@ function snowProcesses(
     );
     ice[i] -= saci;
     snow[i] += saci;
-    const sacw = Math.min(cloud[i], sweep * cloud[i] * dt);
+    const sacw = Math.min(
+      cloud[i],
+      sweep * cloud[i] * dt * getAdvanced().rimingRate,
+    );
     cloud[i] -= sacw;
     snow[i] += sacw;
     theta[i] += (LF / (CP * exner)) * sacw;
@@ -430,11 +436,13 @@ function graupelProcesses(
       graupel[i] += frozen;
       theta[i] += LF * heat * frozen;
     }
+    const S = getAdvanced();
     const auto = Math.min(
       snow[i],
       SNOW_TO_GRAUPEL_RATE *
+        S.snowToGraupelRate *
         Math.exp(0.09 * tc) *
-        Math.max(0, snow[i] - SNOW_TO_GRAUPEL_THRESHOLD) *
+        Math.max(0, snow[i] - SNOW_TO_GRAUPEL_THRESHOLD * S.snowToGraupelThresh) *
         dt,
     );
     snow[i] -= auto;
@@ -565,7 +573,7 @@ function hailProcesses(
   const tc = tk - T0;
   const heat = 1 / (CP * exner);
   let cooling = 0;
-  const zone = hailGrowthZone(tc);
+  const zone = hailGrowthZone(tc) * getAdvanced().hailGrowth;
   const updraft = 0.5 + 0.5 * Math.min(1, Math.max(0, wUp) / 16);
   const grow = zone * updraft;
 
@@ -647,9 +655,11 @@ function hailProcesses(
     const hacw = Math.min(cloud[i], sweep * cloud[i] * dt);
     cloud[i] -= hacw;
     rain[i] += hacw;
+    const S = getAdvanced();
     const rate =
-      (2 * Math.PI * KA * tc * vent) / (rho * LF) +
-      ((CW * tc) / LF) * sweep * (cloud[i] + rain[i]);
+      ((2 * Math.PI * KA * tc * vent) / (rho * LF) +
+        ((CW * tc) / LF) * sweep * (cloud[i] + rain[i])) *
+      S.meltingRate;
     const melt = Math.min(hail[i], rate * dt, (CP * tc) / LF);
     hail[i] -= melt;
     rain[i] += melt;
