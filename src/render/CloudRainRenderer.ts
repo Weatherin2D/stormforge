@@ -756,15 +756,55 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     }
   }
 
+  /** Terrain metres under a world position. Open ground and water are 0. */
+  private terrainHeightAt(x: number, z: number): number {
+    const h = this.surfaceH;
+    const nx = this.surfaceNx;
+    const ny = this.surfaceNy;
+    if (!h || nx < 2 || ny < 2 || this.spanX <= 0 || this.spanZ <= 0) return 0;
+    const u = x / this.spanX + 0.5;
+    const v = 0.5 - z / this.spanZ;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+    const gx = u * (nx - 1);
+    const gy = v * (ny - 1);
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    const x1 = Math.min(nx - 1, x0 + 1);
+    const y1 = Math.min(ny - 1, y0 + 1);
+    const tx = gx - x0;
+    const ty = gy - y0;
+    const at = (ix: number, iy: number) => h[ix + nx * iy] ?? 0;
+    const a = at(x0, y0) * (1 - tx) + at(x1, y0) * tx;
+    const b = at(x0, y1) * (1 - tx) + at(x1, y1) * tx;
+    return Math.max(0, a * (1 - ty) + b * ty);
+  }
+
+  /** Lowest eye position: standing on the surface, not inside the hill. */
+  private surfaceEyeY(x: number, z: number): number {
+    return this.groundY + this.terrainHeightAt(x, z) + this.eyeM;
+  }
+
+  /**
+   * Keep the eye above the local surface. followGround drops a walker
+   * onto the downhill side; a camera already in the air only gets lifted.
+   */
+  private holdAboveSurface(x: number, y: number, z: number, followGround: boolean): number {
+    const floor = this.surfaceEyeY(x, z);
+    const top = this.groundY + Math.max(this.eyeM, this.spanY - 2);
+    const next = followGround ? floor : y;
+    return Math.min(top, Math.max(floor, next));
+  }
+
   /**
    * Move the player. xn/yn are 0..1 across the domain (east, north).
-   * Altitude is meters above the ground.
+   * Altitude is meters above the flat domain floor, and never below the surface.
    */
   teleportTo(xn: number, yn: number, altitudeM: number): void {
     const x = (Math.min(1, Math.max(0, xn)) - 0.5) * this.spanX;
     const z = -((Math.min(1, Math.max(0, yn)) - 0.5) * this.spanZ);
     const alt = Math.min(this.spanY - 2, Math.max(this.eyeM, altitudeM));
-    this.camera.position.set(x, this.groundY + alt, z);
+    const y = this.holdAboveSurface(x, this.groundY + alt, z, false);
+    this.camera.position.set(x, y, z);
   }
 
   playerState(): {
@@ -789,7 +829,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
   private spawnPlayer(): void {
     this.yaw = 0;
     this.pitch = -0.22;
-    this.camera.position.set(0, this.groundY + this.eyeM, 0);
+    const y = this.holdAboveSurface(0, this.groundY + this.eyeM, 0, true);
+    this.camera.position.set(0, y, 0);
     this.camera.rotation.set(this.pitch, this.yaw, 0);
     this.camera.fov = 68;
     this.camera.updateProjectionMatrix();
@@ -941,8 +982,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const halfX = this.spanX * 0.48;
     const halfZ = this.spanZ * 0.48;
     const p = this.camera.position;
+    const onGround = p.y <= this.surfaceEyeY(p.x, p.z) + 0.75;
     p.x = Math.min(halfX, Math.max(-halfX, p.x + dx));
     p.z = Math.min(halfZ, Math.max(-halfZ, p.z + dz));
+    p.y = this.holdAboveSurface(p.x, p.y, p.z, onGround);
   }
 
   setSunFrac(frac: number): void {
@@ -1546,6 +1589,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     color.needsUpdate = true;
     this.writeGroundNormals(pos, scaleX, scaleY);
     this.rebuildForest();
+    const eye = this.camera.position;
+    eye.y = this.holdAboveSurface(eye.x, eye.y, eye.z, false);
   }
 
   /** Pines on vegetated land. A stand, not a canopy model. */
