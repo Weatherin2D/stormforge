@@ -267,6 +267,8 @@ export class CloudRainRenderer {
     shaftMax: DEFAULT_LOOK.shaftMax,
     freezing: DEFAULT_LOOK.freezing,
     shadowProbes: DEFAULT_LOOK.shadowProbes,
+    stepSize: DEFAULT_LOOK.stepSize,
+    lodDistance: DEFAULT_LOOK.lodDistance,
   };
   private sky: THREE.Mesh;
   /** CPU-computed atmospheric sky table (sky.ts), uploaded as a 2D texture. */
@@ -1317,6 +1319,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.tune.mammatusCell = s.mammatusCell;
     this.tune.shaftMax = shafts;
     this.tune.shadowProbes = probes;
+    this.tune.stepSize = s.stepSize;
+    this.tune.lodDistance = s.lodDistance;
     this.precipitation.setTune({
       spawn: s.precipSpawn,
       rainFall: s.rainFallVisual,
@@ -1453,10 +1457,12 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       g.g * (E[1] / Math.PI * skyGain + NIGHT_BOTTOM[1] * night),
       g.b * (E[2] / Math.PI * skyGain + NIGHT_BOTTOM[2] * night),
     );
-    // Night: coarser march (fewer steps) — translucent night clouds were burning max steps.
-    const nightStep = night > 0.55 ? 1.6 : night > 0.25 ? 1.25 : 1.0;
+    // Night: slightly coarser march — keep the multiplier modest so horizon
+    // rays still hit thin decks (large steps read as concentric rings).
+    const nightStep = night > 0.55 ? 1.3 : night > 0.25 ? 1.12 : 1.0;
     this.cloudMat.setLook({
-      stepSize: DEFAULT_LOOK.stepSize * nightStep,
+      stepSize: Math.max(16, this.tune.stepSize * nightStep),
+      lodDistance: this.tune.lodDistance,
       shadowProbes: night > 0.7 ? 0 : this.tune.shadowProbes,
     });
   }

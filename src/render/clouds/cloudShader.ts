@@ -73,7 +73,7 @@ uniform vec2  uDetailFade;    // (start, end) distance in metres where detail fa
 
 // marching
 uniform float uStepSize;      // metres
-uniform float uLodDistance;   // step size doubles every uLodDistance metres from the camera
+uniform float uLodDistance;   // soft LOD scale (metres); growth is capped to avoid rings
 uniform float uLightStep;     // metres, first sun-march step
 uniform float uLightGrowth;   // step growth per sun-march sample (2.0 = doubling)
 uniform float uAmbientStep;   // metres between ambient up/down samples
@@ -473,9 +473,16 @@ void main() {
   vec3 phases = vec3(mlPhase(cosT, 1.0), 0.5 * mlPhase(cosT, 0.5), 0.25 * mlPhase(cosT, 0.25));
   vec3 rainPh = rainPhase(cosT);
 
-  float pathLen = tFar - tNear;
-  float baseStep = max(uStepSize, pathLen / float(MAX_STEPS));
-  float t = tNear + baseStep * ign(gl_FragCoord.xy + uFrame * 5.588238);
+  float pathLen = max(tFar - tNear, 1.0);
+  // Fine steps stay near uStepSize. Do NOT inflate to pathLen/MAX_STEPS —
+  // that made horizon rays use kilometre steps and miss thin decks as rings.
+  float fineStep = max(uStepSize, 12.0);
+  float coarseStep = max(fineStep * 2.5, min(pathLen / float(MAX_STEPS), fineStep * 6.0));
+  float lodScale = max(uLodDistance, 4000.0);
+  float jitter0 = ign(gl_FragCoord.xy + uFrame * 5.588238);
+  float t = tNear + coarseStep * jitter0;
+  bool inside = false;
+  int clearRun = 0;
 
   vec3 col = vec3(0.0);
   float T = 1.0;
@@ -486,20 +493,52 @@ void main() {
   for (int i = 0; i < MAX_STEPS; i++) {
     if (t >= tFar || T < 0.02) break;
 
-    float dt = baseStep * (1.0 + t / uLodDistance);
-    vec3 p = ro + rd * t;
+    // Soft distance LOD, hard-capped so sample shells stay dense enough to
+    // hit a flat cloud layer seen edge-on (the classic concentric rings).
+    float lod = 1.0 + 0.28 * (t / lodScale);
+    float dtNom = (inside ? fineStep : coarseStep) * lod;
+    dtNom = min(dtNom, fineStep * 8.0);
+
+    // Per-step jitter breaks coherent spherical shells around the camera.
+    float j = ign(gl_FragCoord.xy + vec2(float(i) * 19.19 + uFrame * 7.1, float(i) * 3.7));
+    float dt = dtNom;
+    float tSample = t + (j - 0.5) * dtNom * 0.9;
+    if (tSample < tNear) tSample = tNear;
+    if (tSample > tFar) tSample = tFar;
+    vec3 p = ro + rd * tSample;
 
     // cheap empty-space probe: one fetch of the raw field, no noise
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
     vec4 field = textureLod(uFields, uvw, 0.0);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
-    if (probe.x + probe.y + probe.z + hailHere < 0.003) {
-      t += dt * 2.0;
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.003;
+
+    // MeteoLAB-style refine: step back into the slab with fine steps so a
+    // distant thin deck is not skipped between coarse samples.
+    if (!inside) {
+      if (cloudy && coarseStep > fineStep * 1.05) {
+        inside = true;
+        clearRun = 0;
+        t = max(tNear, t - coarseStep * 0.85);
+        continue;
+      }
+      if (!cloudy) {
+        t += dt * 1.75;
+        continue;
+      }
+    } else if (!cloudy) {
+      clearRun += 1;
+      if (float(clearRun) * fineStep > coarseStep + fineStep) {
+        inside = false;
+      }
+      t += dt;
       continue;
+    } else {
+      clearRun = 0;
     }
 
-    float detail = 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t);
+    float detail = 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, tSample);
     vec3 sig = sampleSigma(p, detail);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
@@ -560,10 +599,11 @@ void main() {
         S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
       }
 
-      float stepT = exp(-sigT * dt);
+      // Integrate with the nominal step so jitter does not bias optical depth.
+      float stepT = exp(-sigT * dtNom);
       float w = T * (1.0 - stepT);
       col += S * w;
-      distAcc += t * w;
+      distAcc += tSample * w;
       weightAcc += w;
       T *= stepT;
     }

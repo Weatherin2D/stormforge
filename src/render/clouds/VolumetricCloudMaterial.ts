@@ -60,8 +60,9 @@ export const DEFAULT_LOOK: CloudLook = {
   // Unused by MeteoLAB value-noise path (coords are km via p*0.001).
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
-  stepSize: 32,
-  lodDistance: 14000,
+  stepSize: 28,
+  // Larger = slower step growth with distance (fewer horizon rings).
+  lodDistance: 22000,
   detailFade: [4500, 24000],
   mammatusDepth: 600,
   mammatusCell: 1600,
