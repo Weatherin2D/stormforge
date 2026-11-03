@@ -32,7 +32,10 @@ interface StepMsg {
   type: "step";
   dt: number;
   wall: number;
-  lightning: boolean;
+}
+
+interface ViewMsg {
+  type: "view";
   wantVolume: boolean;
   map: MapProductId | null;
   winds: boolean;
@@ -92,7 +95,7 @@ function publish(extra: {
   if (!solver) return;
   const sun = solver.getSolarStatus();
   statsAge++;
-  if (extra.refreshStats || extra.volume || statsAge >= 8) {
+  if (extra.refreshStats || extra.volume || statsAge >= 24) {
     cachedStats = solver.cloudRainStats();
     statsAge = 0;
   }
@@ -168,27 +171,46 @@ self.onmessage = (ev: MessageEvent) => {
     | { type: "clock"; paused: boolean }
     | { type: "synoptic"; setup: SynopticSetup }
     | { type: "followStorm"; on: boolean }
-    | StepMsg;
+    | StepMsg
+    | ViewMsg;
   if (msg.type === "rebuild") {
-    const grid = new Grid3D(msg.grid);
-    solver = new FluidSolver(grid);
-    solver.rebuild(grid, msg.sounding, msg.opts);
-    solver.setRadiation(msg.radiation);
-    solver.clockPaused = msg.clockPaused;
-    if (msg.hydrostatic) solver.hydrostatic = msg.hydrostatic;
-    cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
-    statsAge = 99;
-    publish({
-      volume: null,
-      map: null,
-      mapId: null,
-      winds: null,
-      strikes: [],
-      refreshStats: true,
-    });
+    try {
+      const grid = new Grid3D(msg.grid);
+      solver = new FluidSolver(grid);
+      solver.rebuild(grid, msg.sounding, msg.opts);
+      solver.setRadiation(msg.radiation);
+      solver.clockPaused = msg.clockPaused;
+      if (msg.hydrostatic) solver.hydrostatic = msg.hydrostatic;
+      cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
+      statsAge = 99;
+      publish({
+        volume: null,
+        map: null,
+        mapId: null,
+        winds: null,
+        strikes: [],
+        refreshStats: true,
+      });
+    } catch (err) {
+      console.error("Stormforge rebuild failed", err);
+      (self as unknown as { postMessage(message: unknown): void }).postMessage({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
-  if (!solver) return;
+  if (!solver) {
+    // A step sent before rebuild finished must still answer, or the clock
+    // waits forever on a worker that has nothing to advance.
+    if (msg.type === "step" || msg.type === "view") {
+      (self as unknown as { postMessage(message: unknown): void }).postMessage({
+        type: "error",
+        message: "Physics is not ready.",
+      });
+    }
+    return;
+  }
   if (msg.type === "reset") {
     solver.reset(msg.sounding, msg.opts);
     publish({ volume: null, map: null, mapId: null, winds: null, strikes: [] });
@@ -215,27 +237,53 @@ self.onmessage = (ev: MessageEvent) => {
     solver.setFollowStorm(!!msg.on);
     return;
   }
-  // Outer dt may exceed 2 s on coarse / hydrostatic grids; the solver
-  // CFL-splits internally. Chunk only so a single message cannot runaway.
-  if (msg.dt > 1e-6) {
-    const g = solver.grid;
-    const nCells = g.nx * g.ny * g.nz;
-    let left = Math.max(0, msg.dt);
-    const chunk =
-      Math.min(g.dx, g.dy) > 5000 || nCells > 400_000 ? 8 : 2;
-    while (left > 1e-6) {
-      const h = Math.min(chunk, left);
-      solver.step(h);
-      left -= h;
+  // Physics returns before any texture pack, so the next step can start
+  // while the picture is built on its own message.
+  if (msg.type === "step") {
+    try {
+      // Outer dt may exceed 2 s on coarse / hydrostatic grids; the solver
+      // CFL-splits internally. Chunk only so a single message cannot runaway.
+      if (msg.dt > 1e-6) {
+        const g = solver.grid;
+        const nCells = g.nx * g.ny * g.nz;
+        let left = Math.max(0, msg.dt);
+        const chunk =
+          Math.min(g.dx, g.dy) > 5000 || nCells > 400_000 ? 8 : 2;
+        while (left > 1e-6) {
+          const h = Math.min(chunk, left);
+          solver.step(h);
+          left -= h;
+        }
+      }
+      publish({
+        volume: null,
+        map: null,
+        mapId: null,
+        winds: null,
+        strikes: solver.rollDisplayLightning(msg.wall),
+        refreshStats: false,
+      });
+    } catch (err) {
+      console.error("Stormforge step failed", err);
+      publish({
+        volume: null,
+        map: null,
+        mapId: null,
+        winds: null,
+        strikes: [],
+        refreshStats: false,
+      });
     }
+    return;
   }
+  if (msg.type !== "view") return;
+  try {
   solver.setMapDomain(msg.mapDomain === "nest" ? "nest" : "parent");
   solver.prepareView();
   const shown = solver.displayGrid;
   const shownFields = solver.displayFields;
   const mapped = solver.viewGrid;
   const mappedFields = solver.viewFields;
-  const strikes = msg.lightning ? solver.rollDisplayLightning(msg.wall) : [];
   let volume: Uint8Array | null = null;
   if (msg.wantVolume) {
     const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
@@ -289,7 +337,7 @@ self.onmessage = (ev: MessageEvent) => {
     map,
     mapId: msg.map,
     winds,
-    strikes,
+    strikes: [],
     swath,
     coldPool,
     field,
@@ -300,4 +348,19 @@ self.onmessage = (ev: MessageEvent) => {
     section,
     refreshStats: !!msg.wantVolume,
   });
+  } catch (err) {
+    console.error("Stormforge view pack failed", err);
+    publish({
+      volume: null,
+      map: null,
+      mapId: null,
+      winds: null,
+      strikes: [],
+      refreshStats: false,
+    });
+  }
 };
+
+(self as unknown as { postMessage(message: unknown): void }).postMessage({
+  type: "hello",
+});

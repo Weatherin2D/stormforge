@@ -50,6 +50,9 @@ export const cloudFragmentShader = /* glsl */ `
 varying vec3 vWorldPos;
 
 uniform sampler3D uFields;
+uniform sampler3D uFieldsPrev; // previous packed volume, for the frame blend
+uniform float uVolumeMix;      // 0 = previous volume, 1 = current
+uniform float uStepBudget;     // primary march cap; MAX_STEPS stays the compile bound
 uniform sampler3D uShapeNoise;
 uniform sampler3D uDetailNoise;
 
@@ -233,12 +236,21 @@ float risingBillow(vec3 pKm, float wKm){
   );
 }
 
+// One tap of the packed volume. Once the blend has finished, skip the history fetch.
+vec4 fieldTap(vec3 uvw) {
+  vec4 cur = textureLod(uFields, uvw, 0.0);
+  if (uVolumeMix >= 0.999) return cur;
+  return mix(textureLod(uFieldsPrev, uvw, 0.0), cur, clamp(uVolumeMix, 0.0, 1.0));
+}
+
 // Wide soft filter — packed Uint8 cloud opacity saturates to 1 fast, so a
 // 1-texel tap still reads as lego bricks. Two-texel cross + diagonals blur it.
 vec3 sampleFieldsSoft(vec3 uvw){
   ivec3 sz = textureSize(uFields, 0);
   vec3 t = 1.0 / max(vec3(sz), vec3(1.0));
   vec3 t2 = t * 1.6;
+  // Detail filter reads the current volume only. Blending both textures here
+  // doubles thirteen taps on every lit sample and stalls the frame.
   vec3 sum = textureLod(uFields, uvw, 0.0).rgb * 3.0;
   sum += textureLod(uFields, uvw + vec3(t.x, 0.0, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw - vec3(t.x, 0.0, 0.0), 0.0).rgb;
@@ -322,7 +334,7 @@ vec3 sampleSigma(vec3 p, float detail) {
   // Soft field sample when carving detail — raw for cheap light probes.
   vec3 f = detail > 0.01
     ? sampleFieldsSoft(uvw)
-    : max(textureLod(uFields, uvw, 0.0).rgb * uFieldGain, vec3(0.0));
+    : max(fieldTap(uvw).rgb * uFieldGain, vec3(0.0));
   float liq = f.x;
   float ice = f.y;
   float rain = f.z;
@@ -337,7 +349,7 @@ vec3 sampleSigma(vec3 p, float detail) {
       vec3 up = p + vec3(0.0, float(s) * 500.0, 0.0);
       if (up.y < uBoxMax.y) {
         vec3 uvw2 = (up - uBoxMin) / (uBoxMax - uBoxMin);
-        vec3 f2 = textureLod(uFields, uvw2, 0.0).rgb * uFieldGain;
+        vec3 f2 = fieldTap(uvw2).rgb * uFieldGain;
         if (f2.y > 0.002) { iceAbove += f2.y; steps++; }
       }
     }
@@ -438,7 +450,7 @@ vec3 sampleSigma(vec3 p, float detail) {
 // Hail-core extinction. A is packed separately so a dense core is not eroded like anvil ice.
 float hailSigma(vec3 p) {
   vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
-  return max(textureLod(uFields, uvw, 0.0).a, 0.0) * uFieldGain.x;
+  return max(fieldTap(uvw).a, 0.0) * uFieldGain.x;
 }
 
 // Optical depth from p toward the sun. Steps grow exponentially so the last sample is long
@@ -498,8 +510,12 @@ void main() {
   // Coarse MUST be capped — uncapped pathLen/STEPS skipped thin decks entirely
   // (clouds went invisible on typical views).
   float pathLen = max(tFar - tNear, 1.0);
+  // Fewer samples must still reach the far side of the box. Steps sized for
+  // STEPS (96) and then cut off at a low budget marched only the first few
+  // kilometres, so the storm sat past the last sample and drew as clear sky.
+  float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 40.0, float(MAX_STEPS));
   float fine = clamp(max(uStepSize, FINE_STEP), 16.0, 64.0);
-  float coarse = clamp(pathLen / float(STEPS), fine, fine * 5.0);
+  float coarse = clamp(pathLen / budget, fine, 1200.0);
   float dt = coarse;
   float t = tNear + fine * ign(gl_FragCoord.xy + uFrame * 5.588238);
   bool inside = false;
@@ -512,12 +528,12 @@ void main() {
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
 
   for (int i = 0; i < MAX_STEPS; i++) {
-    if (t >= tFar || T < 0.012) break;
+    if (float(i) >= budget || t >= tFar || T < 0.012) break;
     vec3 p = ro + rd * t;
 
     // cheap empty-space probe: one fetch of the raw field, no noise
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
-    vec4 field = textureLod(uFields, uvw, 0.0);
+    vec4 field = fieldTap(uvw);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
     bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.0008;

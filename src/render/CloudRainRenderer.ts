@@ -170,8 +170,27 @@ export class CloudRainRenderer {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   private volumeTex: THREE.Data3DTexture | null = null;
+  private volumeTexPrev: THREE.Data3DTexture | null = null;
   private volumeMesh: THREE.Mesh | null = null;
   private volumeData: Uint8Array | null = null;
+  private volumeDataPrev: Uint8Array | null = null;
+  /** Wall-clock blend from the previous packed volume into the latest one. */
+  private volumeBlendStart = 0;
+  private volumeBlendDur = 1;
+  private volumeBlendReady = false;
+  /** Primary raymarch cap. Drops when a frame runs long, climbs back when it doesn't. */
+  private stepBudget = 64;
+  /** Start cheap so the first frames after a shader compile stay interactive. */
+  private frameMsEma = 48;
+  /** Fraction of the drawing buffer used for the cloud pass. */
+  private cloudResScale = 0.28;
+  /** Longest cloud-buffer edge last allocated, so a cap change resizes once. */
+  private lastCloudEdge = 0;
+  /** Wall time of the last shadow + light-volume rebuild. */
+  private heavyAt = 0;
+  private lastRenderMs = 0;
+  /** Wall milliseconds the previous frame actually took. */
+  private lastFrameDt = 16;
   private cloudMat: VolumetricCloudMaterial | null = null;
   /** Empty string follows the sim sun. A preset name locks sun and look. */
   private lookdev: "" | keyof typeof LOOKDEV_PRESETS = "";
@@ -697,9 +716,20 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const present = this.sceneBlit.material as THREE.ShaderMaterial;
       present.uniforms.uTex.value = this.sceneTarget.texture;
     }
-    // 3/4 res keeps edges sharper than half-res (less voxel/moire after upscale).
-    const hw = Math.max(1, Math.floor(bw * 0.75));
-    const hh = Math.max(1, Math.floor(bh * 0.75));
+    // Drops toward a quarter of the buffer while frames are slow, and climbs
+    // back toward 3/4 once the march is cheap again. The long edge is capped
+    // so a fullscreen window cannot schedule a multi-megapixel march.
+    const scale = Math.min(0.75, Math.max(0.25, this.cloudResScale));
+    let hw = Math.max(1, Math.floor(bw * scale));
+    let hh = Math.max(1, Math.floor(bh * scale));
+    const cap = this.cloudEdgeCap();
+    this.lastCloudEdge = cap;
+    const edge = Math.max(hw, hh);
+    if (edge > cap) {
+      const fit = cap / edge;
+      hw = Math.max(1, Math.floor(hw * fit));
+      hh = Math.max(1, Math.floor(hh * fit));
+    }
     if (
       !this.cloudTarget ||
       this.cloudTarget.width !== hw ||
@@ -1512,13 +1542,77 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.shadowMapRevision = -1;
   }
 
+  /** 0 shows the previous packed volume, 1 the latest. */
+  private volumeMixNow(): number {
+    if (!this.volumeBlendReady || !(this.volumeBlendDur > 1)) return 1;
+    const t = (performance.now() - this.volumeBlendStart) / this.volumeBlendDur;
+    if (t >= 1) return 1;
+    if (t <= 0) return 0;
+    return t;
+  }
+
   /**
-   * March the packed volume toward the sun for each ground column and write
-   * sun/sky transmittance into uCloudShadow. Stormforge density is Y-up metres;
-   * this is the reliable ground-shadow path (the MeteoLAB 3D light volume is not).
+   * True when another cloud upload is safe. A saturated frame skips the next
+   * volume so the light rebuild and the two-texture blend cannot keep it there.
+   * The first volume is always accepted so the storm is visible immediately.
    */
+  volumeSettled(): boolean {
+    // Only the blend itself holds the next upload. A slow frame must not
+    // freeze the picture on the first, nearly empty volume.
+    return this.volumeMixNow() >= 0.999;
+  }
+
+  private updateStepBudget(now: number): void {
+    const dt = this.lastRenderMs > 0 ? now - this.lastRenderMs : 16;
+    this.lastRenderMs = now;
+    this.lastFrameDt = dt;
+    if (dt > 0) {
+      // Steady slow frames must pull the budget down. Clamp a multi-second
+      // compile hitch so one stall does not pin quality at the floor.
+      const sample = Math.min(dt, 80);
+      this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
+    }
+    const ms = this.frameMsEma;
+    // Below ~40 steps the march no longer reaches a cloud base above the camera.
+    const target = ms > 42 ? 48 : ms > 28 ? 72 : ms > 18 ? 96 : 128;
+    // A long frame drops the cap immediately; recovery eases back up.
+    if (dt > 40) this.stepBudget = Math.min(this.stepBudget, target);
+    else this.stepBudget += (target - this.stepBudget) * 0.25;
+    // A two-texture blend on an already slow frame is what locked the march.
+    if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
+    this.syncCloudScale();
+  }
+
+  /** Coarser cloud buffer while frames are long; sharper once they recover. */
+  private syncCloudScale(): void {
+    const ms = this.frameMsEma;
+    let next = this.cloudResScale;
+    if (ms > 42) next = 0.28;
+    else if (ms < 18) next = 0.75;
+    else if (ms < 28 && this.cloudResScale < 0.5) next = 0.5;
+    else if (ms > 30 && this.cloudResScale > 0.5) next = 0.5;
+    const cap = this.cloudEdgeCap();
+    if (Math.abs(next - this.cloudResScale) < 0.01 && cap === this.lastCloudEdge) return;
+    this.cloudResScale = next;
+    this.resize();
+  }
+
+  /** Longest edge of the cloud buffer for the current frame time. */
+  private cloudEdgeCap(): number {
+    const ms = this.frameMsEma;
+    if (ms > 42) return 160;
+    if (ms > 24) return 320;
+    return 512;
+  }
+
   private rebuildCloudShadowMap(force: boolean): void {
-    const data = this.volumeData;
+    const mix = this.volumeMixNow();
+    // Hold the previous shadow until the cloud blend finishes, then rebuild once.
+    const shown = mix >= 0.999 ? this.volumeRevision : this.volumeRevision - 1;
+    const data =
+      shown === this.volumeRevision || !this.volumeDataPrev
+        ? this.volumeData
+        : this.volumeDataPrev;
     const out = this.cloudShadowData;
     const tex = this.cloudShadowTex;
     const nx = this.volNx;
@@ -1532,13 +1626,13 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const sunBelow = this.sunDir.y <= -0.02;
     const sunChanged =
       !sunBelow && this.shadowMapSun.distanceToSquared(this.sunDir) > 1e-6;
-    if (!force && this.shadowMapRevision === this.volumeRevision && !sunChanged) {
+    if (!force && this.shadowMapRevision === shown && !sunChanged) {
       return;
     }
-    this.shadowMapRevision = this.volumeRevision;
+    this.shadowMapRevision = shown;
     this.shadowMapSun.copy(this.sunDir);
 
-    if (this.volumeClear) {
+    if (this.volumeClear && shown === this.volumeRevision) {
       out.fill(255);
       for (let i = 0; i < nx * ny; i++) out[i * 4 + 2] = 0;
       tex.needsUpdate = true;
@@ -1548,6 +1642,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const dx = this.spanX / nx;
     const dy = this.spanY / Math.max(1, nz);
     const dz = this.spanZ / ny;
+    // A saturated frame only needs a coarse shadow. Neighbours share one march.
+    const stride = this.frameMsEma > 34 ? 2 : 1;
     const cell = Math.max(dx, dy, dz);
     const step = Math.max(cell * 0.65, 40);
     const maxDist = Math.max(this.spanX, this.spanZ, this.spanY) * 1.6;
@@ -1577,11 +1673,11 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       );
     };
 
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j += stride) {
+      for (let i = 0; i < nx; i += stride) {
         // Sky visibility: vertical optical depth above the column.
         let odUp = 0;
-        for (let k = 0; k < nz; k++) odUp += sampleSigma(i, j, k) * dy;
+        for (let k = 0; k < nz; k += stride) odUp += sampleSigma(i, j, k) * dy * stride;
         const skyVis = Math.exp(-odUp * 0.55);
 
         // Direct sun: march from the ground cell toward the sun through the volume.
@@ -1591,16 +1687,18 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
           let y = y0;
           let z = halfZ - ((j + 0.5) / ny) * this.spanZ;
           let odSun = 0;
-          for (let s = 0; s < steps; s++) {
-            x += sx * step;
-            y += sy * step;
-            z += sz * step;
+          const sunSteps = stride > 1 ? Math.ceil(steps / 2) : steps;
+          const sunStep = step * stride;
+          for (let s = 0; s < sunSteps; s++) {
+            x += sx * sunStep;
+            y += sy * sunStep;
+            z += sz * sunStep;
             if (y > yTop || y < this.groundY) break;
             if (x < -halfX || x > halfX || z < -halfZ || z > halfZ) break;
             const ii = Math.floor(((x + halfX) / this.spanX) * nx);
             const jj = Math.floor(((halfZ - z) / this.spanZ) * ny);
             const kk = Math.floor(((y - this.groundY) / this.spanY) * nz);
-            odSun += sampleSigma(ii, jj, kk) * step;
+            odSun += sampleSigma(ii, jj, kk) * sunStep;
             if (odSun > 12) break;
           }
           sunVis = Math.exp(-odSun);
@@ -1608,11 +1706,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
           sunVis = 0;
         }
 
-        const o = (i + nx * j) * 4;
-        out[o] = Math.min(255, Math.max(0, (sunVis * 255) | 0));
-        out[o + 1] = Math.min(255, Math.max(0, (skyVis * 255) | 0));
-        out[o + 2] = 0;
-        out[o + 3] = 255;
+        const sunB = Math.min(255, Math.max(0, (sunVis * 255) | 0));
+        const skyB = Math.min(255, Math.max(0, (skyVis * 255) | 0));
+        const j1 = Math.min(ny, j + stride);
+        const i1 = Math.min(nx, i + stride);
+        for (let jj = j; jj < j1; jj++) {
+          for (let ii = i; ii < i1; ii++) {
+            const o = (ii + nx * jj) * 4;
+            out[o] = sunB;
+            out[o + 1] = skyB;
+            out[o + 2] = 0;
+            out[o + 3] = 255;
+          }
+        }
       }
     }
     tex.needsUpdate = true;
@@ -2074,6 +2180,11 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.volumeTex.dispose();
       this.volumeTex = null;
     }
+    if (this.volumeTexPrev) {
+      this.volumeTexPrev.dispose();
+      this.volumeTexPrev = null;
+    }
+    this.volumeBlendReady = false;
     this.disposeRadar();
     this.disposeWinds();
 
@@ -2086,6 +2197,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const disp = volumeDisplaySize(grid.nx, grid.ny, grid.nz);
     const bytes = disp.nx * disp.ny * disp.nz * 4;
     this.volumeData = new Uint8Array(new ArrayBuffer(bytes));
+    this.volumeDataPrev = new Uint8Array(new ArrayBuffer(bytes));
     this.volNx = disp.nx;
     this.volNy = disp.ny;
     this.volNz = disp.nz;
@@ -2093,6 +2205,13 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.ensureCloudShadowMap(disp.nx, disp.ny);
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
+    const prevTex = this.makeVolumeTexture(
+      this.volumeDataPrev,
+      disp.nx,
+      disp.nz,
+      disp.ny,
+    );
+    this.volumeTexPrev = prevTex;
     this.precipitation.setBounds(sx, sz, this.groundY, height);
     this.precipitation.setVolume(this.volumeData, disp.nx, disp.ny, disp.nz);
 
@@ -2103,13 +2222,18 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 224 },
+      quality: { maxSteps: 128, lightSteps: 6 },
     });
+    this.cloudMat.setFieldsPrev(prevTex);
+    this.cloudMat.setVolumeMix(1);
+    this.cloudMat.setStepBudget(this.stepBudget);
     this.volumeMesh = createCloudMesh(this.cloudMat, boxMin, boxMax);
     this.volumeMesh.visible = this.cloudsOn;
     this.cloudScene.add(this.volumeMesh);
     this.volumeClear = false;
     this.lastVolumeMs = 0;
+    this.volumeBlendReady = false;
+    this.volumeBlendDur = 1;
     this.applyCloudSun();
     this.applyCloudWind();
     if (this.lookdev) {
@@ -2269,7 +2393,22 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       if (empty && this.volumeClear) return;
       if (now - this.lastVolumeMs < 50) return;
     }
+    const gap = this.lastVolumeMs > 0 ? now - this.lastVolumeMs : 0;
     this.lastVolumeMs = now;
+    // Keep the last upload so the shader can fade across the gap between packs.
+    // Playback scrubs land on the new frame immediately (one render, no in-between).
+    const blend =
+      !force &&
+      this.volumeBlendReady &&
+      !!this.volumeDataPrev &&
+      !!this.volumeTexPrev &&
+      gap >= 40;
+    if (blend && this.volumeDataPrev && this.volumeTexPrev) {
+      this.volumeDataPrev.set(this.volumeData);
+      this.volumeTexPrev.needsUpdate = true;
+      this.volumeBlendDur = Math.min(700, Math.max(50, gap));
+      this.volumeBlendStart = now;
+    }
     if (empty) {
       this.volumeData.fill(0);
       this.volumeClear = true;
@@ -2279,6 +2418,14 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     }
     this.volumeTex.needsUpdate = true;
     this.volumeRevision++;
+    if (!blend && this.volumeDataPrev && this.volumeTexPrev) {
+      this.volumeDataPrev.set(this.volumeData);
+      this.volumeTexPrev.needsUpdate = true;
+      this.volumeBlendReady = true;
+      this.volumeBlendStart = now;
+      this.volumeBlendDur = 1;
+      this.cloudMat?.setVolumeMix(1);
+    }
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     groundMat.roughness = 0.96;
 
@@ -2431,6 +2578,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       return;
     }
 
+    const frameNow = performance.now();
+    this.updateStepBudget(frameNow);
     this.applyKeyboardMove();
     this.camera.updateMatrixWorld();
     this.camera.updateProjectionMatrix();
@@ -2445,17 +2594,32 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.precipitation.update(performance.now());
     }
 
+    const volumeMix = this.volumeMixNow();
     // Ground cloud shadows + light volume when density or sun moved.
-    this.rebuildCloudShadowMap(false);
-    if (this.lightVolume) {
+    // Both stay on the previous field until the blend finishes, then catch up once.
+    // Skip that catch-up while the frame is already saturated — rebuilding the
+    // light volume is a full extra march and was holding the clock at zero.
+    // The light-volume pass is a second full march. While frames are long,
+    // keep the last one instead of rebuilding on every upload.
+    const sinceHeavy = frameNow - this.heavyAt;
+    const deferHeavy =
+      this.heavyAt > 0 &&
+      (this.frameMsEma > 80 || this.lastFrameDt > 70 || sinceHeavy < 2500);
+    if (!deferHeavy) this.rebuildCloudShadowMap(false);
+    if (this.lightVolume && !deferHeavy) {
       if (this.sharedUniforms.uSunDir) {
         (this.sharedUniforms.uSunDir.value as THREE.Vector3).copy(this.sunDir);
       }
-      this.lightVolume.update(this.renderer, this.volumeRevision, this.sunDir);
+      const lightRev =
+        volumeMix >= 0.999 ? this.volumeRevision : Math.max(0, this.volumeRevision - 1);
+      this.lightVolume.update(this.renderer, lightRev, this.sunDir);
     }
+    if (!deferHeavy) this.heavyAt = frameNow;
 
     if (this.cloudMat) {
-      this.cloudMat.update(performance.now() * 0.001);
+      this.cloudMat.setVolumeMix(volumeMix);
+      this.cloudMat.setStepBudget(this.stepBudget);
+      this.cloudMat.update(frameNow * 0.001);
       if (this.lookdev) {
         const preset = LOOKDEV_PRESETS[this.lookdev];
         this.cloudMat.setSunRelativeToCamera(
@@ -3047,6 +3211,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (this.volumeTex) {
       this.volumeTex.dispose();
       this.volumeTex = null;
+    }
+    if (this.volumeTexPrev) {
+      this.volumeTexPrev.dispose();
+      this.volumeTexPrev = null;
     }
     if (this.kmGrid) {
       this.scene.remove(this.kmGrid);

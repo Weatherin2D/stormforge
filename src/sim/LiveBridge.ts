@@ -56,19 +56,58 @@ export class LiveBridge {
   private worker: Worker;
   busy = false;
   ready = false;
+  /** The worker script has loaded and can take a rebuild. */
+  booted = false;
+  /** Last failure from the worker, if it reported one. */
+  failed: string | null = null;
   state: LiveState | null = null;
   onState: ((state: LiveState) => void) | null = null;
 
   constructor() {
-    this.worker = new Worker(new URL("./live.worker.ts", import.meta.url), {
+    this.worker = this.open();
+  }
+
+  private open(): Worker {
+    const worker = new Worker(new URL("./live.worker.ts", import.meta.url), {
       type: "module",
     });
-    this.worker.onmessage = (ev: MessageEvent<LiveState>) => {
+    worker.onmessage = (ev: MessageEvent) => {
+      const data = ev.data as { type?: string; message?: string };
+      if (data?.type === "hello") {
+        this.booted = true;
+        return;
+      }
+      if (data?.type === "error") {
+        this.busy = false;
+        this.ready = true;
+        this.failed = data.message || "Physics worker failed";
+        console.error("Stormforge physics:", this.failed);
+        return;
+      }
       this.busy = false;
       this.ready = true;
-      this.state = ev.data;
-      this.onState?.(ev.data);
+      this.failed = null;
+      this.state = ev.data as LiveState;
+      this.onState?.(this.state);
     };
+    // A thrown worker still has to release the step lock, or the clock stops.
+    worker.onerror = (ev) => {
+      this.busy = false;
+      this.ready = false;
+      this.failed = ev.message || "Physics worker failed";
+    };
+    return worker;
+  }
+
+  /** Replace a worker that never answered. */
+  reboot(): void {
+    this.worker.terminate();
+    this.busy = false;
+    this.ready = false;
+    this.booted = false;
+    this.failed = null;
+    this.state = null;
+    this.worker = this.open();
   }
 
   rebuild(payload: {
@@ -119,10 +158,16 @@ export class LiveBridge {
     this.worker.postMessage({ type: "followStorm", on });
   }
 
-  step(payload: {
-    dt: number;
-    wall: number;
-    lightning: boolean;
+  /** Advance physics only. The view is packed by `view` so this can return first. */
+  step(payload: { dt: number; wall: number }): boolean {
+    if (this.busy || !this.ready) return false;
+    this.busy = true;
+    this.worker.postMessage({ type: "step", ...payload });
+    return true;
+  }
+
+  /** Pack whatever the screen is showing. Does not advance the solver. */
+  view(payload: {
     wantVolume: boolean;
     map: MapProductId | null;
     winds: boolean;
@@ -136,7 +181,7 @@ export class LiveBridge {
   }): boolean {
     if (this.busy || !this.ready) return false;
     this.busy = true;
-    this.worker.postMessage({ type: "step", ...payload });
+    this.worker.postMessage({ type: "view", ...payload });
     return true;
   }
 

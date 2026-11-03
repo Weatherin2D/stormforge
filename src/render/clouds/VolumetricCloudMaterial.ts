@@ -117,6 +117,9 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       },
       uniforms: {
         uFields: { value: opts.fields },
+        uFieldsPrev: { value: opts.fields },
+        uVolumeMix: { value: 1 },
+        uStepBudget: { value: q.maxSteps ?? 192 },
         uShapeNoise: { value: noise },
         uDetailNoise: { value: noise },
         uBoxMin: { value: opts.boxMin.clone() },
@@ -262,6 +265,21 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   /** Swap in a new sim volume (same bounds). */
   setFields(fields: THREE.Data3DTexture): void {
     this.u<THREE.Data3DTexture>('uFields').value = fields;
+  }
+
+  /** Previous packed volume. The shader blends it into uFields. */
+  setFieldsPrev(fields: THREE.Data3DTexture): void {
+    this.u<THREE.Data3DTexture>('uFieldsPrev').value = fields;
+  }
+
+  /** 0 shows the previous volume, 1 the current one. */
+  setVolumeMix(mix: number): void {
+    this.u<number>('uVolumeMix').value = Math.min(1, Math.max(0, mix));
+  }
+
+  /** Primary march cap. The shader stretches the step so the ray still crosses the box. */
+  setStepBudget(steps: number): void {
+    this.u<number>('uStepBudget').value = steps;
   }
 
   /** One multiplier for liquid, ice, and rain. 1 means a packed dense core stays 1. */

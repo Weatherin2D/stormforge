@@ -425,19 +425,32 @@ export class FluidSolver implements SimBackend {
     const isHydrostatic =
       this.hydrostatic === "on" ||
       (this.hydrostatic === "auto" && horiz > 5000);
-    let maxHorz = 1;
+    const adv = getAdvanced();
+    const tog = getToggles();
+    const cflLen = isHydrostatic ? horiz : Math.min(horiz, dz);
+    const cflSafe =
+      0.85 * Math.max(0.5, Math.min(1.5, adv.cflSafety));
+    const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
+    const subCap = isHydrostatic
+      ? 4
+      : tog.enableCFLClamp
+        ? cellsNow > 700_000
+          ? 5
+          : cellsNow > 400_000
+            ? 7
+            : 12
+        : 24;
+    // Wind that already forces the substep cap. Scanning past it cannot shrink h.
+    const windStop =
+      (subCap * cflSafe * cflLen) / Math.max(dt, 1e-3);
+    let maxHorz = peakSpeed(f.u, windStop);
+    if (maxHorz < windStop) {
+      const vPeak = peakSpeed(f.v, windStop);
+      if (vPeak > maxHorz) maxHorz = vPeak;
+    }
     let maxVert = 1;
-    for (let i = 0; i < f.u.length; i++) {
-      const a = Math.abs(f.u[i]);
-      if (a > maxHorz) maxHorz = a;
-    }
-    for (let i = 0; i < f.v.length; i++) {
-      const a = Math.abs(f.v[i]);
-      if (a > maxHorz) maxHorz = a;
-    }
-    for (let i = 0; i < f.w.length; i++) {
-      const a = Math.abs(f.w[i]);
-      if (a > maxVert) maxVert = a;
+    if (!isHydrostatic && Math.max(maxHorz, 1) < windStop) {
+      maxVert = peakSpeed(f.w, windStop);
     }
     // Sedimentation already limits fall to ~1–2 cells/step, so do not let a
     // flat +15 m/s rain budget force dozens of dynamics substeps. On large
@@ -454,27 +467,9 @@ export class FluidSolver implements SimBackend {
     const wind = isHydrostatic
       ? maxHorz
       : Math.max(maxHorz, maxVert) + (hasFall ? 6 : 1);
-    const adv = getAdvanced();
-    const tog = getToggles();
-    const cflLen = isHydrostatic ? horiz : Math.min(horiz, dz);
-    const cflSafe =
-      0.85 *
-      (tog.enableCFLClamp
-        ? Math.max(0.5, Math.min(1.5, adv.cflSafety))
-        : Math.max(0.5, Math.min(1.5, adv.cflSafety)));
     const hMax = Math.max(1e-3, (cflSafe * cflLen) / Math.max(wind, 1));
     let sub = Math.max(1, Math.ceil(dt / hMax));
     // Hard cap keeps a busy high-res frame from exploding into 50+ substeps.
-    const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
-    const subCap = isHydrostatic
-      ? 4
-      : tog.enableCFLClamp
-        ? cellsNow > 700_000
-          ? 5
-          : cellsNow > 400_000
-            ? 7
-            : 12
-        : 24;
     if (sub > subCap) sub = subCap;
     const pace = tog.enablePhysicsPace
       ? Math.max(0.5, Math.min(2, adv.physicsPace))
@@ -1800,18 +1795,22 @@ export class FluidSolver implements SimBackend {
     this.vcycle(0);
     this.correctVelocity(dt);
     this.setLids();
-    const max1 = this.fillDivergence(invDt);
-    if (max1 > 0.08 && max0 > 1e-8 && max1 > 0.5 * max0) {
-      // Second cycle is a correction on the leftover divergence, then
-      // folded back into π so the next step can warm-start.
-      const saved = this.tmp;
-      saved.set(this.fields.p);
-      this.fields.p.fill(0);
-      this.vcycle(0);
-      this.correctVelocity(dt);
-      const p = this.fields.p;
-      for (let i = 0; i < p.length; i++) p[i] += saved[i];
-      this.setLids();
+    // One cycle is enough when the field was already quiet, or the first
+    // pass cut most of the divergence. The second pass is the expensive case.
+    if (max0 > 0.15) {
+      const max1 = this.fillDivergence(invDt);
+      if (max1 > 0.2 && max1 > 0.72 * max0) {
+        // Second cycle is a correction on the leftover divergence, then
+        // folded back into π so the next step can warm-start.
+        const saved = this.tmp;
+        saved.set(this.fields.p);
+        this.fields.p.fill(0);
+        this.vcycle(0);
+        this.correctVelocity(dt);
+        const p = this.fields.p;
+        for (let i = 0; i < p.length; i++) p[i] += saved[i];
+        this.setLids();
+      }
     }
   }
 
@@ -2948,6 +2947,24 @@ export class FluidSolver implements SimBackend {
     }
     return { cloudMax, rainMax, cloudMass };
   }
+}
+
+/**
+ * Peak |component|. Long arrays are read every other entry and padded, and
+ * the scan stops once the wind already forces the CFL substep cap.
+ */
+function peakSpeed(a: Float32Array, stopAt: number): number {
+  const n = a.length;
+  const stride = n > 32768 ? 2 : 1;
+  let m = 0;
+  for (let i = 0; i < n; i += stride) {
+    const v = a[i] < 0 ? -a[i] : a[i];
+    if (v > m) {
+      m = v;
+      if (m >= stopAt) break;
+    }
+  }
+  return stride > 1 ? m * 1.12 : m;
 }
 
 function haloWeight(

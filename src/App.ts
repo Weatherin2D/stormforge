@@ -132,6 +132,16 @@ export class App {
   private liveVolumeAsk = 0;
   /** Last time we asked the worker for surface winds (ms). */
   private liveWindsAsk = 0;
+  /** Last time swath, cold pool, field, and vortex were packed (ms). */
+  private liveOverlayAsk = 0;
+  /** Wall seconds owed to lightning since the last physics reply. */
+  private lightningWall = 0;
+  /** Last worker message, so a view pack sits between physics steps. */
+  private liveLastKind: "" | "step" | "view" = "";
+  /** A cloud volume has come back from the worker at least once. */
+  private liveVolumeSeen = false;
+  private liveRetry = 0;
+  private livePayload: Parameters<LiveBridge["rebuild"]>[0] | null = null;
   /** Last probe/section edit already sampled while the run was paused. */
   private inspectSentGen = -1;
   private liveDth: number | null = null;
@@ -1199,7 +1209,9 @@ export class App {
     this.liveDebt = 0;
     this.liveDth = null;
     this.liveCloud = null;
-    this.ensureLive().rebuild({
+    this.liveVolumeSeen = false;
+    this.liveRetry = 0;
+    this.livePayload = {
       grid: {
         nx: grid.nx,
         ny: grid.ny,
@@ -1217,7 +1229,8 @@ export class App {
       radiation,
       clockPaused: this.clockPaused,
       hydrostatic: values.hydrostatic ? "on" : "off",
-    });
+    };
+    this.ensureLive().rebuild(this.livePayload);
     if (this.followStorm) {
       this.solver.setFollowStorm(true);
       this.live?.followStorm(true);
@@ -1400,6 +1413,20 @@ export class App {
     if (values.runMode === "batch" && nest) this.radar2d?.selectDomain("nest");
   }
 
+  /** Draw whatever cloud is already in the solver, without waiting on the worker. */
+  private showSolverClouds(): void {
+    if (!this.solver || !this.renderer || !this.showClouds || this.showRadar2d) return;
+    try {
+      const st = this.solver.cloudRainStats();
+      this.renderer.updateVolume((out) => {
+        this.solver?.packVolumeRGBA(out);
+      }, st.cloudMax, st.rainMax, true);
+      this.liveCloud = st;
+    } catch (err) {
+      console.error("Stormforge cloud pack failed", err);
+    }
+  }
+
   private mountSimView(grid: Grid3D, zTop: number): void {
     this.viewport.querySelectorAll("canvas").forEach((c) => {
       if (c.parentElement === this.viewport) c.remove();
@@ -1478,6 +1505,7 @@ export class App {
     this.renderer.resize();
     this.syncSessionControls();
 
+    this.showSolverClouds();
     this.lastTs = performance.now();
     this.stopLoop();
     this.loop(this.lastTs);
@@ -1954,6 +1982,7 @@ export class App {
     };
     if (st.ground) this.renderer.updateGroundCover(st.ground);
     if (st.volume && this.showClouds && !this.showRadar2d) {
+      this.liveVolumeSeen = true;
       const vol = st.volume;
       this.renderer.updateVolume(
         (out) => {
@@ -2019,7 +2048,7 @@ export class App {
     if (st.vortex) {
       this.renderer.updateVortex(unpackVortexLevels(st.vortex));
     }
-    for (const hit of st.strikes) {
+    for (const hit of st.strikes ?? []) {
       if (this.lightningFreq >= 1 || Math.random() < this.lightningFreq) this.placeStrike(hit);
     }
     this.syncSunUi(true);
@@ -2071,8 +2100,20 @@ export class App {
     const wall = Math.min(0.05, Math.max(0, dtMs) / 1000);
     if (this.solver && !this.paused) {
       this.liveDebt += wall;
+      this.lightningWall = Math.min(0.25, this.lightningWall + wall);
       const live = this.ensureLive();
-      // Target rate is wall ï¿½ speed. Coarse / hydrostatic grids can take a
+      // Only replace a worker that actually died. A slow first rebuild is still working.
+      if (
+        live.failed &&
+        !live.busy &&
+        this.livePayload &&
+        this.liveRetry < 2
+      ) {
+        this.liveRetry++;
+        live.reboot();
+        live.rebuild(this.livePayload);
+      }
+      // Target rate is wall × speed. Coarse / hydrostatic grids can take a
       // larger catch-up chunk (solver CFL-splits); fine grids stay at 2 s so
       // the worker frees up for the next frame.
       const cells =
@@ -2084,8 +2125,8 @@ export class App {
         minH > 5000 ? 8 : cells > 700_000 ? 4 : cells > 400_000 ? 3 : 2;
       const simDt = Math.min(catchUp, this.liveDebt * this.simSpeed);
       const now = performance.now();
-      // Pack the 3D volume less often as the grid grows ? physics still runs
-      // every accepted step; only the texture upload backs off.
+      // Pack the 3D volume less often as the grid grows. Physics is a
+      // separate message, so a pack never stretches a step.
       const volumeMs =
         cells > 1_000_000
           ? 400
@@ -2099,7 +2140,8 @@ export class App {
       const wantVolume =
         this.showClouds &&
         !this.showRadar2d &&
-        now - this.liveVolumeAsk >= volumeMs;
+        now - this.liveVolumeAsk >= volumeMs &&
+        (this.renderer?.volumeSettled() ?? true);
       const map =
         this.showRadar2d &&
         this.radar2d &&
@@ -2108,42 +2150,72 @@ export class App {
           : !this.showRadar2d && this.showRadar3d && this.mapRefreshDue("refl")
             ? "refl"
             : null;
-      // Surface winds are cheap on small grids; on large ones pack a few
-      // times per second so every physics step is not a full column scan.
-      const windsMs = cells > 180_000 ? 200 : 0;
-      const wantWinds =
-        this.showSurfaceWinds &&
-        (windsMs <= 0 || now - this.liveWindsAsk >= windsMs);
-      if (
-        simDt >= 1e-4 &&
-        live.step({
-          dt: simDt,
-          wall,
-          lightning: true,
-          wantVolume,
-          map,
-          winds: wantWinds,
-          wantSwath: this.showSwath && !this.showRadar2d,
-          wantColdPool: this.showColdPool && !this.showRadar2d,
-          fieldMode:
-            !this.showRadar2d && this.fieldMode !== "off"
-              ? this.fieldMode
-              : "off",
-          wantVortex: this.showVortex && !this.showRadar2d,
-          mapDomain: this.radar2d?.mapDomain() ?? "parent",
-          probe:
-            this.showRadar2d && this.radar2d
-              ? this.radar2d.probeRequest()
-              : null,
-          section:
-            this.showRadar2d && this.radar2d
-              ? this.radar2d.sectionRequest()
-              : null,
-        })
+      const windsMs = cells > 180_000 ? 200 : 80;
+      const windsDue =
+        this.showSurfaceWinds && now - this.liveWindsAsk >= windsMs;
+      const overlayOn =
+        !this.showRadar2d &&
+        (this.showSwath ||
+          this.showColdPool ||
+          this.fieldMode !== "off" ||
+          this.showVortex);
+      const overlayDue = overlayOn && now - this.liveOverlayAsk >= volumeMs;
+      const inspectDue =
+        !!this.showRadar2d &&
+        !!this.radar2d &&
+        this.radar2d.inspectGeneration() !== this.inspectSentGen;
+      const viewDue =
+        wantVolume || map !== null || windsDue || overlayDue || inspectDue;
+      const physicsDue = simDt >= 1e-4;
+      // The first picture goes out before a long step, so the storm is on
+      // screen while physics catches up. After that, pack once between steps.
+      const pictureFirst =
+        this.showClouds &&
+        !this.showRadar2d &&
+        !this.liveVolumeSeen &&
+        this.liveLastKind !== "view";
+      if ((pictureFirst || viewDue) && (pictureFirst || this.liveLastKind === "step" || !physicsDue)) {
+        const packWinds =
+          this.showSurfaceWinds && (windsDue || wantVolume || map !== null);
+        const packOverlay = overlayDue || (wantVolume && overlayOn);
+        const probe =
+          this.showRadar2d && this.radar2d && (inspectDue || map !== null)
+            ? this.radar2d.probeRequest()
+            : null;
+        const section =
+          this.showRadar2d && this.radar2d && (inspectDue || map !== null)
+            ? this.radar2d.sectionRequest()
+            : null;
+        if (
+          live.view({
+            wantVolume: wantVolume || pictureFirst,
+            map,
+            winds: packWinds,
+            wantSwath: packOverlay && this.showSwath,
+            wantColdPool: packOverlay && this.showColdPool,
+            fieldMode:
+              packOverlay && this.fieldMode !== "off" ? this.fieldMode : "off",
+            wantVortex: packOverlay && this.showVortex,
+            mapDomain: this.radar2d?.mapDomain() ?? "parent",
+            probe,
+            section,
+          })
+        ) {
+          this.liveLastKind = "view";
+          if (wantVolume || pictureFirst) this.liveVolumeAsk = now;
+          if (packWinds) this.liveWindsAsk = now;
+          if (packOverlay) this.liveOverlayAsk = now;
+          if (inspectDue && this.radar2d) {
+            this.inspectSentGen = this.radar2d.inspectGeneration();
+          }
+        }
+      } else if (
+        physicsDue &&
+        live.step({ dt: Math.min(simDt, 1), wall: this.lightningWall })
       ) {
         this.liveDebt = 0;
-        if (wantVolume) this.liveVolumeAsk = now;
-        if (wantWinds) this.liveWindsAsk = now;
+        this.lightningWall = 0;
+        this.liveLastKind = "step";
       }
     } else if (
       this.paused &&
@@ -2155,10 +2227,7 @@ export class App {
       const section = this.radar2d.sectionRequest();
       if (
         (probe || section) &&
-        this.ensureLive().step({
-          dt: 0,
-          wall: 0,
-          lightning: false,
+        this.ensureLive().view({
           wantVolume: false,
           map: null,
           winds: false,
@@ -2168,6 +2237,7 @@ export class App {
         })
       ) {
         this.inspectSentGen = this.radar2d.inspectGeneration();
+        this.liveLastKind = "view";
       }
     }
 
