@@ -12,7 +12,7 @@ import { SoundingLevel, G, TFromTheta, exnerFromP, qsat } from "./thermo";
 import { domainMotionFromProfile } from "./sounding";
 import { getActiveSynoptic, sampleSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
-import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
+import { applySynopticPattern } from "./synopticForcing";
 import {
   MapProductId,
   packLightning,
@@ -23,19 +23,11 @@ import { volumeDisplaySize } from "./Grid3D";
 import {
   RadiationOptions,
   DEFAULT_RADIATION,
-  applySurfaceRadiation,
   advanceSolarHour,
   solarStatus,
   SolarStatus,
   buildLandMask,
 } from "./SurfaceRadiation";
-import { stepShallowCu } from "./shallowCu";
-import {
-  stepCloudTopCooling,
-  stepBLMixing,
-  stepSynopticOmega,
-  stepMarineStratus,
-} from "./stepDynamics";
 import { graupelFallSpeed, stepColdMicrophysics } from "./coldMicrophysics";
 import {
   bindColumnFloor,
@@ -54,6 +46,13 @@ import {
   type SurfaceSpec,
 } from "./surface";
 import { getAdvanced, getToggles } from "./AdvancedSettings";
+import { musclFace, clampIdx } from "./advection";
+import { stepSaturationAdjustment } from "./saturation";
+import { applyCoriolis, applySmagorinsky } from "./turbulence";
+import { stepSlowColumnPhysics } from "./boundaryLayer";
+import { stepCumulusMassFlux } from "./cumulus";
+import { stepHydrostaticDynamics } from "./hydrostaticStep";
+import { musclAdvectVelocity, musclAdvectScalars } from "./musclAdvection";
 
 export type LightningKind = "negcg" | "poscg" | "spider" | "ic" | "sprite";
 
@@ -157,6 +156,10 @@ export class FluidSolver implements SimBackend {
   /** This solver is the one-way nest; it does not advance the parent clock. */
   private nestChild = false;
   private mapDomain: "parent" | "nest" = "parent";
+  /** Accumulated simulated time since the last slow-physics pass (s). */
+  private slowClock = 0;
+  /** Slow physics cadence (surface / PBL / longwave / cumulus), seconds. */
+  private static readonly SLOW_DT = 120;
 
   constructor(grid: Grid3D) {
     this.grid = grid;
@@ -417,174 +420,108 @@ export class FluidSolver implements SimBackend {
     spawnInitBubble(this.grid, this.fields, merged);
   }
 
-  /** Advance simulation by dt seconds. */
+  /** Advance simulation by dt seconds (CFL-split, never capped). */
   step(dt: number): void {
+    if (dt <= 0) return;
     const { dx, dy, dz } = this.grid;
     const f = this.fields;
     const horiz = Math.min(dx, dy);
+    // Synoptic / hydrostatic regime at ≥ 4 km (or forced on).
     const isHydrostatic =
       this.hydrostatic === "on" ||
-      (this.hydrostatic === "auto" && horiz > 5000);
+      (this.hydrostatic === "auto" && horiz > 4000);
     const adv = getAdvanced();
     const tog = getToggles();
     const cflLen = isHydrostatic ? horiz : Math.min(horiz, dz);
-    const cflSafe =
-      0.85 * Math.max(0.5, Math.min(1.5, adv.cflSafety));
-    const cellsNow = this.grid.nx * this.grid.ny * this.grid.nz;
-    const subCap = isHydrostatic
-      ? 4
-      : tog.enableCFLClamp
-        ? cellsNow > 700_000
-          ? 5
-          : cellsNow > 400_000
-            ? 7
-            : 12
-        : 24;
-    // Wind that already forces the substep cap. Scanning past it cannot shrink h.
-    const windStop =
-      (subCap * cflSafe * cflLen) / Math.max(dt, 1e-3);
-    let maxHorz = peakSpeed(f.u, windStop);
-    if (maxHorz < windStop) {
-      const vPeak = peakSpeed(f.v, windStop);
-      if (vPeak > maxHorz) maxHorz = vPeak;
-    }
+    const cflSafe = 0.5 * Math.max(0.5, Math.min(1.5, adv.cflSafety));
+
+    let maxHorz = peakSpeed(f.u, 1e9);
+    const vPeak = peakSpeed(f.v, 1e9);
+    if (vPeak > maxHorz) maxHorz = vPeak;
     let maxVert = 1;
-    if (!isHydrostatic && Math.max(maxHorz, 1) < windStop) {
-      maxVert = peakSpeed(f.w, windStop);
-    }
-    // Sedimentation already limits fall to ~1–2 cells/step, so do not let a
-    // flat +15 m/s rain budget force dozens of dynamics substeps. On large
-    // horizontal grids the Courant length is dx/dy, not dz.
-    let hasFall = false;
-    const nQr = f.qr.length;
-    const stride = Math.max(1, (nQr / 8192) | 0);
-    for (let i = 0; i < nQr; i += stride) {
-      if (f.qr[i] + f.qg[i] + f.qh[i] > 1e-5) {
-        hasFall = true;
-        break;
-      }
-    }
-    const wind = isHydrostatic
-      ? maxHorz
-      : Math.max(maxHorz, maxVert) + (hasFall ? 6 : 1);
-    const hMax = Math.max(1e-3, (cflSafe * cflLen) / Math.max(wind, 1));
+    if (!isHydrostatic) maxVert = peakSpeed(f.w, 1e9);
+    // Cap the speed used for CFL so a transient spike cannot request millions
+    // of substeps. Substeps themselves stay at Courant ≤ cflSafe.
+    const wind = Math.min(
+      120,
+      isHydrostatic ? Math.max(maxHorz, 1) : Math.max(maxHorz, maxVert, 1),
+    );
+    const hMax = Math.max(1e-3, (cflSafe * cflLen) / wind);
     let sub = Math.max(1, Math.ceil(dt / hMax));
-    // Hard cap keeps a busy high-res frame from exploding into 50+ substeps.
-    if (sub > subCap) sub = subCap;
-    const pace = tog.enablePhysicsPace
-      ? Math.max(0.5, Math.min(2, adv.physicsPace))
-      : 1;
-    const h = (dt * pace) / sub;
-    // Large / coarse domains run slow column physics once per outer step.
-    const nCells = this.grid.nx * this.grid.ny * this.grid.nz;
-    const slowBase =
-      !tog.enableSplitPhysics
-        ? 1
-        : isHydrostatic || nCells > 700_000
-          ? 0
-          : nCells > 400_000
-            ? 3
-            : nCells > 180_000
-              ? 2
-              : 1;
-    const slowEvery =
-      slowBase <= 0
-        ? 0
-        : Math.max(1, Math.round(slowBase / Math.max(0.4, adv.slowPhysicsCadence)));
-    let slowDebt = 0;
+    // Soft budget: never take an unstable step; may advance less than dt.
+    if (sub > 400) sub = 400;
+    const h = Math.min(hMax, dt / sub);
+
     for (let s = 0; s < sub; s++) {
-      if (!isHydrostatic && tog.enableBuoyancy) this.applyBuoyancy(h);
-      if (tog.enableWDamping && adv.wDamping > 1.01) {
-        const wd = Math.min(0.08, (adv.wDamping - 1) * 0.02 * h);
-        if (wd > 0) {
-          const ww = this.fields.w;
-          for (let i = 0; i < ww.length; i++) ww[i] *= 1 - wd;
-        }
+      if (isHydrostatic) {
+        stepHydrostaticDynamics(
+          this.grid,
+          this.fields,
+          h,
+          this.tmpU,
+          this.tmpV,
+          this.radiation.latitudeDeg,
+          this.openK,
+        );
+        this.applyTerrainKinematics(h);
+        this.applyTerrain(h);
+        this.advectScalars(h);
+      } else {
+        if (tog.enableBuoyancy) this.applyBuoyancy(h);
+        applyCoriolis(
+          this.grid,
+          this.fields,
+          h,
+          this.radiation.latitudeDeg,
+          this.openK,
+        );
+        this.advectVelocity(h);
+        this.applyTerrainKinematics(h);
+        this.project(h);
+        this.applyTerrain(h);
+        this.advectScalars(h);
+        applySmagorinsky(this.grid, this.fields, h, this.openK);
       }
-      this.advectVelocity(h);
-      const vort = tog.enableVorticity
-        ? this.vorticityStrength * Math.max(0, adv.vorticityBoost)
-        : 0;
-      if (vort > 0) this.applyVorticityConfinement(h, vort);
-      // Kinematic terrain BC must hold going into the projection so hills
-      // force a divergence-free response instead of a post-hoc divergent nudge.
-      this.applyTerrainKinematics(h);
-      this.project(h);
-      this.applyTerrain(h);
-      this.advectScalars(h);
-      // Warm rain stays every substep — condensation feeds buoyancy.
+
+      stepSaturationAdjustment(this.grid, this.fields, this.exner, this.openK);
       if (tog.enableWarmRain) {
         stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
       }
-      slowDebt += h;
-      const last = s === sub - 1;
-      const runSlow =
-        slowEvery <= 1
-          ? true
-          : slowEvery === 0
-            ? last
-            : last || (s + 1) % slowEvery === 0;
-      if (runSlow) {
-        const slowDt = slowDebt;
-        slowDebt = 0;
-        if (tog.enableRadiation) {
-          applySurfaceRadiation(
-            this.grid,
-            this.fields,
-            slowDt,
-            this.radiation,
-            this.landMask,
-            {
-              height: this.heightGrid,
-              openK: this.openK,
-              soil: this.soilGrid,
-              veg: this.vegGrid,
-              kind: this.kindGrid,
-              dx: this.grid.dx,
-              dy: this.grid.dy,
-            },
-          );
-        }
-        if (tog.enableShallowCu) {
-          stepShallowCu(
-            this.grid,
-            this.fields,
-            slowDt,
-            this.landMask,
-            this.plumeCooldown,
-            this.exner,
-            this.radiation,
-          );
-        }
-        if (tog.enableColdMicro) {
-          stepColdMicrophysics(
-            this.grid,
-            this.fields,
-            slowDt,
-            this.exner,
-            this.iceScratch,
-            this.getSolarStatus().sunFrac,
-          );
-        }
-        if (tog.enableCloudTopCooling) {
-          stepCloudTopCooling(this.grid, this.fields, slowDt, this.exner);
-        }
-        if (tog.enableBLMixing) {
-          stepBLMixing(this.grid, this.fields, slowDt, this.exner);
-        }
-        stepSynopticOmega(this.grid, this.fields, slowDt);
-        stepMarineStratus(
+      if (tog.enableColdMicro) {
+        stepColdMicrophysics(
           this.grid,
           this.fields,
-          slowDt,
+          h,
           this.exner,
-          this.landMask,
+          this.iceScratch,
+          this.getSolarStatus().sunFrac,
         );
+      }
+
+      this.slowClock += h;
+      if (this.slowClock >= FluidSolver.SLOW_DT || s === sub - 1) {
+        const slowDt = this.slowClock;
+        this.slowClock = 0;
+        if (tog.enableRadiation) {
+          stepSlowColumnPhysics(this.grid, this.fields, slowDt, {
+            landMask: this.landMask,
+            height: this.heightGrid,
+            openK: this.openK,
+            soil: this.soilGrid,
+            veg: this.vegGrid,
+            kind: this.kindGrid,
+            radiation: this.radiation,
+          });
+        }
+        if (isHydrostatic && !this.nestChild) {
+          stepCumulusMassFlux(this.grid, this.fields, slowDt, this.openK);
+        }
         if (!this.nestChild && tog.enableSynoptic) {
           advanceSynoptic(slowDt, this.grid.xExtent);
         }
         if (tog.enableCharge) this.updateCharge(slowDt);
       }
+
       if (tog.enableSponge) this.applySponge(h);
       this.applyTerrain(h);
       if (!this.nestChild && !this.clockPaused) {
@@ -601,19 +538,7 @@ export class FluidSolver implements SimBackend {
         this.groundNorth += this.frameV * h;
       }
     }
-    // The fronts are a slow relaxation of the pattern onto the fields, so
-    // they are put back once per step rather than once per sub-step.
-    // A nest receives that pattern through its boundary, not a second copy.
-    if (!this.nestChild) {
-      const t = getToggles();
-      if (t.enableSynoptic || t.enableFronts) {
-        const force =
-          dt *
-          (t.enableSynoptic ? Math.max(0.2, getAdvanced().synopticForce) : 0) *
-          (t.enableFronts ? Math.max(0.2, getAdvanced().frontForce) : 1);
-        if (force > 0) stepSynopticForcing(this.grid, this.fields, force);
-      }
-    }
+    // Nest always runs storm-mode inside the parent.
     this.stepNest(dt);
   }
 
@@ -890,243 +815,21 @@ export class FluidSolver implements SimBackend {
     return c0 * (1 - fz) + c1 * fz;
   }
 
-  /**
-   * Semi-Lagrangian velocity advection with a mid-point (RK2) backtrace.
-   * Reduces cross-wind numerical diffusion vs single-step Euler departure.
-   */
+  /** Flux-form MUSCL velocity advection on the C-grid. */
   private advectVelocity(dt: number): void {
+    musclAdvectVelocity(
+      this.grid,
+      this.fields,
+      dt,
+      this.tmpU,
+      this.tmpV,
+      this.tmpW,
+      this.openK,
+    );
+    // Quiet air relaxes toward the hodograph. Stormy cells keep their winds.
     const g = this.grid;
     const f = this.fields;
-    const { nx, ny, nz, dx, dy, dz } = g;
-    const half = 0.5 * dt;
-    const open = this.openK;
-
-    // --- u faces ---
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i <= nx; i++) {
-          const id = g.uIdx(i, j, k);
-          if (open) {
-            const iL = i > 0 ? i - 1 : 0;
-            const iR = i < nx ? i : nx - 1;
-            const kL = open[iL + j * nx];
-            const kR = open[iR + j * nx];
-            // Face is solid if either adjacent column buries this level.
-            if (k < kL || k < kR) {
-              this.tmpU[id] = 0;
-              continue;
-            }
-          }
-          // Face position in cell-index space: (i-0.5, j, k)
-          let uc = f.u[id];
-          let vc =
-            i === 0
-              ? f.v[g.vIdx(0, j, k)] * 0.5 + f.v[g.vIdx(0, j + 1, k)] * 0.5
-              : i === nx
-                ? f.v[g.vIdx(nx - 1, j, k)] * 0.5 +
-                  f.v[g.vIdx(nx - 1, j + 1, k)] * 0.5
-                : 0.25 *
-                  (f.v[g.vIdx(i - 1, j, k)] +
-                    f.v[g.vIdx(i, j, k)] +
-                    f.v[g.vIdx(i - 1, j + 1, k)] +
-                    f.v[g.vIdx(i, j + 1, k)]);
-          let wc =
-            i === 0
-              ? 0.5 * (f.w[g.wIdx(0, j, k)] + f.w[g.wIdx(0, j, k + 1)])
-              : i === nx
-                ? 0.5 *
-                  (f.w[g.wIdx(nx - 1, j, k)] + f.w[g.wIdx(nx - 1, j, k + 1)])
-                : 0.25 *
-                  (f.w[g.wIdx(i - 1, j, k)] +
-                    f.w[g.wIdx(i, j, k)] +
-                    f.w[g.wIdx(i - 1, j, k + 1)] +
-                    f.w[g.wIdx(i, j, k + 1)]);
-          // Mid-point estimate of the departure velocity.
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i === nx ? nx - 1 : i));
-            const jj = Math.min(ny - 1, Math.max(0, j));
-            zm = Math.max(open[ii + jj * nx], zm);
-          }
-          if (xm >= 0 && xm <= nx && ym >= 0 && ym <= ny - 1) {
-            uc = this.sampleU(xm, ym, zm);
-            vc = this.sampleV(
-              Math.min(nx - 1, Math.max(0, xm - 0.5)),
-              ym,
-              zm,
-            );
-            wc = this.sampleW(
-              Math.min(nx - 1, Math.max(0, xm - 0.5)),
-              Math.min(ny - 1, Math.max(0, ym)),
-              zm,
-            );
-          }
-          let x = i - (uc * dt) / dx;
-          let y = j - (vc * dt) / dy;
-          let z = k - (wc * dt) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i === nx ? nx - 1 : i));
-            const jj = Math.min(ny - 1, Math.max(0, j));
-            z = Math.max(open[ii + jj * nx], z);
-          }
-          if (x < 0 || x > nx) {
-            const yn = Math.min(ny - 1, Math.max(0, j)) / Math.max(1, ny - 1);
-            const s = sampleSynoptic(x < 0 ? 0 : 1, yn, (k + 0.5) * dz);
-            this.tmpU[id] = f.u0[k] + s.du;
-          } else {
-            this.tmpU[id] = this.sampleU(x, y, z);
-          }
-        }
-      }
-    }
-    // --- v faces ---
-    for (let k = 0; k < nz; k++) {
-      for (let j = 0; j <= ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          const id = g.vIdx(i, j, k);
-          if (open) {
-            const jB = j > 0 ? j - 1 : 0;
-            const jT = j < ny ? j : ny - 1;
-            const kB = open[i + jB * nx];
-            const kT = open[i + jT * nx];
-            if (k < kB || k < kT) {
-              this.tmpV[id] = 0;
-              continue;
-            }
-          }
-          let vc = f.v[id];
-          let uc =
-            j === 0
-              ? 0.5 * (f.u[g.uIdx(i, 0, k)] + f.u[g.uIdx(i + 1, 0, k)])
-              : j === ny
-                ? 0.5 *
-                  (f.u[g.uIdx(i, ny - 1, k)] + f.u[g.uIdx(i + 1, ny - 1, k)])
-                : 0.25 *
-                  (f.u[g.uIdx(i, j - 1, k)] +
-                    f.u[g.uIdx(i + 1, j - 1, k)] +
-                    f.u[g.uIdx(i, j, k)] +
-                    f.u[g.uIdx(i + 1, j, k)]);
-          let wc =
-            j === 0
-              ? 0.5 * (f.w[g.wIdx(i, 0, k)] + f.w[g.wIdx(i, 0, k + 1)])
-              : j === ny
-                ? 0.5 *
-                  (f.w[g.wIdx(i, ny - 1, k)] + f.w[g.wIdx(i, ny - 1, k + 1)])
-                : 0.25 *
-                  (f.w[g.wIdx(i, j - 1, k)] +
-                    f.w[g.wIdx(i, j, k)] +
-                    f.w[g.wIdx(i, j - 1, k + 1)] +
-                    f.w[g.wIdx(i, j, k + 1)]);
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i));
-            const jj = Math.min(ny - 1, Math.max(0, j === ny ? ny - 1 : j));
-            zm = Math.max(open[ii + jj * nx], zm);
-          }
-          if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny) {
-            uc = this.sampleU(xm, Math.min(ny - 1, Math.max(0, ym - 0.5)), zm);
-            vc = this.sampleV(xm, ym, zm);
-            wc = this.sampleW(
-              Math.min(nx - 1, Math.max(0, xm)),
-              Math.min(ny - 1, Math.max(0, ym - 0.5)),
-              zm,
-            );
-          }
-          let x = i - (uc * dt) / dx;
-          let y = j - (vc * dt) / dy;
-          let z = k - (wc * dt) / dz;
-          if (open) {
-            const ii = Math.min(nx - 1, Math.max(0, i));
-            const jj = Math.min(ny - 1, Math.max(0, j === ny ? ny - 1 : j));
-            z = Math.max(open[ii + jj * nx], z);
-          }
-          if (y < 0 || y > ny) {
-            const xn = Math.min(nx - 1, Math.max(0, i)) / Math.max(1, nx - 1);
-            const s = sampleSynoptic(xn, y < 0 ? 0 : 1, (k + 0.5) * dz);
-            this.tmpV[id] = f.v0[k] + s.dv;
-          } else {
-            this.tmpV[id] = this.sampleV(x, y, z);
-          }
-        }
-      }
-    }
-
-    // --- w faces ---
-    const height = this.heightGrid;
-    for (let k = 0; k <= nz; k++) {
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          const id = g.wIdx(i, j, k);
-          if (k === nz) {
-            this.tmpW[id] = 0;
-            continue;
-          }
-          if (k === 0) {
-            // Domain floor stays sealed except where sub-grid terrain needs
-            // a kinematic flux (openK == 0 but height > 0).
-            const s = i + j * nx;
-            if (
-              open &&
-              open[s] === 0 &&
-              height &&
-              height[s] > 1e-3
-            ) {
-              this.tmpW[id] = f.w[id];
-            } else {
-              this.tmpW[id] = 0;
-            }
-            continue;
-          }
-          // openK is the first free cell; face k==openK carries orographic w.
-          if (open && k < open[i + j * nx]) {
-            this.tmpW[id] = 0;
-            continue;
-          }
-          let wc = f.w[id];
-          let uc =
-            0.25 *
-            (f.u[g.uIdx(i, j, k - 1)] +
-              f.u[g.uIdx(i + 1, j, k - 1)] +
-              f.u[g.uIdx(i, j, k)] +
-              f.u[g.uIdx(i + 1, j, k)]);
-          let vc =
-            0.25 *
-            (f.v[g.vIdx(i, j, k - 1)] +
-              f.v[g.vIdx(i, j + 1, k - 1)] +
-              f.v[g.vIdx(i, j, k)] +
-              f.v[g.vIdx(i, j + 1, k)]);
-          const xm = i - (uc * half) / dx;
-          const ym = j - (vc * half) / dy;
-          let zm = k - (wc * half) / dz;
-          if (open) zm = Math.max(open[i + j * nx] + 0.5, zm);
-          if (xm >= 0 && xm <= nx - 1 && ym >= 0 && ym <= ny - 1) {
-            uc = this.sampleU(xm, ym, zm);
-            vc = this.sampleV(xm, ym, zm);
-            wc = this.sampleW(xm, ym, zm);
-          }
-          let x = i - (uc * dt) / dx;
-          let y = j - (vc * dt) / dy;
-          let z = k - (wc * dt) / dz;
-          if (open) z = Math.max(open[i + j * nx] + 0.5, z);
-          if (x < 0 || x > nx - 1 || y < 0 || y > ny - 1) {
-            this.tmpW[id] = 0;
-          } else {
-            this.tmpW[id] = this.sampleW(x, y, z);
-          }
-        }
-      }
-    }
-
-    f.u.set(this.tmpU);
-    f.v.set(this.tmpV);
-    f.w.set(this.tmpW);
-
-    // Quiet air relaxes toward the hodograph. Stormy cells (condensate or a
-    // real θ anomaly) keep their inflow, outflow, and cold-pool winds.
+    const { nx, ny, nz, dz } = g;
     const baseNudge = Math.min(0.2, 0.01 * dt);
     const nxny = nx * ny;
     const nu = nx + 1;
@@ -1183,143 +886,25 @@ export class FluidSolver implements SimBackend {
     }
   }
 
-  /**
-   * One backtrace for θ, qv, qc, qr, and the cold species qi/qs/qg/qh plus
-   * the cloud-ice crystal number ni.
-   * Open lateral BC: inflow from the synoptic boundary state, condensate from zero.
-   */
+  /** Flux-form MUSCL scalar advection (θ, qv, condensate). */
   private advectScalars(dt: number): void {
-    const g = this.grid;
-    const f = this.fields;
-    const { nx, ny, nz, dx, dy, dz } = g;
-    const nxny = nx * ny;
-    const nu = nx + 1;
-    const nv = ny + 1;
-    const u = f.u;
-    const v = f.v;
-    const w = f.w;
-    const thD = this.tmp;
-    const qvD = this.tmpQv;
-    const qcD = this.tmpQc;
-    const qrD = this.tmpQr;
-    const qiD = this.tmpQi;
-    const qsD = this.tmpQs;
-    const qgD = this.tmpQg;
-    const qhD = this.tmpQh;
-    const niD = this.tmpNi;
-    const invDx = dt / dx;
-    const invDy = dt / dy;
-    const invDz = dt / dz;
-    const halfDx = 0.5 * invDx;
-    const halfDy = 0.5 * invDy;
-    const halfDz = 0.5 * invDz;
-    const xMax = nx - 1;
-    const yMax = ny - 1;
-    const samp = this.samp4;
-    const open = this.openK;
-
-    for (let k = 0; k < nz; k++) {
-      const th0 = f.theta0[k];
-      const qv0 = f.qv0[k];
-      const kBase = k * nxny;
-      const ku = k * nu * ny;
-      const kv = k * nx * nv;
-      const kw = k * nxny;
-      const kw1 = (k + 1) * nxny;
-      for (let j = 0; j < ny; j++) {
-        const jBase = kBase + j * nx;
-        const ju = ku + j * nu;
-        const jv = kv + j * nx;
-        const jv1 = kv + (j + 1) * nx;
-        const jw = kw + j * nx;
-        const jw1 = kw1 + j * nx;
-        for (let i = 0; i < nx; i++) {
-          const id = jBase + i;
-          const kFloor = open ? open[i + j * nx] : 0;
-          if (k < kFloor) {
-            // Buried under terrain — keep base-state air, no condensate.
-            thD[id] = th0;
-            qvD[id] = qv0;
-            qcD[id] = 0;
-            qrD[id] = 0;
-            qiD[id] = 0;
-            qsD[id] = 0;
-            qgD[id] = 0;
-            qhD[id] = 0;
-            niD[id] = 0;
-            continue;
-          }
-          let uu = 0.5 * (u[ju + i] + u[ju + i + 1]);
-          let vv = 0.5 * (v[jv + i] + v[jv1 + i]);
-          let ww = 0.5 * (w[jw + i] + w[jw1 + i]);
-          // RK2 mid-point departure for less diffusive scalar transport.
-          const xm = i - uu * halfDx;
-          const ym = j - vv * halfDy;
-          let zm = Math.max(kFloor, k - ww * halfDz);
-          if (xm >= 0 && xm <= xMax && ym >= 0 && ym <= yMax) {
-            const ix = Math.min(xMax, Math.max(0, xm | 0));
-            const iy = Math.min(yMax, Math.max(0, ym | 0));
-            const iz = Math.min(nz - 1, Math.max(kFloor, zm | 0));
-            const juM = iz * nu * ny + iy * nu;
-            const jvM = iz * nx * nv + iy * nx;
-            const jv1M = iz * nx * nv + (iy + 1 < nv ? iy + 1 : iy) * nx;
-            const jwM = iz * nxny + iy * nx;
-            const jw1M = Math.min(nz, iz + 1) * nxny + iy * nx;
-            uu = 0.5 * (u[juM + ix] + u[juM + Math.min(nx, ix + 1)]);
-            vv = 0.5 * (v[jvM + ix] + v[jv1M + ix]);
-            ww = 0.5 * (w[jwM + ix] + w[jw1M + ix]);
-          }
-          const x = i - uu * invDx;
-          const y = j - vv * invDy;
-          const z = Math.max(kFloor, k - ww * invDz);
-          if (x < 0 || x > xMax || y < 0 || y > yMax) {
-            const xn = (x < 0 ? 0 : x > xMax ? xMax : i) / Math.max(1, xMax);
-            const yn = (y < 0 ? 0 : y > yMax ? yMax : j) / Math.max(1, yMax);
-            const s = sampleSynoptic(xn, yn, (k + 0.5) * dz);
-            const th = th0 + s.dTheta;
-            const p = f.p0[k];
-            const qv = qv0 * s.qScale;
-            const cap = qsat(TFromTheta(th, p), p) * 0.98;
-            thD[id] = th;
-            qvD[id] = Math.min(Math.max(0, qv), cap);
-            qcD[id] = 0;
-            qrD[id] = 0;
-            qiD[id] = 0;
-            qsD[id] = 0;
-            qgD[id] = 0;
-            qhD[id] = 0;
-            niD[id] = 0;
-           } else {
-             this.sampleQuad(f.theta, f.qv, f.qc, f.qr, x, y, z);
-             thD[id] = samp[0];
-             qvD[id] = samp[1];
-             qcD[id] = samp[2];
-             qrD[id] = samp[3];
-             this.sampleQuad(f.qi, f.qs, f.qg, f.qh, x, y, z);
-             qiD[id] = samp[0];
-             qsD[id] = samp[1];
-             qgD[id] = samp[2];
-             qhD[id] = samp[3];
-             niD[id] = this.sampleField(f.ni, x, y, z);
-           }
-           // Cap per-step theta change to prevent localized transients
-           // (e.g. semi-Lagrangian advection across a moving front) from
-           // spiking a cell by tens of K in one step.
-           const _dth = thD[id] - f.theta[id];
-           if (_dth > 3) thD[id] = f.theta[id] + 3;
-           else if (_dth < -3) thD[id] = f.theta[id] - 3;
-        }
-      }
-    }
-    f.theta.set(thD);
-    f.qv.set(qvD);
-    f.qc.set(qcD);
-    f.qr.set(qrD);
-    f.qi.set(qiD);
-    f.qs.set(qsD);
-    f.qg.set(qgD);
-    f.qh.set(qhD);
-    f.ni.set(niD);
+    musclAdvectScalars(
+      this.grid,
+      this.fields,
+      dt,
+      {
+        th: this.tmp,
+        qv: this.tmpQv,
+        qc: this.tmpQc,
+        qr: this.tmpQr,
+        qi: this.tmpQi,
+        qs: this.tmpQs,
+        qg: this.tmpQg,
+        qh: this.tmpQh,
+        ni: this.tmpNi,
+      },
+      this.openK,
+    );
   }
 
   /**
@@ -1774,6 +1359,8 @@ export class FluidSolver implements SimBackend {
     const invDt = 1 / Math.max(1e-6, dt);
     this.setLids();
     const levels = this.mgLevels;
+    // Coarse V-cycle is only a preconditioner; the fine residual is always
+    // reduced afterward so even grids of 48+ stay divergence-free at dx.
     if (
       levels.length > 1 &&
       levels[0].nx >= 48 &&
@@ -1789,19 +1376,14 @@ export class FluidSolver implements SimBackend {
       this.prolongAdd(coarse, this.fields.p, levels[0]);
       this.correctVelocity(dt);
       this.setLids();
-      return;
     }
     const max0 = this.fillDivergence(invDt);
     this.vcycle(0);
     this.correctVelocity(dt);
     this.setLids();
-    // One cycle is enough when the field was already quiet, or the first
-    // pass cut most of the divergence. The second pass is the expensive case.
-    if (max0 > 0.15) {
+    if (max0 > 0.05) {
       const max1 = this.fillDivergence(invDt);
-      if (max1 > 0.2 && max1 > 0.72 * max0) {
-        // Second cycle is a correction on the leftover divergence, then
-        // folded back into π so the next step can warm-start.
+      if (max1 > 0.05 && max1 > 0.5 * max0) {
         const saved = this.tmp;
         saved.set(this.fields.p);
         this.fields.p.fill(0);
@@ -1812,64 +1394,6 @@ export class FluidSolver implements SimBackend {
         this.setLids();
       }
     }
-  }
-
-  /** Vorticity confinement: amplifies existing rotation to counteract numerical diffusion. */
-  private applyVorticityConfinement(dt: number, strength?: number): void {
-    const g = this.grid;
-    const { nx, ny, nz, dx, dy, dz } = g;
-    const f = this.fields;
-    const eps = strength ?? this.vorticityStrength;
-    const vc = this.vortScratch; // nx*ny*nz * 3: (wx, wy, wz) curl at cell centres
-    const n = nx * ny * nz;
-    vc.fill(0);
-    // Compute curl of velocity at cell centres using centred differences on face velocities
-    for (let k = 1; k < nz - 1; k++) {
-      for (let j = 1; j < ny - 1; j++) {
-        for (let i = 1; i < nx - 1; i++) {
-          const c = i + nx * (j + ny * k);
-          // dw/dy - dv/dz
-          const wx = (f.w[g.wIdx(i, j + 1, k)] - f.w[g.wIdx(i, j - 1, k)]) / (2 * dy)
-                   - (f.v[g.vIdx(i, j, k + 1)] - f.v[g.vIdx(i, j, k - 1)]) / (2 * dz);
-          // du/dz - dw/dx
-          const wy = (f.u[g.uIdx(i, j, k + 1)] - f.u[g.uIdx(i, j, k - 1)]) / (2 * dz)
-                   - (f.w[g.wIdx(i + 1, j, k)] - f.w[g.wIdx(i - 1, j, k)]) / (2 * dx);
-          // dv/dx - du/dy
-          const wz = (f.v[g.vIdx(i + 1, j, k)] - f.v[g.vIdx(i - 1, j, k)]) / (2 * dx)
-                   - (f.u[g.uIdx(i, j + 1, k)] - f.u[g.uIdx(i, j - 1, k)]) / (2 * dy);
-          vc[c * 3    ] = wx;
-          vc[c * 3 + 1] = wy;
-          vc[c * 3 + 2] = wz;
-        }
-      }
-    }
-    // Gradient of |omega| then cross with omega to get confinement force
-    for (let k = 1; k < nz - 1; k++) {
-      for (let j = 1; j < ny - 1; j++) {
-        for (let i = 1; i < nx - 1; i++) {
-          const c = i + nx * (j + ny * k);
-          const mag = (p: number) => Math.sqrt(vc[p*3]*vc[p*3] + vc[p*3+1]*vc[p*3+1] + vc[p*3+2]*vc[p*3+2]);
-          let nx_ = (mag(c + 1) - mag(c - 1)) / (2 * dx);
-          let ny_ = (mag(c + nx) - mag(c - nx)) / (2 * dy);
-          let nz_ = (mag(c + nx * ny) - mag(c - nx * ny)) / (2 * dz);
-          const nl = Math.sqrt(nx_*nx_ + ny_*ny_ + nz_*nz_) + 1e-8;
-          nx_ /= nl; ny_ /= nl; nz_ /= nl;
-          const wx = vc[c*3], wy = vc[c*3+1], wz = vc[c*3+2];
-          // force = eps * (N x omega)
-          const fx = eps * (ny_ * wz - nz_ * wy);
-          const fy = eps * (nz_ * wx - nx_ * wz);
-          const fz = eps * (nx_ * wy - ny_ * wx);
-          // Apply to surrounding u/v/w faces
-          f.u[g.uIdx(i,   j, k)] -= fx * dt * 0.5;
-          f.u[g.uIdx(i+1, j, k)] += fx * dt * 0.5;
-          f.v[g.vIdx(i, j,   k)] -= fy * dt * 0.5;
-          f.v[g.vIdx(i, j+1, k)] += fy * dt * 0.5;
-          f.w[g.wIdx(i, j, k  )] -= fz * dt * 0.5;
-          f.w[g.wIdx(i, j, k+1)] += fz * dt * 0.5;
-        }
-      }
-    }
-    void n;
   }
 
   private applySponge(dt: number): void {
@@ -2518,7 +2042,7 @@ export class FluidSolver implements SimBackend {
       bubbleStrength: opts.bubbleStrength,
       synoptic: opts.synoptic,
     });
-    child.hydrostatic = this.hydrostatic;
+    child.hydrostatic = "off";
     child.setRadiation(this.radiation);
     child.installHeights(spec, nest.x0, nest.y0, nest.x1, nest.y1);
     this.child = child;
@@ -2807,7 +2331,8 @@ export class FluidSolver implements SimBackend {
     const child = this.child;
     const nest = this.nestRect;
     if (!child || !nest || this.nestChild || dt <= 0) return;
-    child.hydrostatic = this.hydrostatic;
+    // Nest is always storm-mode (nonhydrostatic), even if the parent is synoptic.
+    child.hydrostatic = "off";
     child.clockPaused = true;
     child.radiation.solarHour = this.radiation.solarHour;
     const n = nest.refinement >= 3 ? 3 : 2;

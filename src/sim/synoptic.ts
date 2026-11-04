@@ -1313,6 +1313,13 @@ export function applySynopticFeatures(
     }
   }
 
+  // Steering wind (eastward) when the pattern is set to move — applied once
+  // at init so the air mass and the drawn polyline start together.
+  const steer =
+    active.move && active.moveSpeed
+      ? (Math.max(0, active.moveSpeed) * 1000) / 3600
+      : 0;
+
   for (let k = 0; k < nz; k++) {
     const z = (k + 0.5) * dz;
     for (let j = 0; j < ny; j++) {
@@ -1320,7 +1327,8 @@ export function applySynopticFeatures(
       for (let i = 0; i <= nx; i++) {
         const s0 = sampleSynoptic(Math.max(0, i - 1) / xDen, yn, z);
         const s1 = sampleSynoptic(Math.min(nx - 1, i) / xDen, yn, z);
-        fields.u[grid.uIdx(i, j, k)] = fields.u0[k] + 0.5 * (s0.du + s1.du);
+        fields.u[grid.uIdx(i, j, k)] =
+          fields.u0[k] + 0.5 * (s0.du + s1.du) + steer;
       }
     }
     for (let j = 0; j <= ny; j++) {

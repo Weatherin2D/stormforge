@@ -28,31 +28,24 @@ function anelasticDivMax(s: FluidSolver): number {
   return maxAbs;
 }
 
-const g = new Grid3D({ nx: 32, ny: 32, nz: 24, zTop: 12000 });
+// Even 48×48 grid — the old code skipped the fine residual here.
+const g = new Grid3D({ nx: 48, ny: 48, nz: 24, zTop: 12000 });
 const s = new FluidSolver(g);
 s.rebuild(g, defaultSounding(12000, 25), { bubbleStrength: 4 });
 
 const div0 = anelasticDivMax(s);
-for (let i = 0; i < 60; i++) s.step(1);
+for (let i = 0; i < 40; i++) s.step(1);
 const div1 = anelasticDivMax(s);
 const st = s.cloudRainStats();
 
-// Mean |w| on interior faces should stay finite; lids zero
 let wLid = 0;
-let wSum = 0;
-let wN = 0;
 for (let j = 0; j < g.ny; j++) {
   for (let i = 0; i < g.nx; i++) {
     wLid +=
       Math.abs(s.fields.w[g.wIdx(i, j, 0)]) +
       Math.abs(s.fields.w[g.wIdx(i, j, g.nz)]);
-    for (let k = 1; k < g.nz; k++) {
-      wSum += s.fields.w[g.wIdx(i, j, k)];
-      wN++;
-    }
   }
 }
-const wMean = wSum / Math.max(1, wN);
 
 console.log(
   JSON.stringify(
@@ -62,10 +55,6 @@ console.log(
       divAfterInit: +div0.toFixed(6),
       divAfterRun: +div1.toFixed(6),
       wLidSum: +wLid.toFixed(6),
-      wMean: +wMean.toFixed(5),
-      nu: g.nu,
-      nv: g.nv,
-      nw: g.nw,
     },
     null,
     2,
@@ -80,8 +69,8 @@ if (wLid > 1e-6) {
   console.error("FAIL: lid w not zero");
   process.exit(3);
 }
-if (!(div1 < 5 || div1 < div0 * 2 + 1)) {
-  // Loose bound — Jacobi residual won't be machine zero, but should stay O(1) or better
+// Fine-grid residual must stay far below the old loose bound of 5.
+if (!(div1 < 0.5)) {
   console.error("FAIL: anelastic divergence too large", div1);
   process.exit(4);
 }

@@ -2113,16 +2113,15 @@ export class App {
         live.reboot();
         live.rebuild(this.livePayload);
       }
-      // Target rate is wall × speed. Coarse / hydrostatic grids can take a
-      // larger catch-up chunk (solver CFL-splits); fine grids stay at 2 s so
-      // the worker frees up for the next frame.
+      // Target rate is wall × speed. The worker adapts chunk size to frame
+      // cost; the solver CFL-splits without a hard substep cap.
       const cells =
         (this.solver.grid.nx | 0) *
         (this.solver.grid.ny | 0) *
         (this.solver.grid.nz | 0);
       const minH = Math.min(this.solver.grid.dx, this.solver.grid.dy);
       const catchUp =
-        minH > 5000 ? 8 : cells > 700_000 ? 4 : cells > 400_000 ? 3 : 2;
+        minH > 4000 ? 6 : cells > 700_000 ? 3 : cells > 400_000 ? 2.5 : 2;
       const simDt = Math.min(catchUp, this.liveDebt * this.simSpeed);
       const now = performance.now();
       // Pack the 3D volume less often as the grid grows. Physics is a
@@ -2211,7 +2210,7 @@ export class App {
         }
       } else if (
         physicsDue &&
-        live.step({ dt: Math.min(simDt, 1), wall: this.lightningWall })
+        live.step({ dt: simDt, wall: this.lightningWall })
       ) {
         this.liveDebt = 0;
         this.lightningWall = 0;

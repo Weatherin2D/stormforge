@@ -51,13 +51,12 @@ const GAMMA_3D = 2.5493;
 const GAMMA_4D = 8.285;
 const GAMMA_5D2 = 1.8712;
 /**
- * Ice above this mixing ratio aggregates into snow.
- * 0.12 g/kg matches the ice this grid actually reaches; the classic 1 g/kg
- * gate never opened, so snow, graupel and hail never appeared.
+ * Ice above this mixing ratio aggregates into snow (Lin / Rutledge ~1 g/kg).
+ * Hail and graupel follow from a strong updraft, not a lowered gate.
  */
-const ICE_AUTOCONVERSION_THRESHOLD = 1.2e-4;
-/** Excess ice converted per second. Anvil ice becomes snow within a few minutes. */
-const ICE_AUTOCONVERSION_RATE = 0.035;
+const ICE_AUTOCONVERSION_THRESHOLD = 1.0e-3;
+/** Excess ice converted per second. */
+const ICE_AUTOCONVERSION_RATE = 0.001;
 
 export const N0G = 4e4;
 export const RHO_G = 400;
@@ -70,11 +69,10 @@ const GAMMA_45 = 11.6317;
 const GAMMA_35 = 3.3234;
 const GAMMA_275 = 1.6084;
 /**
- * Rimed snow above this mixing ratio becomes graupel. Low enough that snow
- * grown in the updraft can feed hail, high enough that the anvil stays snow.
+ * Rimed snow above this mixing ratio becomes graupel (classic ~0.6 g/kg).
  */
-const SNOW_TO_GRAUPEL_THRESHOLD = 5e-5;
-const SNOW_TO_GRAUPEL_RATE = 0.05;
+const SNOW_TO_GRAUPEL_THRESHOLD = 6.0e-4;
+const SNOW_TO_GRAUPEL_RATE = 0.001;
 
 export const N0H = 4e4;
 export const RHO_H = 900;

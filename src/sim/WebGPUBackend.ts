@@ -29,24 +29,18 @@ import { domainMotionFromProfile } from "./sounding";
 import {
   RadiationOptions,
   DEFAULT_RADIATION,
-  applySurfaceRadiation,
   solarStatus,
   SolarStatus,
   buildLandMask,
 } from "./SurfaceRadiation";
 import { exnerFromP, qsat, TFromTheta } from "./thermo";
 import { stepMicrophysics } from "./Microphysics";
-import {
-  stepCloudTopCooling,
-  stepBLMixing,
-  stepSynopticOmega,
-  stepMarineStratus,
-} from "./stepDynamics";
 import { stepColdMicrophysics } from "./coldMicrophysics";
-import { stepShallowCu } from "./shallowCu";
 import { getActiveSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
-import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
+import { applySynopticPattern } from "./synopticForcing";
+import { stepSaturationAdjustment } from "./saturation";
+import { stepSlowColumnPhysics } from "./boundaryLayer";
 import { WebGPUDevice } from "./WebGPUDevice";
 import type { LightningStrike } from "./FluidSolver";
 import { volumeDisplaySize, copyFullVolumeToDisplay } from "./Grid3D";
@@ -1018,6 +1012,8 @@ export class WebGPUBackend implements SimBackend {
   }
 
   private applyPhysicsTendencies(dt: number): void {
+    // GPU dynamics kernels are not the shipping solver; CPU FluidSolver is.
+    // Keep a minimal CPU physics pass so the scaffold still runs smoke tests.
     const g = this.grid;
     const f = this.fields;
     const landMask = buildLandMask(g.nx, g.ny, getActiveSynoptic().marine);
@@ -1026,8 +1022,7 @@ export class WebGPUBackend implements SimBackend {
     const qrScratch = new Float32Array(g.n);
     const iceScratch = new Float32Array(g.n);
 
-    applySurfaceRadiation(g, f, dt, this.radiation, landMask, null);
-    stepShallowCu(g, f, dt, landMask, new Float32Array(g.nx * g.ny), exner, this.radiation);
+    stepSaturationAdjustment(g, f, exner, null);
     stepMicrophysics(g, f, dt, qrScratch, exner);
     stepColdMicrophysics(
       g,
@@ -1037,12 +1032,11 @@ export class WebGPUBackend implements SimBackend {
       iceScratch,
       solarStatus(this.radiation).sunFrac,
     );
-    stepCloudTopCooling(g, f, dt, exner);
-    stepBLMixing(g, f, dt, exner);
-    stepSynopticOmega(g, f, dt);
-    stepMarineStratus(g, f, dt, exner, landMask);
+    stepSlowColumnPhysics(g, f, dt, {
+      landMask,
+      radiation: this.radiation,
+    });
     advanceSynoptic(dt, g.xExtent);
-    stepSynopticForcing(g, f, dt);
   }
 
   respawnBubble(opts?: Partial<InitOptions>): void {
