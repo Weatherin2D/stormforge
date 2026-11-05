@@ -1882,7 +1882,9 @@ export class FluidSolver implements SimBackend {
     const kSponge = Math.floor(nz * 0.75);
     for (let k = kSponge; k < nz; k++) {
       const t = (k - kSponge) / Math.max(1, nz - 1 - kSponge);
-      const damp = 0.05 * t * t * dt * sponge;
+      // A long coarse-grid step must relax toward the base state. The old
+      // rate*dt form goes past 1 and flips the wind.
+      const damp = 1 - Math.exp(-0.05 * t * t * dt * sponge);
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           f.theta[g.idx(i, j, k)] +=
@@ -2947,6 +2949,38 @@ export class FluidSolver implements SimBackend {
     }
     return { cloudMax, rainMax, cloudMass };
   }
+}
+
+/**
+ * Sim seconds one dynamics pass can cover at a typical wind.
+ * Storm-scale cells stay near a few seconds so updrafts and shafts stay
+ * resolved. Mesoscale and continental cells (Δx of kilometres to hundreds
+ * of kilometres) advance minutes per pass, which is the same CPU work as
+ * the old 1 s step.
+ */
+export function stableOuterDt(
+  dx: number,
+  dy: number,
+  dz: number,
+  hydrostatic: boolean,
+): number {
+  const horiz = Math.min(Math.max(dx, 1), Math.max(dy, 1));
+  const vertical = Math.max(dz, 1);
+  // Hydrostatic columns are limited by the horizontal wind. Storm-scale
+  // runs stay on the vertical Courant number so one pass is not a stack
+  // of substeps.
+  if (hydrostatic) {
+    const advective = (0.75 * horiz) / 30;
+    const rain = (48 * vertical) / 20;
+    const cap = horiz > 20000 ? 600 : 300;
+    const dt = Math.min(advective, rain, cap);
+    return dt < 1 ? 1 : dt;
+  }
+  const advective = (0.75 * Math.min(horiz, vertical)) / 25;
+  const rain = (48 * vertical) / 16;
+  const cap = horiz > 2000 ? 30 : 12;
+  const dt = Math.min(advective, rain, cap);
+  return dt < 1 ? 1 : dt;
 }
 
 /**

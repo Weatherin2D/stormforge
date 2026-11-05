@@ -241,20 +241,9 @@ self.onmessage = (ev: MessageEvent) => {
   // while the picture is built on its own message.
   if (msg.type === "step") {
     try {
-      // Outer dt may exceed 2 s on coarse / hydrostatic grids; the solver
-      // CFL-splits internally. Chunk only so a single message cannot runaway.
-      if (msg.dt > 1e-6) {
-        const g = solver.grid;
-        const nCells = g.nx * g.ny * g.nz;
-        let left = Math.max(0, msg.dt);
-        const chunk =
-          Math.min(g.dx, g.dy) > 5000 || nCells > 400_000 ? 8 : 2;
-        while (left > 1e-6) {
-          const h = Math.min(chunk, left);
-          solver.step(h);
-          left -= h;
-        }
-      }
+      // One pass. Coarse grids send a multi-minute dt that is still a single
+      // CFL step; splitting it here repeated the whole dynamics core.
+      if (msg.dt > 1e-6) solver.step(msg.dt);
       publish({
         volume: null,
         map: null,

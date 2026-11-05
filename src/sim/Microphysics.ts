@@ -134,7 +134,7 @@ function sedimentRain(
   qrNew.fill(0);
   for (let k = 0; k < nz; k++) {
     const vt = rainFallSpeed(k, nz);
-    const cells = Math.min(1.8, (vt * dt) / Math.max(dz, 1));
+    const cells = Math.min(48, (vt * dt) / Math.max(dz, 1));
     const kBase = k * nxny;
     for (let j = 0; j < ny; j++) {
       const jBase = kBase + j * nx;

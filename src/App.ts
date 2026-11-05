@@ -6,7 +6,7 @@ import {
   Grid3D,
   gridFromExtentAndResolution,
 } from "./sim/Grid3D";
-import { FluidSolver } from "./sim/FluidSolver";
+import { FluidSolver, stableOuterDt } from "./sim/FluidSolver";
 import type { LightningStrike } from "./sim/FluidSolver";
 import type { SimBackend } from "./sim/SimBackend";
 import { WebGPUBackend } from "./sim/WebGPUBackend";
@@ -20,8 +20,9 @@ import { formatSolarClock, sunDirection } from "./sim/SurfaceRadiation";
 import { MAP_PRODUCTS, MapProductId, paintLegend } from "./sim/mapProducts";
 import { sampleSurfaceWinds } from "./sim/surfaceWinds";
 import { FrameStore } from "./sim/FrameStore";
-import { BATCH_FIXED_DT, runBatch } from "./sim/BatchRunner";
-import { downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
+import { runBatch } from "./sim/BatchRunner";
+import { asSimSpeed, downloadSave, parseSave, StormforgeSave } from "./sim/SaveFile";
+import type { SimSpeed } from "./sim/SaveFile";
 import {
   getAdvanced,
   getToggles,
@@ -125,7 +126,7 @@ export class App {
   private playbackPlaying = false;
   private playbackSpeed = 1;
   /** Sim seconds per wall second. 1 is realtime. Lightning flashes at every speed. */
-  private simSpeed = 40;
+  private simSpeed: SimSpeed = 40;
   /** Live physics, off the render thread. */
   private live: LiveBridge | null = null;
   private liveDebt = 0;
@@ -188,11 +189,14 @@ export class App {
                   Simulation speed
                   <select id="sim-speed">
                     <option value="1">Realtime</option>
-                    <option value="5">5�</option>
-                    <option value="15">15�</option>
-                    <option value="40" selected>40�</option>
-                    <option value="75">75�</option>
-                    <option value="100">100�</option>
+                    <option value="5">5×</option>
+                    <option value="15">15×</option>
+                    <option value="40" selected>40×</option>
+                    <option value="75">75×</option>
+                    <option value="100">100×</option>
+                    <option value="250">250×</option>
+                    <option value="1000">1,000×</option>
+                    <option value="5000">5,000×</option>
                   </select>
                 </label>
                 <button id="btn-save" title="Save current simulation setup to a .sfz file">Save</button>
@@ -288,7 +292,7 @@ export class App {
             <details class="menu-section">
               <summary>Sun</summary>
               <div class="menu-section-body sun-controls">
-                <span id="sun-clock" class="sun-clock">15:00 � day</span>
+                <span id="sun-clock" class="sun-clock">15:00 � day</span>
           <div id="sun-panel" class="sun-panel">
             <label>
               Hour
@@ -298,7 +302,7 @@ export class App {
             <label>
               Latitude
               <input id="live-lat" type="range" min="-60" max="60" step="1" value="-34" />
-                    <span id="live-lat-val">-34�</span>
+                    <span id="live-lat-val">-34�</span>
             </label>
             <label>
               Month
@@ -831,8 +835,7 @@ export class App {
 
     const speedEl = q("#sim-speed") as HTMLSelectElement;
     speedEl.addEventListener("change", () => {
-      const next = Number(speedEl.value);
-      this.simSpeed = next === 1 || next === 5 || next === 15 || next === 40 || next === 75 || next === 100 ? next : 40;
+      this.simSpeed = asSimSpeed(Number(speedEl.value));
       if (this.simSpeed !== 1) {
         this.renderer?.clearLightning();
         this.radar2d?.setLightning([]);
@@ -1540,7 +1543,6 @@ export class App {
       const store = await runBatch(this.solver, {
         durationSec: values.durationSec,
         outputIntervalSec: values.outputIntervalSec,
-        fixedDt: BATCH_FIXED_DT,
         shouldCancel: () => this.batchCancel,
         onProgress: (p) => {
           if (status) status.textContent = p.message;
@@ -1590,16 +1592,7 @@ export class App {
       (this.simScreen.querySelector("#cloud-look") as HTMLSelectElement | null)
         ?.value ?? "";
 
-    const simSpeedRaw = this.simSpeed;
-    const simSpeed: 1 | 5 | 15 | 40 | 75 | 100 =
-      simSpeedRaw === 1 ||
-      simSpeedRaw === 5 ||
-      simSpeedRaw === 15 ||
-      simSpeedRaw === 40 ||
-      simSpeedRaw === 75 ||
-      simSpeedRaw === 100
-        ? simSpeedRaw
-        : 40;
+    const simSpeed = asSimSpeed(this.simSpeed);
 
     // Build a complete SetupValues snapshot from current live state so that
     // the restored run starts with exactly the same sounding and synoptic.
@@ -1679,7 +1672,7 @@ export class App {
     }
 
     // -- Sim speed -------------------------------------------------------------
-    this.simSpeed = v.simSpeed;
+    this.simSpeed = asSimSpeed(v.simSpeed);
     const speedEl = this.simScreen.querySelector("#sim-speed") as HTMLSelectElement | null;
     if (speedEl) speedEl.value = String(v.simSpeed);
 
@@ -2113,17 +2106,21 @@ export class App {
         live.reboot();
         live.rebuild(this.livePayload);
       }
-      // Target rate is wall � speed. Coarse / hydrostatic grids can take a
-      // larger catch-up chunk (solver CFL-splits); fine grids stay at 2 s so
-      // the worker frees up for the next frame.
-      const cells =
-        (this.solver.grid.nx | 0) *
-        (this.solver.grid.ny | 0) *
-        (this.solver.grid.nz | 0);
-      const minH = Math.min(this.solver.grid.dx, this.solver.grid.dy);
-      const catchUp =
-        minH > 5000 ? 8 : cells > 700_000 ? 4 : cells > 400_000 ? 3 : 2;
-      const simDt = Math.min(catchUp, this.liveDebt * this.simSpeed);
+      // Target rate is wall � speed, capped at one CFL-sized pass so a coarse
+      // domain covers minutes of weather without extra dynamics substeps.
+      const g = this.solver.grid;
+      const cells = (g.nx | 0) * (g.ny | 0) * (g.nz | 0);
+      const minH = Math.min(g.dx, g.dy);
+      // One dynamics pass. Coarse cells cover minutes; fine cells stay short
+      // so a speed catch-up cannot turn into dozens of substeps.
+      const stable = stableOuterDt(
+        g.dx,
+        g.dy,
+        g.dz,
+        this.solver.hydrostatic === "on" ||
+          (this.solver.hydrostatic === "auto" && minH > 5000),
+      );
+      const simDt = Math.min(stable, this.liveDebt * this.simSpeed);
       const now = performance.now();
       // Pack the 3D volume less often as the grid grows. Physics is a
       // separate message, so a pack never stretches a step.
@@ -2211,7 +2208,7 @@ export class App {
         }
       } else if (
         physicsDue &&
-        live.step({ dt: Math.min(simDt, 1), wall: this.lightningWall })
+        live.step({ dt: simDt, wall: this.lightningWall })
       ) {
         this.liveDebt = 0;
         this.lightningWall = 0;

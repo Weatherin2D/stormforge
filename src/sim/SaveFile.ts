@@ -14,6 +14,17 @@ import type { SetupValues } from "../setup/SetupScreen";
 import type { MapProductId } from "./mapProducts";
 import type { AdvancedToggles, AdvancedValues } from "./AdvancedSettings";
 
+/** Wall-clock multipliers offered in the sim menu. */
+export const SIM_SPEEDS = [1, 5, 15, 40, 75, 100, 250, 1000, 5000] as const;
+export type SimSpeed = (typeof SIM_SPEEDS)[number];
+
+export function asSimSpeed(n: number): SimSpeed {
+  for (let i = 0; i < SIM_SPEEDS.length; i++) {
+    if (SIM_SPEEDS[i] === n) return SIM_SPEEDS[i];
+  }
+  return 40;
+}
+
 /** Persisted render/display state. */
 export interface SavedView {
   showClouds: boolean;
@@ -23,7 +34,7 @@ export interface SavedView {
   /** Rain/snow particles. Absent in older saves means on. */
   showDroplets?: boolean;
   mapProduct: MapProductId;
-  simSpeed: 1 | 5 | 15 | 40 | 75 | 100;
+  simSpeed: SimSpeed;
   cloudLookPreset: string;
   cloudTune: {
     gain: number;
