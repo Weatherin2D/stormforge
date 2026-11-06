@@ -30,6 +30,7 @@ import {
 } from "./SurfaceRadiation";
 import {
   applyFrontalUpglide,
+  dampPhantomConvergence,
   frontalUpglideAmplitude,
   mixGridScale,
   relaxStableDrafts,
@@ -490,6 +491,8 @@ export class FluidSolver implements SimBackend {
           this.tmpV,
           this.radiation.latitudeDeg,
           this.openK,
+          this.thetaEnv,
+          this.qvEnv,
         );
         this.applyTerrainKinematics(h);
         this.applyTerrain(h);
@@ -533,6 +536,14 @@ export class FluidSolver implements SimBackend {
             this.columnStable,
             this.openK,
             this.heightGrid,
+          );
+          dampPhantomConvergence(
+            this.grid,
+            this.fields,
+            this.thetaEnv,
+            this.upglideAmp,
+            this.columnStable,
+            this.openK,
           );
         }
         // Widen a one-column draft before it lifts a one-column ribbon of cloud.
@@ -2638,9 +2649,11 @@ export function stableOuterDt(
   // runs stay on the vertical Courant number so one pass is not a stack
   // of substeps.
   if (hydrostatic) {
-    const advective = (0.75 * horiz) / 30;
+    // Gravity-wave / Coriolis adjustment needs a tighter outer step than
+    // pure horizontal advection; multi-minute passes were NaNing mesoscale.
+    const advective = (0.4 * horiz) / 40;
     const rain = (48 * vertical) / 20;
-    const cap = horiz > 20000 ? 600 : 300;
+    const cap = horiz > 20000 ? 180 : 90;
     const dt = Math.min(advective, rain, cap);
     return dt < 1 ? 1 : dt;
   }
