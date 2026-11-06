@@ -98,8 +98,9 @@ export interface SimBackend {
   reset(sounding: SoundingLevel[], opts: InitOptions): void;
   /**
    * Replace the synoptic pattern (fronts, highs/lows) of the running
-   * simulation without restarting it. The new pattern is re-imposed on the
-   * fields by the front forcing, so edits take effect on the next step.
+   * simulation without restarting it. The difference between the old and
+   * new pattern is applied once (θ, moisture, geostrophic + steering wind);
+   * there is no per-step front relaxation.
    */
   setSynoptic(setup: SynopticSetup): void;
   setRadiation(partial: Partial<RadiationOptions>): void;

@@ -2106,19 +2106,17 @@ export class App {
         live.reboot();
         live.rebuild(this.livePayload);
       }
-      // Target rate is wall ï¿½ speed, capped at one CFL-sized pass so a coarse
+      // Target rate is wall × speed, capped at one CFL-sized pass so a coarse
       // domain covers minutes of weather without extra dynamics substeps.
       const g = this.solver.grid;
       const cells = (g.nx | 0) * (g.ny | 0) * (g.nz | 0);
       const minH = Math.min(g.dx, g.dy);
-      // One dynamics pass. Coarse cells cover minutes; fine cells stay short
-      // so a speed catch-up cannot turn into dozens of substeps.
       const stable = stableOuterDt(
         g.dx,
         g.dy,
         g.dz,
         this.solver.hydrostatic === "on" ||
-          (this.solver.hydrostatic === "auto" && minH > 5000),
+          (this.solver.hydrostatic === "auto" && minH > 4000),
       );
       const simDt = Math.min(stable, this.liveDebt * this.simSpeed);
       const now = performance.now();

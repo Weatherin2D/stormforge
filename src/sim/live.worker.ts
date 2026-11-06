@@ -241,8 +241,8 @@ self.onmessage = (ev: MessageEvent) => {
   // while the picture is built on its own message.
   if (msg.type === "step") {
     try {
-      // One pass. Coarse grids send a multi-minute dt that is still a single
-      // CFL step; splitting it here repeated the whole dynamics core.
+      // One pass. App already caps dt with stableOuterDt; splitting here
+      // would repeat the whole dynamics core on coarse grids.
       if (msg.dt > 1e-6) solver.step(msg.dt);
       publish({
         volume: null,

@@ -188,8 +188,10 @@ export interface AdvancedToggles {
 
   // Fluid
   enableBuoyancy: boolean;
+  /** @deprecated Ignored — vorticity confinement removed. Kept for old saves. */
   enableVorticity: boolean;
   enableSponge: boolean;
+  /** @deprecated Ignored — w-damping removed. Kept for old saves. */
   enableWDamping: boolean;
   enableRK2Advection: boolean;
   enableDivergenceDamp: boolean;
@@ -224,13 +226,19 @@ export interface AdvancedToggles {
   enableBowenSplit: boolean;
   enableNightCooling: boolean;
   enableLandWaterContrast: boolean;
+  /** @deprecated Ignored — replaced by gray longwave. Kept for old saves. */
   enableCloudTopCooling: boolean;
+  /** @deprecated Ignored — replaced by K-profile PBL. Kept for old saves. */
   enableBLMixing: boolean;
+  /** @deprecated Ignored — shallow-cu seeding removed. Kept for old saves. */
   enableShallowCu: boolean;
 
-  // Speed
+  // Speed (keys kept for old saves; solver ignores these)
+  /** @deprecated Ignored. */
   enableSplitPhysics: boolean;
+  /** @deprecated Ignored — CFL is always uncapped. */
   enableCFLClamp: boolean;
+  /** @deprecated Ignored — physics pace no longer scales dt. */
   enablePhysicsPace: boolean;
 
   // Lightning
@@ -410,10 +418,8 @@ export const TOGGLE_DEFS: ToggleDef[] = [
 
   // Fluid
   { id: "enableBuoyancy", category: "fluid", label: "Buoyancy", default: true },
-  { id: "enableVorticity", category: "fluid", label: "Vorticity confinement", default: true },
   { id: "enableSponge", category: "fluid", label: "Domain sponges", default: true },
-  { id: "enableWDamping", category: "fluid", label: "W damping", default: true },
-  { id: "enableRK2Advection", category: "fluid", label: "RK2 advection", default: true },
+  { id: "enableRK2Advection", category: "fluid", label: "RK2 / MUSCL advection", default: true },
   { id: "enableDivergenceDamp", category: "fluid", label: "Divergence damping", default: true },
 
   // Precip
@@ -446,14 +452,6 @@ export const TOGGLE_DEFS: ToggleDef[] = [
   { id: "enableBowenSplit", category: "radiation", label: "Bowen evaporative split", default: true },
   { id: "enableNightCooling", category: "radiation", label: "Night LW cooling", default: true },
   { id: "enableLandWaterContrast", category: "radiation", label: "Land/water contrast", default: true },
-  { id: "enableCloudTopCooling", category: "radiation", label: "Cloud-top cooling", default: true },
-  { id: "enableBLMixing", category: "radiation", label: "BL mixing", default: true },
-  { id: "enableShallowCu", category: "radiation", label: "Shallow cumulus", default: true },
-
-  // Speed
-  { id: "enableSplitPhysics", category: "speed", label: "Split slow physics", default: true },
-  { id: "enableCFLClamp", category: "speed", label: "CFL substep clamp", default: true },
-  { id: "enablePhysicsPace", category: "speed", label: "Physics pace scale", default: true },
 
   // Lightning
   { id: "enableLightning", category: "lightning", label: "Lightning flashes", default: true },
@@ -501,8 +499,20 @@ export function formatSettingValue(def: SettingDef, value: number): string {
 export const ADVANCED_SETTING_COUNT = SETTING_DEFS.length;
 export const ADVANCED_TOGGLE_COUNT = TOGGLE_DEFS.length;
 
+/** Keys removed from the panel but still readable from old saves. */
+const LEGACY_TOGGLE_DEFAULTS: Partial<AdvancedToggles> = {
+  enableVorticity: false,
+  enableWDamping: false,
+  enableCloudTopCooling: false,
+  enableBLMixing: false,
+  enableShallowCu: false,
+  enableSplitPhysics: false,
+  enableCFLClamp: false,
+  enablePhysicsPace: false,
+};
+
 export function defaultAdvancedToggles(): AdvancedToggles {
-  const out = {} as AdvancedToggles;
+  const out = { ...LEGACY_TOGGLE_DEFAULTS } as AdvancedToggles;
   for (const d of TOGGLE_DEFS) out[d.id] = d.default;
   return out;
 }
@@ -515,6 +525,11 @@ export function mergeAdvancedToggles(
   for (const d of TOGGLE_DEFS) {
     const v = partial[d.id];
     if (typeof v === "boolean") base[d.id] = v;
+  }
+  // Preserve legacy keys from old saves without exposing them in the UI.
+  for (const key of Object.keys(LEGACY_TOGGLE_DEFAULTS) as (keyof AdvancedToggles)[]) {
+    const v = partial[key];
+    if (typeof v === "boolean") base[key] = v;
   }
   return base;
 }

@@ -471,8 +471,30 @@ export function applySynopticPattern(
         const th = f.theta[id];
         const cap = qsat(TFromTheta(th, p), p) * 0.98;
         f.qv[id] = Math.min(cap, Math.max(0, f.qv[id] * ratio));
+        // Wind difference from the painted circulation (geostrophic-ish
+        // around highs/lows plus front-parallel flow).
+        const du = (sNew.du + bgNew.du) - (sOld.du + bgOld.du);
+        const dv = (sNew.dv + bgNew.dv) - (sOld.dv + bgOld.dv);
+        f.u[grid.uIdx(i, j, k)] += du;
+        if (i + 1 <= nx) f.u[grid.uIdx(i + 1, j, k)] += du;
+        f.v[grid.vIdx(i, j, k)] += dv;
+        if (j + 1 <= ny) f.v[grid.vIdx(i, j + 1, k)] += dv;
       }
     }
+  }
+
+  // Uniform steering wind from the new pattern's moveSpeed (m/s eastward).
+  const steerNew =
+    newSetup.move && newSetup.moveSpeed
+      ? (Math.max(0, newSetup.moveSpeed) * 1000) / 3600
+      : 0;
+  const steerOld =
+    oldSetup.move && oldSetup.moveSpeed
+      ? (Math.max(0, oldSetup.moveSpeed) * 1000) / 3600
+      : 0;
+  const dSteer = steerNew - steerOld;
+  if (Math.abs(dSteer) > 1e-3) {
+    for (let i = 0; i < f.u.length; i++) f.u[i] += dSteer;
   }
 }
 
