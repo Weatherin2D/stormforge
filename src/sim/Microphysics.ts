@@ -115,7 +115,8 @@ function sedimentRain(
         const remain = f.qr[jBase + i];
         if (remain <= 0) continue;
         const vt = rainFallSpeed(remain, rho);
-        const cells = Math.min(1.8, (vt * dt) / Math.max(dz, 1));
+        // Allow multi-cell fall on coarse/long steps (stableOuterDt).
+        const cells = Math.min(48, (vt * dt) / Math.max(dz, 1));
         const kDest = k - cells;
         if (kDest <= 0) {
           const ij = i + j * nx;

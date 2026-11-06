@@ -27,9 +27,6 @@ import {
 } from "./inspect";
 
 let solver: FluidSolver | null = null;
-/** Adaptive physics chunk (simulated seconds) based on last chunk wall time. */
-let adaptiveChunk = 2;
-let lastChunkWallMs = 0;
 
 interface StepMsg {
   type: "step";
@@ -244,26 +241,9 @@ self.onmessage = (ev: MessageEvent) => {
   // while the picture is built on its own message.
   if (msg.type === "step") {
     try {
-      // Outer dt is CFL-split inside the solver. Chunk size tracks wall cost
-      // so a heavy grid lags simulated time instead of taking unstable steps.
-      if (msg.dt > 1e-6) {
-        if (lastChunkWallMs > 12) {
-          adaptiveChunk = Math.max(0.25, adaptiveChunk * 0.7);
-        } else if (lastChunkWallMs > 0 && lastChunkWallMs < 6) {
-          adaptiveChunk = Math.min(4, adaptiveChunk * 1.15);
-        }
-        let left = Math.max(0, msg.dt);
-        while (left > 1e-6) {
-          const h = Math.min(adaptiveChunk, left);
-          const t0 =
-            typeof performance !== "undefined" ? performance.now() : Date.now();
-          solver.step(h);
-          lastChunkWallMs =
-            (typeof performance !== "undefined" ? performance.now() : Date.now()) -
-            t0;
-          left -= h;
-        }
-      }
+      // One pass. App already caps dt with stableOuterDt; splitting here
+      // would repeat the whole dynamics core on coarse grids.
+      if (msg.dt > 1e-6) solver.step(msg.dt);
       publish({
         volume: null,
         map: null,

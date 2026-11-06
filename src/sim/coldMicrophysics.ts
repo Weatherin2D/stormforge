@@ -750,7 +750,7 @@ function sediment(
         const remain = field[id];
         if (remain <= 0) continue;
         const cells = Math.min(
-          2,
+          48,
           (speed(remain, rho, i, j, k) * dt) / Math.max(dz, 1),
         );
         if (cells <= 0) {

@@ -9,6 +9,7 @@ import {
   estimateFrameCount,
 } from "../sim/FrameStore";
 import { BATCH_FIXED_DT } from "../sim/BatchRunner";
+import { stableOuterDt } from "../sim/FluidSolver";
 import { SoundingLevel } from "../sim/thermo";
 import { SoundingCreator } from "../skewt/creator";
 import { SynopticEditor } from "./SynopticEditor";
@@ -195,7 +196,7 @@ export class SetupScreen {
                   </label>
                   <label>
                     Step dt (s)
-                    <input id="sf-batchdt" type="number" min="0.5" max="10" step="0.5" value="${BATCH_FIXED_DT}" disabled />
+                    <input id="sf-batchdt" type="number" min="0.5" max="600" step="0.5" value="${BATCH_FIXED_DT}" disabled />
                   </label>
                 </div>
                 <p class="hint" id="sf-batch-hint">~120 frames · ~75 MB</p>
@@ -839,8 +840,16 @@ export class SetupScreen {
       const frames = estimateFrameCount(v.durationSec, v.outputIntervalSec);
       const bytes = estimateBatchBytes(v.nx, v.ny, v.nz, frames);
       const mb = bytes / (1024 * 1024);
+      const hydro = !!(
+        this.root.querySelector("#sf-hydrostatic") as HTMLInputElement | null
+      )?.checked;
+      const stable = stableOuterDt(grid.dx, grid.dy, grid.dz, hydro);
+      const step = Math.min(v.outputIntervalSec, stable);
+      const dtEl = this.root.querySelector("#sf-batchdt") as HTMLInputElement | null;
+      if (dtEl) dtEl.value = String(Math.round(step * 10) / 10);
+      const stepLabel = step < 10 ? step.toFixed(1) : String(Math.round(step));
       batchHint.textContent =
-        `~${frames} frames · ~${mb.toFixed(0)} MB · dt=${BATCH_FIXED_DT}s`;
+        `~${frames} frames · ~${mb.toFixed(0)} MB · step ${stepLabel}s`;
     }
 
     const msgs: string[] = [];

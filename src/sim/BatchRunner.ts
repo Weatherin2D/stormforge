@@ -1,8 +1,26 @@
 import type { SimBackend } from "./SimBackend";
 import { FrameStore } from "./FrameStore";
+import { stableOuterDt } from "./FluidSolver";
 
-/** Smaller than classic CM1 output dt — keeps sandbox microphysics stable. */
+/** Used only when a grid is not available yet. Runs use stableOuterDt. */
 export const BATCH_FIXED_DT = 1;
+
+/** Physics step for a batch: one CFL-sized pass, and never past an output frame. */
+export function batchStepDt(
+  solver: SimBackend,
+  outputIntervalSec: number,
+  requested?: number,
+): number {
+  const g = solver.grid;
+  const horiz = Math.min(g.dx, g.dy);
+  const hydro =
+    solver.hydrostatic === "on" ||
+    (solver.hydrostatic === "auto" && horiz > 5000);
+  const stable = stableOuterDt(g.dx, g.dy, g.dz, hydro);
+  const every = Math.max(0.25, outputIntervalSec);
+  const asked = requested != null && requested > 0 ? requested : stable;
+  return Math.max(0.25, Math.min(asked, stable, every));
+}
 
 export interface BatchProgress {
   frac: number;
@@ -14,7 +32,7 @@ export interface BatchProgress {
 export interface BatchConfig {
   durationSec: number;
   outputIntervalSec: number;
-  /** Physics step (sim seconds). Default CM1-like 2 s. */
+  /** Physics step (sim seconds). Omit to use one CFL-sized pass. */
   fixedDt?: number;
   onProgress?: (p: BatchProgress) => void;
   shouldCancel?: () => boolean;
@@ -36,7 +54,7 @@ export async function runBatch(
 ): Promise<FrameStore> {
   const duration = Math.max(1, cfg.durationSec);
   const every = Math.max(0.5, cfg.outputIntervalSec);
-  const fixedDt = Math.max(0.25, cfg.fixedDt ?? BATCH_FIXED_DT);
+  const fixedDt = batchStepDt(solver, every, cfg.fixedDt);
   const shown = solver.displayGrid;
   const { nx, ny, nz } = shown;
   solver.setMapDomain?.(shown === solver.grid ? "parent" : "nest");

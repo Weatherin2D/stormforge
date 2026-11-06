@@ -175,9 +175,11 @@ export const FRONT_SPEC: Record<FrontKind, FrontSpec> = {
 };
 
 /**
- * Warm anomaly along the front line. This is the front's lift: a narrow
- * buoyant ridge that raises air where the front is, which is what turns a
- * drawn front into a line of weather instead of a static air-mass edge.
+ * Warm anomaly along the front line. Painted into the temperature field so
+ * the front stays a warm ridge, but it is part of the balanced environment:
+ * the dynamics do not treat that ridge as a free buoyant bubble. Ascent
+ * along the line is added separately, and only runs deep where the column
+ * actually has CAPE.
  */
 export function frontLift(
   spec: FrontSpec,
@@ -1075,6 +1077,18 @@ export function backgroundWeights(
   out: BackgroundWeights,
 ): BackgroundWeights {
   const w = out;
+  // One map point. Callers reuse `out`, so a leftover sum from the previous
+  // cell would cool or warm the rest of the domain and, once that anomaly
+  // is buoyant, spin up a grid-scale storm over the whole map.
+  w.dTheta1400 = 0;
+  w.dTheta450 = 0;
+  w.qPull450 = 0;
+  w.du1600 = 0;
+  w.dv1600 = 0;
+  w.du450 = 0;
+  w.dv450 = 0;
+  w.duJet = 0;
+  w.dvJet = 0;
   if (setup.enabled === false) return w;
 
   const hemi = setup.latitudeDeg >= 0 ? 1 : -1;
@@ -1252,6 +1266,108 @@ export function surfacePressureBiasHpa(xn: number, yn: number): number {
     h += (c.kind === "low" ? -c.hPa : c.hPa) * g;
   }
   return h;
+}
+
+/**
+ * Environment the anelastic buoyancy should be measured against.
+ *
+ * Fronts, highs, lows, and the marine layer are a balanced pattern. If
+ * buoyancy is taken from the 1D sounding instead, every degree of that
+ * pattern accelerates `w`. The narrow lift ridge is only a cell or two
+ * wide, so the acceleration aliases into a checkerboard of tens of m/s
+ * and — once the column is moist — a thunderstorm on every updraft, even
+ * when the sounding is isothermal.
+ *
+ * `liftK` is the ridge amplitude at z = 0 (K), summed over fronts. The
+ * temperature itself is included in `thetaEnv`, so the ridge is neutral.
+ */
+export function fillSynopticEnvironment(
+  grid: Grid3D,
+  theta0: Float32Array,
+  qv0: Float32Array,
+  p0: Float32Array,
+  thetaEnv: Float32Array,
+  qvEnv: Float32Array,
+  liftK: Float32Array,
+  frontDist: Float32Array,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const nxy = nx * ny;
+  const setup = getActiveSynoptic();
+  if (setup.enabled === false) {
+    for (let k = 0; k < nz; k++) {
+      const th = theta0[k];
+      const qv = qv0[k];
+      const base = k * nxy;
+      for (let ij = 0; ij < nxy; ij++) {
+        thetaEnv[base + ij] = th;
+        qvEnv[base + ij] = qv;
+      }
+    }
+    liftK.fill(0);
+    frontDist.fill(1);
+    return;
+  }
+
+  const xDen = Math.max(1, nx - 1);
+  const yDen = Math.max(1, ny - 1);
+  const geo: FrontGeometry = { hits: [], nearest: Infinity };
+  const front: SynopticSample = { dTheta: 0, qScale: 1, du: 0, dv: 0, qPull: 0 };
+  const bg: SynopticSample = { dTheta: 0, qScale: 1, du: 0, dv: 0, qPull: 0 };
+  const weights: BackgroundWeights = {
+    dTheta1400: 0,
+    dTheta450: 0,
+    qPull450: 0,
+    du1600: 0,
+    dv1600: 0,
+    du450: 0,
+    dv450: 0,
+    duJet: 0,
+    dvJet: 0,
+  };
+  const prof = levelProfiles(nz, dz);
+
+  for (let j = 0; j < ny; j++) {
+    const yn = j / yDen;
+    for (let i = 0; i < nx; i++) {
+      const xn = i / xDen;
+      const ij = i + j * nx;
+      frontGeometry(setup, xn, yn, geo);
+      let lift = 0;
+      for (const hit of geo.hits) {
+        if (hit.ridge > lift) lift = hit.ridge;
+      }
+      liftK[ij] = lift;
+      frontDist[ij] = geo.nearest;
+
+      weights.dTheta1400 = 0;
+      weights.dTheta450 = 0;
+      weights.qPull450 = 0;
+      weights.du1600 = 0;
+      weights.dv1600 = 0;
+      weights.du450 = 0;
+      weights.dv450 = 0;
+      weights.duJet = 0;
+      weights.dvJet = 0;
+      backgroundWeights(setup, xn, yn, weights);
+
+      for (let k = 0; k < nz; k++) {
+        frontSampleLevel(geo.hits, k, prof, front);
+        backgroundFromWeightsLevel(weights, k, prof, bg);
+        let dTheta = front.dTheta + bg.dTheta;
+        if (dTheta < -14) dTheta = -14;
+        else if (dTheta > 8) dTheta = 8;
+        let qScale = front.qScale * bg.qScale;
+        if (bg.qPull > 0) qScale += (1.02 - qScale) * bg.qPull;
+        const id = ij + k * nxy;
+        const th = theta0[k] + dTheta;
+        thetaEnv[id] = th;
+        const qv = qv0[k] * qScale;
+        const cap = qsat(TFromTheta(th, p0[k]), p0[k]) * 0.98;
+        qvEnv[id] = Math.min(Math.max(0, qv), cap);
+      }
+    }
+  }
 }
 
 /**
