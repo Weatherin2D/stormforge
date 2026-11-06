@@ -8,7 +8,12 @@ import { getAdvanced, getToggles } from "./AdvancedSettings";
 import { getActiveSynoptic } from "./synoptic";
 
 const OMEGA = 7.2921e-5;
-const CS = 0.18;
+/** Smagorinsky constant — kept modest so thermals are not diffused away. */
+const CS = 0.12;
+/** Scalar Prandtl number (>1 → weaker θ/qv mixing than momentum). */
+const PR = 3;
+/** Cap on eddy viscosity so a strong updraft cannot self-smother. */
+const NU_CAP_FRAC = 0.08; // × dx²/dt scale applied per call via dt
 
 /** Coriolis parameter from latitude (radians north positive). */
 export function coriolisF(latitudeDeg: number, scale = 1): number {
@@ -104,10 +109,12 @@ export function applySmagorinsky(
   const delta = Math.cbrt(dx * dy * dz);
   const nu0 = (CS * CS) * delta * delta * mixH;
   const nuV = (CS * CS) * delta * delta * mixV;
+  // Stability cap: ν Δt / Δx² ≲ NU_CAP_FRAC
+  const nuCap = (NU_CAP_FRAC * Math.min(dx, dy) * Math.min(dx, dy)) / Math.max(dt, 1e-3);
 
-  // Diffuse θ and qv with a local strain magnitude from neighbouring winds.
+  // Diffuse θ and qv weakly (Pr > 1) so buoyancy cores survive.
   const nxny = nx * ny;
-  const thTmp = new Float32Array(nxny); // one level scratch reused
+  const thTmp = new Float32Array(nxny);
   const qvTmp = new Float32Array(nxny);
 
   for (let k = 0; k < nz; k++) {
@@ -136,8 +143,8 @@ export function applySmagorinsky(
         const strain = Math.sqrt(
           2 * (du * du + dv * dv + dw * dw) + 1e-12,
         );
-        const kh = nu0 * strain;
-        const kv = nuV * strain;
+        const kh = Math.min(nuCap, nu0 * strain) / PR;
+        const kv = Math.min(nuCap, nuV * strain) / PR;
         const fx =
           (kh / (dx * dx)) *
           (f.theta[iR + j * nx + k * nxny] -
@@ -182,7 +189,8 @@ export function applySmagorinsky(
     }
   }
 
-  // Light momentum diffusion (same kh scale) on u/v faces.
+  // Momentum diffusion on u/v faces, capped.
+  const nuMom = Math.min(nuCap, nu0 * 0.02); // mild background + strain handled weakly
   const uTmp = new Float32Array(f.u.length);
   uTmp.set(f.u);
   const vTmp = new Float32Array(f.v.length);
@@ -201,7 +209,7 @@ export function applySmagorinsky(
         const lap =
           (f.u[iR] - 2 * f.u[id] + f.u[iL]) / (dx * dx) +
           (f.u[jT] - 2 * f.u[id] + f.u[jB]) / (dy * dy);
-        uTmp[id] = f.u[id] + nu0 * 0.5 * lap * dt;
+        uTmp[id] = f.u[id] + nuMom * lap * dt;
       }
     }
     for (let j = 1; j < ny; j++) {
@@ -217,7 +225,7 @@ export function applySmagorinsky(
         const lap =
           (f.v[iR] - 2 * f.v[id] + f.v[iL]) / (dx * dx) +
           (f.v[jT] - 2 * f.v[id] + f.v[jB]) / (dy * dy);
-        vTmp[id] = f.v[id] + nu0 * 0.5 * lap * dt;
+        vTmp[id] = f.v[id] + nuMom * lap * dt;
       }
     }
   }

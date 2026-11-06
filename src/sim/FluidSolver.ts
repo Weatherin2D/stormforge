@@ -1216,17 +1216,17 @@ export class FluidSolver implements SimBackend {
     const coarsest = levelIndex === this.mgLevels.length - 1;
     if (coarsest) {
       if (levelIndex > 0) p.fill(0);
-      this.smoothLevel(level, p, rhs, 4);
+      this.smoothLevel(level, p, rhs, 8);
       return;
     }
-    this.smoothLevel(level, p, rhs, 1);
+    this.smoothLevel(level, p, rhs, 2);
     this.residualLevel(level, p, rhs, level.resid);
     const coarse = this.mgLevels[levelIndex + 1];
     this.restrictResidual(level, coarse);
     coarse.p!.fill(0);
     this.vcycle(levelIndex + 1);
     this.prolongAdd(coarse, p, level);
-    this.smoothLevel(level, p, rhs, 1);
+    this.smoothLevel(level, p, rhs, 2);
   }
 
   private correctVelocity(dt: number): void {
@@ -1359,8 +1359,9 @@ export class FluidSolver implements SimBackend {
     const invDt = 1 / Math.max(1e-6, dt);
     this.setLids();
     const levels = this.mgLevels;
-    // Coarse V-cycle is only a preconditioner; the fine residual is always
-    // reduced afterward so even grids of 48+ stay divergence-free at dx.
+    // Coarse V-cycle is a warm start for π only — never correct velocity
+    // with it first. Correcting before the fine solve applied ∇π twice and
+    // crushed buoyant updrafts.
     if (
       levels.length > 1 &&
       levels[0].nx >= 48 &&
@@ -1374,9 +1375,8 @@ export class FluidSolver implements SimBackend {
       this.vcycle(1);
       this.fields.p.fill(0);
       this.prolongAdd(coarse, this.fields.p, levels[0]);
-      this.correctVelocity(dt);
-      this.setLids();
     }
+    // RHS from the still-uncorrected u*; refine π then correct once.
     const max0 = this.fillDivergence(invDt);
     this.vcycle(0);
     this.correctVelocity(dt);
@@ -1384,6 +1384,7 @@ export class FluidSolver implements SimBackend {
     if (max0 > 0.05) {
       const max1 = this.fillDivergence(invDt);
       if (max1 > 0.05 && max1 > 0.5 * max0) {
+        // Residual correction δπ only — do not re-apply the first π.
         const saved = this.tmp;
         saved.set(this.fields.p);
         this.fields.p.fill(0);
