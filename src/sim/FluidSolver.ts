@@ -33,6 +33,7 @@ import { stepShallowCu } from "./shallowCu";
 import {
   applyFrontalUpglide,
   frontalUpglideAmplitude,
+  mixGridScale,
   relaxStableDrafts,
   stepCloudTopCooling,
   stepBLMixing,
@@ -551,6 +552,15 @@ export class FluidSolver implements SimBackend {
           this.heightGrid,
         );
       }
+      // Widen a one-column draft before it lifts a one-column ribbon of cloud.
+      mixGridScale(
+        this.grid,
+        this.fields,
+        h,
+        this.thetaEnv,
+        this.qvEnv,
+        this.openK,
+      );
       this.advectScalars(h);
       // Warm rain stays every substep — condensation feeds buoyancy.
       if (tog.enableWarmRain) {
@@ -627,6 +637,15 @@ export class FluidSolver implements SimBackend {
       }
       if (tog.enableSponge) this.applySponge(h);
       this.applyTerrain(h);
+      // Widen grid-scale drafts before the next substep advects them.
+      mixGridScale(
+        this.grid,
+        this.fields,
+        h,
+        this.thetaEnv,
+        this.qvEnv,
+        this.openK,
+      );
       if (!this.nestChild && !this.clockPaused) {
         this.radiation.solarHour = advanceSolarHour(
           this.radiation.solarHour,

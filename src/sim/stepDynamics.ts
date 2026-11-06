@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Additional dynamics for diverse cloud types:
  *   - Cloud-top radiative cooling (drives stratocumulus)
  *   - Boundary-layer turbulent mixing (fog, stratus)
@@ -393,3 +393,150 @@ export function applyFrontalUpglide(
     }
   }
 }
+
+/**
+ * Spread a one-column spike sideways, then stop.
+ *
+ * Advection does not mix across the wind, so an updraft and its rain stay
+ * one column wide and stretch into a ribbon. A ribbon is a line of spikes:
+ * each column is much stronger than the air on either side. That excess is
+ * handed to the neighboring columns until the line is a few cells wide.
+ * A storm that already spans several columns is not a spike, so its core
+ * stays put. The balanced front (the part in thetaEnv / qvEnv) is not touched.
+ */
+let mixPlane: Float32Array = new Float32Array(0);
+let mixOut: Float32Array = new Float32Array(0);
+const mixLow = new Int32Array(8);
+
+export function mixGridScale(
+  grid: Grid3D,
+  f: SimFields,
+  dt: number,
+  thetaEnv: Float32Array,
+  qvEnv: Float32Array,
+  openK: Uint16Array | null,
+): void {
+  const mix = getAdvanced().horizMixing;
+  if (mix <= 0 || dt <= 0) return;
+  // How much of a spike's excess over its neighbors is handed outward.
+  const bite = Math.min(0.7, 0.28 + 0.22 * mix);
+  const { nx, ny, nz } = grid;
+  broadenCells(f.theta, thetaEnv, nx, ny, nz, bite, 0.35, openK, false);
+  broadenCells(f.qv, qvEnv, nx, ny, nz, bite, 2e-5, openK, true);
+  broadenCells(f.qc, null, nx, ny, nz, bite, 1e-5, openK, true);
+  broadenCells(f.qr, null, nx, ny, nz, bite, 1e-5, openK, true);
+  broadenCells(f.qi, null, nx, ny, nz, bite, 1e-6, openK, true);
+  broadenCells(f.qs, null, nx, ny, nz, bite, 1e-6, openK, true);
+  broadenCells(f.qg, null, nx, ny, nz, bite, 1e-6, openK, true);
+  broadenCells(f.qh, null, nx, ny, nz, bite, 1e-6, openK, true);
+  broadenCells(f.ni, null, nx, ny, nz, bite, 1, openK, true);
+  broadenCells(f.w, null, nx, ny, nz + 1, bite, 0.3, openK, false, true);
+}
+
+function planePair(n: number): [Float32Array, Float32Array] {
+  if (mixPlane.length < n) mixPlane = new Float32Array(n);
+  if (mixOut.length < n) mixOut = new Float32Array(n);
+  return [mixPlane, mixOut];
+}
+
+/**
+ * Hand the excess of a one-column extremum to the weaker cells around it.
+ * `wFaces` indexes the staggered vertical velocity (an extra level, lids skipped).
+ */
+function broadenCells(
+  field: Float32Array,
+  env: Float32Array | null,
+  nx: number,
+  ny: number,
+  nz: number,
+  bite: number,
+  eps: number,
+  openK: Uint16Array | null,
+  nonNeg: boolean,
+  wFaces = false,
+): void {
+  const nxy = nx * ny;
+  const [src, out] = planePair(nxy);
+  const k0 = wFaces ? 1 : 0;
+  const k1 = wFaces ? nz - 1 : nz;
+  for (let k = k0; k < k1; k++) {
+    const base = k * nxy;
+    for (let s = 0; s < nxy; s++) {
+      const buried = openK
+        ? wFaces
+          ? k <= openK[s]
+          : k < openK[s]
+        : false;
+      if (buried) {
+        src[s] = 0;
+        continue;
+      }
+      src[s] = env ? field[base + s] - env[base + s] : field[base + s];
+    }
+    out.set(src);
+    for (let j = 0; j < ny; j++) {
+      const row = j * nx;
+      for (let i = 0; i < nx; i++) {
+        const s = row + i;
+        const buried = openK
+          ? wFaces
+            ? k <= openK[s]
+            : k < openK[s]
+          : false;
+        if (buried) continue;
+        const c = src[s];
+        if (Math.abs(c) < eps) continue;
+        let sum = 0;
+        let count = 0;
+        let lowN = 0;
+        let extremum = true;
+        for (let dj = -1; dj <= 1; dj++) {
+          const jj = j + dj;
+          if (jj < 0 || jj >= ny) continue;
+          for (let di = -1; di <= 1; di++) {
+            if (di === 0 && dj === 0) continue;
+            const ii = i + di;
+            if (ii < 0 || ii >= nx) continue;
+            const ns = jj * nx + ii;
+            const nb = openK
+              ? wFaces
+                ? k <= openK[ns]
+                : k < openK[ns]
+              : false;
+            if (nb) continue;
+            const v = src[ns];
+            sum += v;
+            count++;
+            if (c > 0 ? v > c : v < c) extremum = false;
+            if (Math.abs(v) < Math.abs(c)) mixLow[lowN++] = ns;
+          }
+        }
+        if (!extremum || count < 3 || lowN === 0) continue;
+        const avg = sum / count;
+        if (Math.abs(c) <= 1.22 * Math.abs(avg)) continue;
+        const move = bite * (c - avg);
+        out[s] -= move;
+        const share = move / lowN;
+        for (let n = 0; n < lowN; n++) out[mixLow[n]] += share;
+      }
+    }
+    for (let s = 0; s < nxy; s++) {
+      const buried = openK
+        ? wFaces
+          ? k <= openK[s]
+          : k < openK[s]
+        : false;
+      if (buried) continue;
+      let next = out[s];
+      if (nonNeg && !env && next < 0) next = 0;
+      const id = base + s;
+      if (env) {
+        const v = env[id] + next;
+        field[id] = nonNeg && v < 0 ? 0 : v;
+      } else {
+        field[id] = next;
+      }
+    }
+  }
+}
+
