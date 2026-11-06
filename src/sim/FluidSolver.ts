@@ -10,7 +10,7 @@ import {
 import { stepMicrophysics } from "./Microphysics";
 import { SoundingLevel, G, TFromTheta, exnerFromP, qsat } from "./thermo";
 import { domainMotionFromProfile } from "./sounding";
-import { getActiveSynoptic, sampleSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
+import { fillSynopticEnvironment, getActiveSynoptic, sampleSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
 import { stepSynopticForcing, applySynopticPattern } from "./synopticForcing";
 import {
@@ -31,6 +31,9 @@ import {
 } from "./SurfaceRadiation";
 import { stepShallowCu } from "./shallowCu";
 import {
+  applyFrontalUpglide,
+  frontalUpglideAmplitude,
+  relaxStableDrafts,
   stepCloudTopCooling,
   stepBLMixing,
   stepSynopticOmega,
@@ -112,6 +115,19 @@ export class FluidSolver implements SimBackend {
   private qrScratch: Float32Array;
   private samp4 = new Float32Array(4);
   private exner: Float32Array;
+  /** Synoptic pattern, so buoyancy is the departure from that balance. */
+  private thetaEnv: Float32Array = new Float32Array(0);
+  private qvEnv: Float32Array = new Float32Array(0);
+  /** Front lift-ridge amplitude at z = 0 (K). */
+  private liftK: Float32Array = new Float32Array(0);
+  /** Normalized distance to the nearest front. */
+  private frontDist: Float32Array = new Float32Array(0);
+  /** Stability-limited frontal upglide, m/s. */
+  private upglideAmp: Float32Array = new Float32Array(0);
+  /** 1 where the column cannot support a deep draft. */
+  private columnStable: Uint8Array = new Uint8Array(0);
+  private upglideOn = false;
+  private dampStable = false;
   private landMask: Float32Array;
   private plumeCooldown: Float32Array;
   /** Recent flash rate, flashes per minute, decaying over ~5 minutes. */
@@ -200,6 +216,14 @@ export class FluidSolver implements SimBackend {
     this.qrScratch = new Float32Array(n);
     this.exner = new Float32Array(g.nz);
     this.exner.fill(1);
+    this.thetaEnv = new Float32Array(n);
+    this.qvEnv = new Float32Array(n);
+    this.liftK = new Float32Array(g.nx * g.ny);
+    this.frontDist = new Float32Array(g.nx * g.ny);
+    this.upglideAmp = new Float32Array(g.nx * g.ny);
+    this.columnStable = new Uint8Array(g.nx * g.ny);
+    this.upglideOn = false;
+    this.dampStable = false;
     this.landMask = buildLandMask(g.nx, g.ny);
     this.plumeCooldown = new Float32Array(g.nx * g.ny);
     this.flash = new Float32Array(g.nx * g.ny);
@@ -475,6 +499,7 @@ export class FluidSolver implements SimBackend {
       ? Math.max(0.5, Math.min(2, adv.physicsPace))
       : 1;
     const h = (dt * pace) / sub;
+    this.refreshBalancedEnvironment();
     // Large / coarse domains run slow column physics once per outer step.
     const nCells = this.grid.nx * this.grid.ny * this.grid.nz;
     const slowBase =
@@ -511,6 +536,21 @@ export class FluidSolver implements SimBackend {
       this.applyTerrainKinematics(h);
       this.project(h);
       this.applyTerrain(h);
+      if (this.upglideOn) {
+        applyFrontalUpglide(this.grid, this.fields.w, this.upglideAmp, this.openK);
+      }
+      if (this.dampStable) {
+        relaxStableDrafts(
+          this.grid,
+          this.fields.theta,
+          this.thetaEnv,
+          this.fields.w,
+          this.upglideAmp,
+          this.columnStable,
+          this.openK,
+          this.heightGrid,
+        );
+      }
       this.advectScalars(h);
       // Warm rain stays every substep — condensation feeds buoyancy.
       if (tog.enableWarmRain) {
@@ -627,18 +667,19 @@ export class FluidSolver implements SimBackend {
       ? getAdvanced().coldPoolStrength
       : 0;
 
+    const envTh = this.thetaEnv;
+    const envQ = this.qvEnv;
     for (let k = 1; k < nz; k++) {
-      const th0a = f.theta0[k - 1];
-      const th0b = f.theta0[k];
-      const qv0a = f.qv0[k - 1];
-      const qv0b = f.qv0[k];
-      const thv0 = 0.5 * (th0a * (1 + 0.608 * qv0a) + th0b * (1 + 0.608 * qv0b));
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
           // Face k sits between cells k-1 and k; skip until both are free air.
           if (open && k <= open[i + j * nx]) continue;
           const ida = this.grid.idx(i, j, k - 1);
           const idb = this.grid.idx(i, j, k);
+          const thv0 =
+            0.5 *
+            (envTh[ida] * (1 + 0.608 * envQ[ida]) +
+              envTh[idb] * (1 + 0.608 * envQ[idb]));
           const tha = f.theta[ida];
           const thb = f.theta[idb];
           const qva = f.qv[ida];
@@ -650,10 +691,14 @@ export class FluidSolver implements SimBackend {
           const qr = 0.5 * (f.qr[ida] + f.qr[idb]);
           const cold =
             0.5 *
-            (f.qi[ida] + f.qi[idb] +
-              f.qs[ida] + f.qs[idb] +
-              f.qg[ida] + f.qg[idb] +
-              f.qh[ida] + f.qh[idb]);
+            (f.qi[ida] +
+              f.qi[idb] +
+              f.qs[ida] +
+              f.qs[idb] +
+              f.qg[ida] +
+              f.qg[idb] +
+              f.qh[ida] +
+              f.qh[idb]);
           const buoy =
             g *
             ((thv - thv0) / Math.max(1, thv0) -
@@ -664,6 +709,72 @@ export class FluidSolver implements SimBackend {
         }
       }
     }
+  }
+
+  /**
+   * The drawn fronts and pressure centers are a balanced environment.
+   * Buoyancy is the departure from that pattern, and the front only gets
+   * a deep upglide where the column has CAPE.
+   */
+  private refreshBalancedEnvironment(): void {
+    const tog = getToggles();
+    const hold =
+      !this.nestChild && (tog.enableSynoptic || tog.enableFronts);
+    const f = this.fields;
+    const { nx, ny, nz } = this.grid;
+    const nxy = nx * ny;
+    if (!hold) {
+      for (let k = 0; k < nz; k++) {
+        const th = f.theta0[k];
+        const qv = f.qv0[k];
+        const base = k * nxy;
+        for (let ij = 0; ij < nxy; ij++) {
+          this.thetaEnv[base + ij] = th;
+          this.qvEnv[base + ij] = qv;
+        }
+      }
+      this.liftK.fill(0);
+      this.frontDist.fill(1);
+      this.upglideAmp.fill(0);
+      this.columnStable.fill(0);
+      this.upglideOn = false;
+      this.dampStable = false;
+      return;
+    }
+    fillSynopticEnvironment(
+      this.grid,
+      f.theta0,
+      f.qv0,
+      f.p0,
+      this.thetaEnv,
+      this.qvEnv,
+      this.liftK,
+      this.frontDist,
+    );
+    frontalUpglideAmplitude(
+      this.grid,
+      f.theta0,
+      f.qv0,
+      this.thetaEnv,
+      this.qvEnv,
+      f.p0,
+      this.exner,
+      this.liftK,
+      this.frontDist,
+      this.upglideAmp,
+      this.columnStable,
+    );
+    let glide = false;
+    let damp = false;
+    const amp = this.upglideAmp;
+    const stable = this.columnStable;
+    for (let i = 0; i < amp.length; i++) {
+      if (amp[i] > 0) glide = true;
+      if (stable[i]) damp = true;
+      if (glide && damp) break;
+    }
+    this.upglideOn = glide;
+    this.dampStable = damp;
   }
 
   /**

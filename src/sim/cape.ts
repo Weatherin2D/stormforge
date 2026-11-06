@@ -98,6 +98,8 @@ export function integrateCapeCin(
   Td: ArrayLike<number>,
   n: number,
   zTop: number,
+  /** Skip the parcel trace. The integral is the same; nothing is allocated. */
+  trace = true,
 ): ThermoIndices {
   if (n < 3) {
     return { ...EMPTY_INDICES };
@@ -150,7 +152,7 @@ export function integrateCapeCin(
     }
 
     const B = 9.81 * ((Tpar - Tenv) / Math.max(Tenv, 1));
-    parcel.push({ z: zMid, p: pMid, T: Tpar, Tenv, B });
+    if (trace) parcel.push({ z: zMid, p: pMid, T: Tpar, Tenv, B });
     if (B > 0) {
       if (!aboveLfc) {
         aboveLfc = true;

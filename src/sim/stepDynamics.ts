@@ -10,9 +10,10 @@
 
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { esatFast, mixingRatio } from "./thermo";
+import { dewpointFromE, esatFast, mixingRatio } from "./thermo";
 import { sampleSynoptic, getActiveSynoptic } from "./synoptic";
 import { getAdvanced } from "./AdvancedSettings";
+import { integrateCapeCin } from "./cape";
 
 
 /**
@@ -224,4 +225,171 @@ export function stepMarineStratus(
     }
   }
   void nxny;
+}
+
+let scratchN = 0;
+let colT = new Float32Array(0);
+let colTd = new Float32Array(0);
+let colZ = new Float32Array(0);
+let colP = new Float32Array(0);
+
+function dewpointK(qv: number, p: number): number {
+  const q = qv > 0 ? qv : 0;
+  const e = (q * p) / (0.622 + (q > 1e-8 ? q : 1e-8));
+  return dewpointFromE(e > 1 ? e : 1) + 273.15;
+}
+
+/**
+ * How hard each column's front may lift, in m/s at the ridge.
+ * Stable or capped air stays at a few centimetres per second so a front
+ * can make a cloud deck without a thunderstorm. Real CAPE is allowed a
+ * deeper push; the storm itself then comes from buoyancy, not from this.
+ */
+export function frontalUpglideAmplitude(
+  grid: Grid3D,
+  theta0: Float32Array,
+  qv0: Float32Array,
+  thetaEnv: Float32Array,
+  qvEnv: Float32Array,
+  p0: Float32Array,
+  exner: Float32Array,
+  liftK: Float32Array,
+  frontDist: Float32Array,
+  out: Float32Array,
+  stable: Uint8Array,
+): void {
+  const { nx, ny, nz, dz, zTop } = grid;
+  const nxy = nx * ny;
+  if (scratchN !== nz) {
+    scratchN = nz;
+    colT = new Float32Array(nz);
+    colTd = new Float32Array(nz);
+    colZ = new Float32Array(nz);
+    colP = new Float32Array(nz);
+  }
+  for (let k = 0; k < nz; k++) {
+    colZ[k] = (k + 0.5) * dz;
+    colP[k] = p0[k];
+    const T = theta0[k] * exner[k];
+    colT[k] = T;
+    const td = dewpointK(qv0[k], p0[k]);
+    colTd[k] = td < T ? td : T;
+  }
+  const base = integrateCapeCin(colZ, colP, colT, colTd, nz, zTop, false);
+  const baseCapped = base.cape < 200 || (base.cin > 100 && base.cape < 800);
+
+  for (let j = 0; j < ny; j++) {
+    const row = j * nx;
+    for (let i = 0; i < nx; i++) {
+      const ij = row + i;
+      const lift = liftK[ij];
+      // Convergence that feeds the phantom draft extends past the warm ridge.
+      if (frontDist[ij] >= 0.25 && lift < 0.2) {
+        out[ij] = 0;
+        stable[ij] = baseCapped ? 1 : 0;
+        continue;
+      }
+      for (let k = 0; k < nz; k++) {
+        const id = ij + k * nxy;
+        const T = thetaEnv[id] * exner[k];
+        colT[k] = T;
+        const td = dewpointK(qvEnv[id], p0[k]);
+        colTd[k] = td < T ? td : T;
+      }
+      const ix = integrateCapeCin(colZ, colP, colT, colTd, nz, zTop, false);
+      const ridge = lift < 2.5 ? lift / 2.5 : 1;
+      const capped = ix.cape < 200 || (ix.cin > 100 && ix.cape < 800);
+      stable[ij] = capped ? 1 : 0;
+      const storm = capped ? 0.08 : Math.min(1.6, 0.35 + ix.cape / 2800);
+      out[ij] = lift >= 0.2 ? storm * ridge : 0;
+    }
+  }
+}
+
+/**
+ * A front's wind nudge is convergent, and the projection turns that into
+ * `w`. The nudge is applied again every step, so on a stable sounding the
+ * draft ratchets up to thunderstorm strength and the line breaks into a
+ * checkerboard. Pull that phantom draft back. Buoyancy still acts every
+ * substep, so a real thermal settles at a few metres per second. A draft
+ * with nothing to hold it up falls back to the gentle upglide.
+ */
+export function relaxStableDrafts(
+  grid: Grid3D,
+  theta: Float32Array,
+  thetaEnv: Float32Array,
+  w: Float32Array,
+  amp: Float32Array,
+  stable: Uint8Array,
+  openK: Uint16Array | null,
+  height: Float32Array | null,
+): void {
+  // The projection rebuilds this draft from the imposed synoptic wind on
+  // every substep. A capped column has no storm to maintain, so put w back
+  // to the gentle upglide. Hills and a real thermal (a few kelvin off the
+  // balanced pattern) are left alone.
+  const { nx, ny, nz, dz } = grid;
+  const nxy = nx * ny;
+  const depth = 2800;
+  for (let j = 0; j < ny; j++) {
+    const row = j * nx;
+    for (let i = 0; i < nx; i++) {
+      const ij = row + i;
+      if (!stable[ij]) continue;
+      if (openK && openK[ij] > 0) continue;
+      if (height && height[ij] > 40) continue;
+      const a = amp[ij];
+      for (let k = 1; k < nz; k++) {
+        const z = k * dz;
+        const below = ij + (k - 1) * nxy;
+        const above = ij + Math.min(nz - 1, k) * nxy;
+        const anomaly = Math.max(
+          Math.abs(theta[below] - thetaEnv[below]),
+          Math.abs(theta[above] - thetaEnv[above]),
+        );
+        if (anomaly > 2.5) continue;
+        const shape =
+          z > 8000
+            ? 0
+            : Math.sin(Math.PI * Math.min(1, z / 6000)) * Math.exp(-z / depth);
+        w[grid.wIdx(i, j, k)] = a * shape;
+      }
+    }
+  }
+}
+
+/**
+ * Put the frontal upglide back after the projection removes unbalanced w.
+ * A stronger draft already in the column (a real storm, or a downdraft)
+ * is left alone.
+ */
+export function applyFrontalUpglide(
+  grid: Grid3D,
+  w: Float32Array,
+  amp: Float32Array,
+  openK: Uint16Array | null,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const depth = 2800;
+  for (let j = 0; j < ny; j++) {
+    const row = j * nx;
+    for (let i = 0; i < nx; i++) {
+      const ij = row + i;
+      const a = amp[ij];
+      if (a <= 0) continue;
+      const kFloor = openK ? openK[ij] : 0;
+      for (let k = 1; k < nz; k++) {
+        if (k <= kFloor) continue;
+        const z = k * dz;
+        if (z > 8000) break;
+        const shape =
+          Math.sin(Math.PI * Math.min(1, z / 6000)) * Math.exp(-z / depth);
+        const target = a * shape;
+        if (target < 0.02) continue;
+        const id = grid.wIdx(i, j, k);
+        const wk = w[id];
+        if (wk < target && wk > -0.5) w[id] = target;
+      }
+    }
+  }
 }
