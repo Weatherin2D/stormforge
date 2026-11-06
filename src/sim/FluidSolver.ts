@@ -579,7 +579,13 @@ export class FluidSolver implements SimBackend {
           });
         }
         if (isHydrostatic && !this.nestChild) {
-          stepCumulusMassFlux(this.grid, this.fields, slowDt, this.openK);
+          stepCumulusMassFlux(
+            this.grid,
+            this.fields,
+            slowDt,
+            this.openK,
+            this.liftK,
+          );
         }
         if (!this.nestChild && tog.enableSynoptic) {
           advanceSynoptic(slowDt, this.grid.xExtent);

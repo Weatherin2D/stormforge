@@ -702,22 +702,27 @@ function saturationAdjustMixed(
     }
     return;
   }
+  // Homogeneous freezing of any remaining liquid below −38 °C.
   if (cloud[i] > 0) {
     number[i] += cloud[i] / DROPLET_MASS;
     ice[i] += cloud[i];
     theta[i] += heat * cloud[i];
     cloud[i] = 0;
   }
-  for (let pass = 0; pass < 2; pass++) {
-    const t = theta[i] * exner;
-    const qsi = qsatIce(t - T0, p);
-    let d = (qv[i] - qsi) / (1 + (LS * LS * qsi) / (CP * RV * t * t));
-    if (d < 0) d = Math.max(d, -ice[i]);
-    if (d === 0) break;
-    qv[i] -= d;
-    ice[i] += d;
-    theta[i] += (LS / (CP * exner)) * d;
-  }
+  // Only sublimate when undersaturated. Instant deposition of the whole
+  // ice-supersaturation surplus onto a tiny seed painted a domain-wide
+  // cirrus sheet; deposition growth stays rate-limited in iceProcesses.
+  if (ice[i] <= 0) return;
+  const t = theta[i] * exner;
+  const qsi = qsatIce(t - T0, p);
+  if (qv[i] >= qsi) return;
+  let d = (qv[i] - qsi) / (1 + (LS * LS * qsi) / (CP * RV * t * t));
+  d = Math.max(d, -ice[i]);
+  const frac = ice[i] > 0 ? 1 + d / ice[i] : 0;
+  qv[i] -= d;
+  ice[i] += d;
+  theta[i] += (LS / (CP * exner)) * d;
+  if (d < 0) number[i] *= Math.max(0, frac);
 }
 
 /** Fall speed of a cloud-ice crystal, m/s (small, so a constant is enough). */
@@ -839,13 +844,10 @@ export function stepColdMicrophysics(
         const id = jBase + i;
         const hydrometeor =
           f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
-        if (hydrometeor < 1e-10) {
-          // No condensate: only supersaturated clear air needs nucleation.
-          const tk = f.theta[id] * ex;
-          const tc = tk - T0;
-          const qsi = qsatIce(tc, p);
-          if (f.qv[id] <= qsi) continue;
-        }
+        // Skip clear air. Cooper nucleation on bare ice supersaturation paints
+        // a domain-wide cirrus sheet on any moist mid-level sounding; ice
+        // forms from liquid (freezing / riming) once a cloud already exists.
+        if (hydrometeor < 1e-10) continue;
 
         freezeRain(f.theta, f.qr, f.qg, id, ex);
         settleCrystals(f.qi, f.ni, id);
