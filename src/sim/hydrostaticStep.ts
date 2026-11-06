@@ -11,6 +11,9 @@ import { getAdvanced } from "./AdvancedSettings";
 import { musclFace, clampIdx } from "./advection";
 import { applyCoriolis } from "./turbulence";
 
+/** Synoptic diagnosed |w| cap (m/s). Keeps a PGF transient from lifting the lid. */
+const W_CAP = 1.5;
+
 /**
  * Diagnose w from ∇·(ρ₀ u_h) + ∂(ρ₀ w)/∂z = 0, integrating up from the
  * terrain / floor. Lids stay sealed.
@@ -38,8 +41,15 @@ export function diagnoseW(
         const dv = (f.v[kv1 + i] - f.v[kv + i]) / dy;
         mass -= rho * (du + dv) * dz;
         const rhowT = f.rho0w[k + 1];
-        f.w[i + j * nx + (k + 1) * nxny] =
-          rhowT > 1e-6 ? mass / rhowT : 0;
+        let w = rhowT > 1e-6 ? mass / rhowT : 0;
+        if (w > W_CAP) {
+          w = W_CAP;
+          mass = w * rhowT;
+        } else if (w < -W_CAP) {
+          w = -W_CAP;
+          mass = w * rhowT;
+        }
+        f.w[i + j * nx + (k + 1) * nxny] = w;
       }
       f.w[i + j * nx + nz * nxny] = 0;
       if (kFloor === 0) f.w[i + j * nx] = 0;
@@ -50,16 +60,23 @@ export function diagnoseW(
 /**
  * Hydrostatic Exner perturbation from the virtual-θ anomaly, integrated
  * downward from a rigid lid (π' = 0 at top).
+ *
+ * Buoyancy is the departure from the balanced synoptic environment
+ * (`thetaEnv` / `qvEnv`) when provided — fronts painted into the fields are
+ * neutral. Measuring against the horizontally uniform base state treats
+ * every front as a free-fall anomaly and instantly explodes the wind.
  */
 export function hydrostaticPressure(
   grid: Grid3D,
   f: SimFields,
   openK?: Uint16Array | null,
+  thetaEnv?: Float32Array | null,
+  qvEnv?: Float32Array | null,
 ): void {
   const { nx, ny, nz, dz } = grid;
   const nxny = nx * ny;
-  // Top-down: dπ/dz = g (θv - θv0) / (θv0 · θ · cp/Rd proxy) → g Δθv/(cp θv0)
-  // We store π' in f.p (same units the anelastic corrector used).
+  const useEnv = !!(thetaEnv && qvEnv && thetaEnv.length >= nxny * nz);
+  // Top-down: dπ/dz = g (θv - θv_ref) / θv_ref² proxy. Store π' in f.p.
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const kFloor = openK ? openK[i + j * nx] : 0;
@@ -68,10 +85,12 @@ export function hydrostaticPressure(
       for (let k = nz - 1; k >= kFloor; k--) {
         const id = i + j * nx + k * nxny;
         const thv = f.theta[id] * (1 + 0.608 * f.qv[id]);
-        const thv0 = f.theta0[k] * (1 + 0.608 * f.qv0[k]);
+        const thRef = useEnv ? thetaEnv![id] : f.theta0[k];
+        const qRef = useEnv ? qvEnv![id] : f.qv0[k];
+        const thv0 = thRef * (1 + 0.608 * qRef);
         const buoy = (thv - thv0) / Math.max(thv0, 1);
         if (k < nz - 1) {
-          pi += (G * buoy * dz) / Math.max(f.theta0[k], 1);
+          pi += (G * buoy * dz) / Math.max(thRef, 1);
         }
         f.p[id] = pi;
       }
@@ -92,6 +111,9 @@ export function applyHydrostaticPGF(
   const { nx, ny, nz, dx, dy } = grid;
   const nxny = nx * ny;
   const scale = getAdvanced().buoyancyScale;
+  // Cap the impulse per substep so a residual front mismatch cannot jump
+  // the wind by tens of m/s in one coarse outer pass.
+  const duCap = Math.min(8, 25 * Math.max(dt, 1e-3) / 60);
   for (let k = 0; k < nz; k++) {
     const th0 = f.theta0[k];
     for (let j = 0; j < ny; j++) {
@@ -101,7 +123,10 @@ export function applyHydrostaticPGF(
           continue;
         }
         const dPi = (f.p[row + i] - f.p[row + i - 1]) / dx;
-        f.u[grid.uIdx(i, j, k)] -= th0 * dPi * dt * scale;
+        let du = -th0 * dPi * dt * scale;
+        if (du > duCap) du = duCap;
+        else if (du < -duCap) du = -duCap;
+        f.u[grid.uIdx(i, j, k)] += du;
       }
     }
     for (let j = 1; j < ny; j++) {
@@ -112,7 +137,10 @@ export function applyHydrostaticPGF(
           continue;
         }
         const dPi = (f.p[row + i] - f.p[rowB + i]) / dy;
-        f.v[grid.vIdx(i, j, k)] -= th0 * dPi * dt * scale;
+        let dv = -th0 * dPi * dt * scale;
+        if (dv > duCap) dv = duCap;
+        else if (dv < -duCap) dv = -duCap;
+        f.v[grid.vIdx(i, j, k)] += dv;
       }
     }
   }
@@ -246,8 +274,48 @@ export function advectHorizontalWinds(
 }
 
 /**
+ * Remove a fraction of horizontal divergence so Coriolis spin-up on an
+ * unbalanced initial wind does not diagnose thunderstorms from nowhere.
+ */
+export function dampDivergence(
+  grid: Grid3D,
+  f: SimFields,
+  dt: number,
+  openK?: Uint16Array | null,
+): void {
+  const { nx, ny, nz, dx, dy } = grid;
+  const nxny = nx * ny;
+  // Diffusion-like coefficient on divergence (m²/s), scaled by dt.
+  const nu = Math.min(0.2 * dx * dx / Math.max(dt, 1), 0.15 * dx * dx);
+  const fx = (nu * dt) / (dx * dx);
+  const fy = (nu * dt) / (dy * dy);
+  if (fx <= 0 && fy <= 0) return;
+
+  for (let k = 0; k < nz; k++) {
+    const base = k * nxny;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (openK && k < openK[i + j * nx]) continue;
+        const ij = base + j * nx + i;
+        const du = (f.u[grid.uIdx(i + 1, j, k)] - f.u[grid.uIdx(i, j, k)]) / dx;
+        const dv = (f.v[grid.vIdx(i, j + 1, k)] - f.v[grid.vIdx(i, j, k)]) / dy;
+        const div = du + dv;
+        // Nudge the four faces outward/inward to cancel a slice of div.
+        if (i > 0) f.u[grid.uIdx(i, j, k)] += fx * div * dx;
+        if (i < nx - 1) f.u[grid.uIdx(i + 1, j, k)] -= fx * div * dx;
+        if (j > 0) f.v[grid.vIdx(i, j, k)] += fy * div * dy;
+        if (j < ny - 1) f.v[grid.vIdx(i, j + 1, k)] -= fy * div * dy;
+        void ij;
+      }
+    }
+  }
+}
+
+/**
  * One hydrostatic substep: PGF → Coriolis → horizontal wind advection →
  * diagnose w. Scalar advection is left to the caller.
+ *
+ * `thetaEnv` / `qvEnv` are the balanced synoptic reference (fronts, lows).
  */
 export function stepHydrostaticDynamics(
   grid: Grid3D,
@@ -257,11 +325,14 @@ export function stepHydrostaticDynamics(
   tmpV: Float32Array,
   radiationLatDeg: number,
   openK?: Uint16Array | null,
+  thetaEnv?: Float32Array | null,
+  qvEnv?: Float32Array | null,
 ): void {
-  hydrostaticPressure(grid, f, openK);
+  hydrostaticPressure(grid, f, openK, thetaEnv, qvEnv);
   applyHydrostaticPGF(grid, f, dt, openK);
   applyCoriolis(grid, f, dt, radiationLatDeg, openK);
   advectHorizontalWinds(grid, f, dt, tmpU, tmpV, openK);
+  dampDivergence(grid, f, dt, openK);
   diagnoseW(grid, f, openK);
   // Clear non-finite w.
   for (let i = 0; i < f.w.length; i++) {

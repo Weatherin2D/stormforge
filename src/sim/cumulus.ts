@@ -24,10 +24,10 @@ import { getActiveSynoptic } from "./synoptic";
 
 const ENTRAIN = 1.5e-4; // 1/m
 const DETRAIN = 1.0e-4;
-const PRECIP_FRAC = 0.35;
-const MASS_SCALE = 1.2e-3; // kg/m²/s per (CAPE)^{1/2}
+const PRECIP_FRAC = 0.25;
+const MASS_SCALE = 4.0e-4; // kg/m²/s per (CAPE)^{1/2}
 /** Minimum synoptic lift (front ridge or low weight) to allow a plume. */
-const TRIGGER_MIN = 0.12;
+const TRIGGER_MIN = 0.35;
 
 /**
  * Deep convection parameterization. Safe to call only when the grid cannot
@@ -57,7 +57,10 @@ export function stepCumulusMassFlux(
     const yn = j / yDen;
     for (let i = 0; i < nx; i++) {
       const ij = i + j * nx;
-      let trig = liftK ? liftK[ij] : 0;
+      // Lows are the primary trigger. Frontal ridge lift alone used to fire
+      // a plume in every column along a drawn front on the CAPE-rich default
+      // sounding — an instant rain sheet. Keep a weak front contribution.
+      let trig = liftK ? 0.15 * liftK[ij] : 0;
       if (syn.enabled !== false) {
         const xn = i / xDen;
         for (const c of syn.centers) {
@@ -86,7 +89,7 @@ export function stepCumulusMassFlux(
 
       const idx = integrateCapeCin(z, p, T, Td, nz, grid.zTop);
       // Need real CAPE and a soft CIN gate so capped columns stay quiet.
-      if (idx.cape < 250 || idx.cin > 80 || idx.elM <= idx.lclM + 500) continue;
+      if (idx.cape < 400 || idx.cin > 40 || idx.elM <= idx.lclM + 500) continue;
 
       const M =
         MASS_SCALE *

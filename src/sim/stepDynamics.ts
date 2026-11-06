@@ -1,6 +1,6 @@
 /**
  * Grid-scale helpers shared by the storm and hydrostatic cores:
- *   - CAPE-gated frontal upglide amplitude
+ *   - Gentle frontal upglide amplitude
  *   - Stable-column draft relaxation
  *   - Post-projection frontal upglide restore
  *   - Horizontal spike broadening (mixGridScale)
@@ -11,61 +11,28 @@
 
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
-import { dewpointFromE } from "./thermo";
 import { getAdvanced } from "./AdvancedSettings";
-import { integrateCapeCin } from "./cape";
-
-let scratchN = 0;
-let colT = new Float32Array(0);
-let colTd = new Float32Array(0);
-let colZ = new Float32Array(0);
-let colP = new Float32Array(0);
-
-function dewpointK(qv: number, p: number): number {
-  const q = qv > 0 ? qv : 0;
-  const e = (q * p) / (0.622 + (q > 1e-8 ? q : 1e-8));
-  return dewpointFromE(e > 1 ? e : 1) + 273.15;
-}
 
 /**
  * How hard each column's front may lift, in m/s at the ridge.
- * Stable or capped air stays at a few centimetres per second so a front
- * can make a cloud deck without a thunderstorm. Real CAPE is allowed a
- * deeper push; the storm itself then comes from buoyancy, not from this.
+ * Kept to gentle synoptic values. Deep storms must come from buoyancy;
+ * CAPE-gated storm-strength upglide previously detonated every front ridge
+ * on the default sounding.
  */
 export function frontalUpglideAmplitude(
   grid: Grid3D,
-  theta0: Float32Array,
-  qv0: Float32Array,
-  thetaEnv: Float32Array,
-  qvEnv: Float32Array,
-  p0: Float32Array,
-  exner: Float32Array,
+  _theta0: Float32Array,
+  _qv0: Float32Array,
+  _thetaEnv: Float32Array,
+  _qvEnv: Float32Array,
+  _p0: Float32Array,
+  _exner: Float32Array,
   liftK: Float32Array,
   frontDist: Float32Array,
   out: Float32Array,
   stable: Uint8Array,
 ): void {
-  const { nx, ny, nz, dz, zTop } = grid;
-  const nxy = nx * ny;
-  if (scratchN !== nz) {
-    scratchN = nz;
-    colT = new Float32Array(nz);
-    colTd = new Float32Array(nz);
-    colZ = new Float32Array(nz);
-    colP = new Float32Array(nz);
-  }
-  for (let k = 0; k < nz; k++) {
-    colZ[k] = (k + 0.5) * dz;
-    colP[k] = p0[k];
-    const T = theta0[k] * exner[k];
-    colT[k] = T;
-    const td = dewpointK(qv0[k], p0[k]);
-    colTd[k] = td < T ? td : T;
-  }
-  const base = integrateCapeCin(colZ, colP, colT, colTd, nz, zTop, false);
-  const baseCapped = base.cape < 200 || (base.cin > 100 && base.cape < 800);
-
+  const { nx, ny } = grid;
   for (let j = 0; j < ny; j++) {
     const row = j * nx;
     for (let i = 0; i < nx; i++) {
@@ -74,22 +41,14 @@ export function frontalUpglideAmplitude(
       // Convergence that feeds the phantom draft extends past the warm ridge.
       if (frontDist[ij] >= 0.25 && lift < 0.2) {
         out[ij] = 0;
-        stable[ij] = baseCapped ? 1 : 0;
+        // Always mark for phantom-draft damping; real warm cores are spared
+        // inside relaxStableDrafts via the θ-anomaly check.
+        stable[ij] = 1;
         continue;
       }
-      for (let k = 0; k < nz; k++) {
-        const id = ij + k * nxy;
-        const T = thetaEnv[id] * exner[k];
-        colT[k] = T;
-        const td = dewpointK(qvEnv[id], p0[k]);
-        colTd[k] = td < T ? td : T;
-      }
-      const ix = integrateCapeCin(colZ, colP, colT, colTd, nz, zTop, false);
       const ridge = lift < 2.5 ? lift / 2.5 : 1;
-      const capped = ix.cape < 200 || (ix.cin > 100 && ix.cape < 800);
-      stable[ij] = capped ? 1 : 0;
-      const storm = capped ? 0.08 : Math.min(1.6, 0.35 + ix.cape / 2800);
-      out[ij] = lift >= 0.2 ? storm * ridge : 0;
+      stable[ij] = 1;
+      out[ij] = lift >= 0.2 ? 0.03 * ridge : 0;
     }
   }
 }
@@ -124,9 +83,13 @@ export function relaxStableDrafts(
     for (let i = 0; i < nx; i++) {
       const ij = row + i;
       if (!stable[ij]) continue;
+      // Only relax phantom drafts on frontal columns. Elsewhere amp is 0 and
+      // writing `a * shape` would zero every thermal whose θ anomaly dips
+      // below the 2.5 K spare threshold — that killed the init bubble.
+      const a = amp[ij];
+      if (!(a > 0)) continue;
       if (openK && openK[ij] > 0) continue;
       if (height && height[ij] > 40) continue;
-      const a = amp[ij];
       for (let k = 1; k < nz; k++) {
         const z = k * dz;
         const below = ij + (k - 1) * nxy;
@@ -135,12 +98,65 @@ export function relaxStableDrafts(
           Math.abs(theta[below] - thetaEnv[below]),
           Math.abs(theta[above] - thetaEnv[above]),
         );
-        if (anomaly > 2.5) continue;
+        // Spare only a real warm-core thermal (init bubble is ~3–4 K). A
+        // 1–2 K anomaly from frontal lift + condensation must stay damped
+        // or the line unlocks into domain-wide convection.
+        if (anomaly > 4.5) continue;
         const shape =
           z > 8000
             ? 0
             : Math.sin(Math.PI * Math.min(1, z / 6000)) * Math.exp(-z / depth);
         w[grid.wIdx(i, j, k)] = a * shape;
+      }
+    }
+  }
+}
+
+/**
+ * Bleed off convergent wind that would recreate a phantom draft after
+ * `relaxStableDrafts` resets w. Without this, projection → relax fights
+ * every substep and latent heating eventually unlocks the line.
+ */
+export function dampPhantomConvergence(
+  grid: Grid3D,
+  f: SimFields,
+  thetaEnv: Float32Array,
+  amp: Float32Array,
+  stable: Uint8Array,
+  openK: Uint16Array | null,
+): void {
+  const { nx, ny, nz, dx, dy } = grid;
+  const nxy = nx * ny;
+  const bleed = 0.55;
+  for (let j = 1; j < ny - 1; j++) {
+    const row = j * nx;
+    for (let i = 1; i < nx - 1; i++) {
+      const ij = row + i;
+      if (!stable[ij] || !(amp[ij] > 0)) continue;
+      if (openK && openK[ij] > 0) continue;
+      // Leave columns with a real warm core alone.
+      let anom = 0;
+      for (let k = 0; k < Math.min(nz, 12); k++) {
+        const id = ij + k * nxy;
+        const d = Math.abs(f.theta[id] - thetaEnv[id]);
+        if (d > anom) anom = d;
+      }
+      if (anom > 4.5) continue;
+      for (let k = 0; k < nz; k++) {
+        if (openK && k < openK[ij]) continue;
+        const du =
+          (f.u[grid.uIdx(i + 1, j, k)] - f.u[grid.uIdx(i, j, k)]) / dx;
+        const dv =
+          (f.v[grid.vIdx(i, j + 1, k)] - f.v[grid.vIdx(i, j, k)]) / dy;
+        const div = du + dv;
+        if (!(div < -1e-5)) continue; // only convergent
+        // div < 0: reduce inflow / raise outflow on each axis.
+        const adjX = bleed * 0.5 * div * dx;
+        const adjY = bleed * 0.5 * div * dy;
+        f.u[grid.uIdx(i, j, k)] += adjX;
+        f.u[grid.uIdx(i + 1, j, k)] -= adjX;
+        f.v[grid.vIdx(i, j, k)] += adjY;
+        f.v[grid.vIdx(i, j + 1, k)] -= adjY;
       }
     }
   }
@@ -173,10 +189,13 @@ export function applyFrontalUpglide(
         const shape =
           Math.sin(Math.PI * Math.min(1, z / 6000)) * Math.exp(-z / depth);
         const target = a * shape;
-        if (target < 0.02) continue;
+        if (target < 0.01) continue;
         const id = grid.wIdx(i, j, k);
         const wk = w[id];
-        if (wk < target && wk > -0.5) w[id] = target;
+        // Soft restore: the projection removes the balanced lift each step.
+        // Slamming w to `target` locked a storm-strength draft along the
+        // whole front; ease a fraction back instead.
+        if (wk < target && wk > -0.5) w[id] = wk + (target - wk) * 0.2;
       }
     }
   }

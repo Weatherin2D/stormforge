@@ -138,7 +138,10 @@ export function uvFromSpdDir(spd: number, dirDeg: number): { u: number; v: numbe
   };
 }
 
-/** Default mildly unstable sounding with moisture, CM1-sandbox style. */
+/** Default mildly unstable sounding with moisture, CM1-sandbox style.
+ *  CAPE is real but a few K of dewpoint depression keeps the BL from
+ *  sitting on the edge of saturation so a drawn front alone does not
+ *  sheet the domain with storms. */
 export function defaultSounding(zTop: number, n = 40): SoundingLevel[] {
   const levels: SoundingLevel[] = [];
   for (let i = 0; i < n; i++) {
@@ -147,10 +150,10 @@ export function defaultSounding(zTop: number, n = 40): SoundingLevel[] {
     // Surface warm / moist, steep lapse — CAPE-friendly for sandbox
     let T = 302 - 0.0085 * z;
     if (z > 11000) T = 215 + 0.001 * (z - 11000);
-    // Moist BL + steeper Td drop aloft → usable CAPE for sandbox storms
-    let TdC = (T - 273.15) - 0.8;
-    if (z > 1500) TdC = 18 - 0.006 * (z - 1500);
-    if (z > 5000) TdC = -8 - 0.0035 * (z - 5000);
+    // Moist BL (not saturated) + steeper Td drop aloft
+    let TdC = (T - 273.15) - 2.0;
+    if (z > 1500) TdC = 16.5 - 0.0065 * (z - 1500);
+    if (z > 5000) TdC = -10 - 0.0035 * (z - 5000);
     if (z > 9000) TdC = -28 - 0.002 * (z - 9000);
     const Td = TdC + 273.15;
     // Veering wind profile
