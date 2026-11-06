@@ -2,6 +2,10 @@
  * One-plume mass-flux cumulus scheme for synoptic (hydrostatic) grids.
  * Consumes CAPE, detrains cloud/rain near the equilibrium level, and
  * applies compensating subsidence.
+ *
+ * CAPE alone is not a trigger — the default sandbox sounding has thousands
+ * of J/kg everywhere, which would sheet the whole map with anvil and rain.
+ * Columns only fire where a front ridge or a drawn low provides lift.
  */
 
 import { Grid3D } from "./Grid3D";
@@ -16,21 +20,28 @@ import {
   qsat,
 } from "./thermo";
 import { integrateCapeCin } from "./cape";
+import { getActiveSynoptic } from "./synoptic";
 
 const ENTRAIN = 1.5e-4; // 1/m
 const DETRAIN = 1.0e-4;
-const PRECIP_FRAC = 0.45;
-const MASS_SCALE = 2.5e-3; // kg/m²/s per (CAPE)^{1/2}
+const PRECIP_FRAC = 0.35;
+const MASS_SCALE = 1.2e-3; // kg/m²/s per (CAPE)^{1/2}
+/** Minimum synoptic lift (front ridge or low weight) to allow a plume. */
+const TRIGGER_MIN = 0.12;
 
 /**
  * Deep convection parameterization. Safe to call only when the grid cannot
  * resolve updrafts (dx ≳ 4 km).
+ *
+ * `liftK` is the frontal ridge amplitude from the balanced environment
+ * (0 = no front). Drawn lows add their own trigger weight inside.
  */
 export function stepCumulusMassFlux(
   grid: Grid3D,
   f: SimFields,
   dt: number,
   openK?: Uint16Array | null,
+  liftK?: Float32Array | null,
 ): void {
   if (dt <= 0) return;
   const { nx, ny, nz, dz } = grid;
@@ -38,10 +49,26 @@ export function stepCumulusMassFlux(
   const p = new Float32Array(nz);
   const T = new Float32Array(nz);
   const Td = new Float32Array(nz);
+  const syn = getActiveSynoptic();
+  const xDen = Math.max(1, nx - 1);
+  const yDen = Math.max(1, ny - 1);
 
   for (let j = 0; j < ny; j++) {
+    const yn = j / yDen;
     for (let i = 0; i < nx; i++) {
-      const k0 = openK ? openK[i + j * nx] : 0;
+      const ij = i + j * nx;
+      let trig = liftK ? liftK[ij] : 0;
+      if (syn.enabled !== false) {
+        const xn = i / xDen;
+        for (const c of syn.centers) {
+          if (!c.enabled || c.kind !== "low") continue;
+          const r = Math.hypot(xn - c.x, yn - c.y);
+          trig += (c.hPa / 10) * Math.exp(-(r * r) / (2 * 0.18 * 0.18));
+        }
+      }
+      if (trig < TRIGGER_MIN) continue;
+
+      const k0 = openK ? openK[ij] : 0;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
         z[k] = (k + 0.5) * dz;
@@ -58,12 +85,14 @@ export function stepCumulusMassFlux(
       }
 
       const idx = integrateCapeCin(z, p, T, Td, nz, grid.zTop);
-      if (idx.cape < 150 || idx.elM <= idx.lclM + 500) continue;
+      // Need real CAPE and a soft CIN gate so capped columns stay quiet.
+      if (idx.cape < 250 || idx.cin > 80 || idx.elM <= idx.lclM + 500) continue;
 
       const M =
         MASS_SCALE *
         Math.sqrt(idx.cape) *
-        Math.min(1, dt / 600);
+        Math.min(1, dt / 600) *
+        Math.min(1.5, trig);
       if (M <= 0) continue;
 
       const kLcl = Math.max(
@@ -96,7 +125,9 @@ export function stepCumulusMassFlux(
         // Compensating subsidence on the environment.
         if (k > kLcl && k < nz - 1) {
           const idUp = grid.idx(i, j, k + 1);
-          const wSub = (M / Math.max(f.rho0[k], 0.1)) * (1 - DETRAIN * (k - kLcl) * dz);
+          const wSub =
+            (M / Math.max(f.rho0[k], 0.1)) *
+            (1 - DETRAIN * (k - kLcl) * dz);
           const fac = Math.min(0.2, (wSub * dt) / dz);
           f.theta[id] += (f.theta[idUp] - f.theta[id]) * fac;
           f.qv[id] = Math.max(
@@ -119,9 +150,9 @@ export function stepCumulusMassFlux(
       }
       // Surface precip rate from the remaining rain fraction.
       const mm = rain * 0.3 * f.rho0[kLcl] * dz;
-      const ij = i + j * nx;
-      f.rainAccum[ij] += mm;
-      if (dt > 0) f.precipRate[ij] += (mm / dt) * 3600;
+      const col = ij;
+      f.rainAccum[col] += mm;
+      if (dt > 0) f.precipRate[col] += (mm / dt) * 3600;
 
       // Cool / dry the sub-cloud layer slightly (downdraft proxy).
       for (let k = k0; k < kLcl; k++) {

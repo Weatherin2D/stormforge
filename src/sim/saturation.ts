@@ -1,6 +1,10 @@
 /**
- * Saturation adjustment: Newton step of θ and qv onto the liquid (or ice)
+ * Liquid saturation adjustment: Newton step of θ and qv onto the liquid
  * saturation curve with latent heat in the same update.
+ *
+ * Always uses liquid esat. Ice supersaturation must not dump into qc —
+ * that paints an instant domain-wide cloud sheet on any moist mid-level
+ * sounding. Mixed-phase / ice saturation lives in coldMicrophysics.
  */
 
 import { Grid3D } from "./Grid3D";
@@ -9,18 +13,12 @@ import {
   CP,
   LV,
   esatFast,
-  esatIce,
   mixingRatio,
   saturatedEvapLimit,
 } from "./thermo";
 
-const T0 = 273.15;
-const LF = 3.34e5;
-const LS = LV + LF;
-
 /**
- * Adjust one cell toward saturation. When T < 0 °C the ice curve is used
- * for the vapor sink; liquid cloud still evaporates against liquid esat.
+ * Adjust one cell toward liquid saturation.
  */
 export function adjustCellSaturation(
   theta: number,
@@ -33,10 +31,8 @@ export function adjustCellSaturation(
   let q = Math.max(0, qv);
   let c = Math.max(0, qc);
   const T = th * exner;
-  const ice = T < T0;
-  const esFn = ice ? esatIce : esatFast;
-  const L = ice ? LS : LV;
-  const qs = Math.max(1e-6, mixingRatio(esFn(T), p));
+  const L = LV;
+  const qs = Math.max(1e-6, mixingRatio(esatFast(T), p));
   const excess = q - qs;
 
   if (excess > 0) {
@@ -51,7 +47,7 @@ export function adjustCellSaturation(
   } else if (c > 0) {
     const deficit = -excess;
     let evap = Math.min(c, deficit);
-    evap = saturatedEvapLimit(th, q, evap, p, exner, esFn);
+    evap = saturatedEvapLimit(th, q, evap, p, exner, esatFast);
     q += evap;
     c -= evap;
     th -= (L / CP) * evap * (th / Math.max(T, 1));
