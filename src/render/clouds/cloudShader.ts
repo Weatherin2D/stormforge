@@ -123,10 +123,11 @@ vec3 flashLight(vec3 p) {
     if (amt <= 0.0) continue;
     vec3 d = p - uFlashPos[f];
     float d2 = dot(d, d);
-    float core = exp(-d2 / (2500.0 * 2500.0));
-    float mid = exp(-d2 / (6000.0 * 6000.0));
-    float wide = exp(-d2 / (11000.0 * 11000.0));
-    flash += uFlashColor[f] * amt * (core + 0.55 * mid + 0.18 * wide);
+    // Wide fill so IC/CG pulses light a whole tower, not a tiny core.
+    float core = exp(-d2 / (3500.0 * 3500.0));
+    float mid = exp(-d2 / (9000.0 * 9000.0));
+    float wide = exp(-d2 / (18000.0 * 18000.0));
+    flash += uFlashColor[f] * amt * (2.4 * core + 1.1 * mid + 0.35 * wide);
   }
   return flash;
 }
@@ -233,23 +234,15 @@ vec3 airBeta(vec3 rd, float midHeight) {
   return vec3(0.78, 1.0, 1.32) * (beta0 * scale);
 }
 
+// Very light colour wash only — opacity is never dissolved with distance so
+// afar decks match the close-up look the user asked for.
 vec3 aerialFog(vec3 col, vec3 rd, float dist, float midHeight) {
-  vec3 beta = airBeta(rd, midHeight) * 0.72;
-  float near = max(uLodDistance, 8000.0) * 0.14;
+  vec3 beta = airBeta(rd, midHeight) * 0.22;
+  float near = max(uLodDistance, 8000.0) * 0.35;
   float path = max(0.0, dist - near);
   vec3 Tair = exp(-beta * path);
-  // Mild haze only — keep distant decks white, not blue ghosts.
-  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.12 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
-  return col * Tair + inscatter * (vec3(1.0) - Tair) * 0.65;
-}
-
-float aerialAlpha(float alpha, vec3 rd, float dist, float midHeight) {
-  vec3 beta = airBeta(rd, midHeight) * 0.55;
-  float near = max(uLodDistance, 8000.0) * 0.18;
-  float path = max(0.0, dist - near);
-  float Tmean = exp(-dot(beta, vec3(0.333)) * path);
-  // Mid-range stays opaque; only the far haze line dissolves.
-  return alpha * mix(0.55, 1.0, pow(clamp(Tmean, 0.0, 1.0), 0.7));
+  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.08 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
+  return col * Tair + inscatter * (vec3(1.0) - Tair) * 0.25;
 }
 
 // Decode baked light: R encodes 1-exp(-od/8), G is sky visibility.
@@ -400,16 +393,15 @@ void main() {
   // Silver lining: forward scatter boost near the sun disc.
   float silver = pow(max(cosT, 0.0), 8.0) * 0.55;
 
-  float pathLen = max(tFar - tNear, 1.0);
   float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 48.0, float(MAX_STEPS));
-  float dtFine = max(max(uStepSize, FINE_STEP), pathLen / budget);
+  // Fixed fine step — pathLen/budget made afar rays take huge strides and look
+  // optically thin. Empty-space skip still covers clear air cheaply.
+  float dtFine = max(uStepSize, FINE_STEP);
   float dtCoarse = dtFine * COARSE_STEP_MUL;
   float t = tNear + dtFine * 0.5 * ign(gl_FragCoord.xy + vec2(uFrame));
 
   vec3 col = vec3(0.0);
   float T = 1.0;
-  float distAcc = 0.0;
-  float weightAcc = 0.0;
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
   bool night = uSunDir.y < -0.02;
   // After a coarse skip hits density, back up once and march fine.
@@ -440,10 +432,8 @@ void main() {
       continue;
     }
 
-    // Shape silhouette stays carved at all ranges; micro-detail fades afar.
-    float shapeCarve = max(0.82, 1.0 - 0.25 * smoothstep(uDetailFade.x, uDetailFade.y, t));
-    float fineDetail = max(0.0, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
-    vec3 sig = sampleSigma(p, shapeCarve, fineDetail);
+    // Same carve/detail at every distance — close-up look from afar.
+    vec3 sig = sampleSigma(p, 1.0, 1.0);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
     float hSig = hailHere * hailHere * 3.2;
@@ -489,7 +479,7 @@ void main() {
 
       vec3 flash = flashLight(p);
       cloudCol += flash;
-      rainCol += flash * 0.4;
+      rainCol += flash * 0.55;
 
       vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
       if (hSig > 1e-4) {
@@ -503,13 +493,9 @@ void main() {
       float midH = mix(ro.y, p.y, 0.5);
       S = aerialFog(S, rd, t, midH);
 
-      // Slightly denser optical steps so afar masses go opaque faster.
-      float densBoost = mix(1.35, 1.0, fineDetail);
-      float stepT = exp(-sigT * dtFine * densBoost);
+      float stepT = exp(-sigT * dtFine);
       float w = T * (1.0 - stepT);
       col += S * w;
-      distAcc += t * w;
-      weightAcc += w;
       T *= stepT;
     }
 
@@ -520,14 +506,12 @@ void main() {
   if (alpha < 0.001) discard;
 
   vec3 straight = col / max(1.0 - T, 1e-4);
-  float avgDist = distAcc / max(weightAcc, 1e-4);
-  float midH = ro.y + rd.y * avgDist * 0.5;
-  alpha = aerialAlpha(alpha, rd, avgDist, midH);
-  if (alpha < 0.001) discard;
+  // Keep opacity distance-independent (no aerialAlpha dissolve).
 
   straight *= uExposure;
-  // Soft shoulder so lit edges stay warm grey, not chalk.
-  straight = straight / (vec3(1.0) + straight * 0.65);
+  // Soft shoulder so lit edges stay warm grey, not chalk. Flash peaks stay hotter.
+  float flashPeak = max(max(straight.r, straight.g), straight.b);
+  straight = straight / (vec3(1.0) + straight * mix(0.65, 0.28, smoothstep(1.2, 4.0, flashPeak)));
   straight = max(straight, vec3(0.0));
 
   gl_FragColor = vec4(straight, alpha);

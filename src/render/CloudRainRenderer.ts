@@ -1436,21 +1436,21 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       b: number;
       amount: number;
     }[] = [];
-      const night = Math.max(0.4, 1 - 0.5 * this.sunFrac);
+      const night = Math.max(0.55, 1 - 0.35 * this.sunFrac);
     for (const bolt of this.liveBolts) {
       if (flashes.length >= 4) break;
       if (bolt.kind === "sprite") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
       const pulse = b.main * bolt.brightness;
-      if (pulse < 0.02) continue;
+      if (pulse < 0.015) continue;
       const gain =
         (bolt.kind === "poscg"
-          ? 9
+          ? 16
           : bolt.kind === "negcg"
-            ? 7
+            ? 13
             : bolt.kind === "spider"
-              ? 7
-              : 8) * night;
+              ? 14
+              : 15) * night;
       this.boltTint(bolt.x, bolt.y, bolt.z);
       const pushAt = (x: number, y: number, z: number, amt = pulse * gain) => {
         if (flashes.length >= 4) return;
@@ -2691,15 +2691,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (this.precipitation.points.visible) {
       this.renderer.render(this.precipScene, this.camera);
     }
-    if (
-      this.boltGlows.some((ribbon) => ribbon.visible) ||
-      this.boltCores.some((ribbon) => ribbon.visible)
-    ) {
-      this.renderer.render(this.boltScene, this.camera);
-    }
-    if (this.lightningView?.mesh.visible) {
-      this.renderer.render(this.lightningView.mesh, this.camera);
-    }
     if (this.spriteView) {
       const dark = Math.max(0, 1 - this.sunFrac);
       this.spriteView.update(this.timeSeconds, dark, this.cloudsOn);
@@ -2716,6 +2707,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.renderer.render(this.overlay, this.overlayCam);
     }
 
+    // Bolts after the cloud overlay — otherwise opaque volumes bury the channel
+    // and flash lighting never reads as a visible strike.
+    const boltsOn =
+      this.boltGlows.some((ribbon) => ribbon.visible) ||
+      this.boltCores.some((ribbon) => ribbon.visible);
+    if (boltsOn || this.lightningView?.mesh.visible) {
+      this.renderer.autoClear = false;
+      if (boltsOn) this.renderer.render(this.boltScene, this.camera);
+      if (this.lightningView?.mesh.visible) {
+        this.renderer.render(this.lightningView.mesh, this.camera);
+      }
+    }
+
     this.renderer.autoClear = true;
     this.prevViewProj.copy(this.currViewProj);
   }
@@ -2728,7 +2732,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     for (const bolt of this.liveBolts) {
       if (bolt.kind === "sprite") continue;
       const b = brightness(bolt.course, bolt.isCg, bolt.age * 1000);
-      if (b.main * bolt.brightness > 0.25) return 0.08;
+      // Drop history hard during a pulse so TAA cannot smear / kill the flash.
+      if (b.main * bolt.brightness > 0.12) return 0.0;
     }
     const k = this.moveKeys;
     const walking = k.forward || k.back || k.left || k.right || this.draggingLook;
@@ -2759,7 +2764,9 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     geo.setIndex(index);
     const mat = new THREE.ShaderMaterial({
       transparent: true,
-      depthTest: true,
+      // Drawn after the cloud overlay on the default FB (no scene depth) —
+      // disable depth so the channel still punches through opaque decks.
+      depthTest: false,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       toneMapped: false,
@@ -2958,15 +2965,15 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
         glow,
         packed,
         widths.glow,
-        Math.min(0.55, 0.16 + 0.42 * pulse),
+        Math.min(0.85, 0.28 + 0.55 * pulse),
         this.flashTint,
       );
-      const coreColor = this.boltCoreTint.copy(this.flashTint).lerp(this.boltWhite, 0.55);
+      const coreColor = this.boltCoreTint.copy(this.flashTint).lerp(this.boltWhite, 0.7);
       const coreOn = this.writeRibbon(
         core,
         packed,
         widths.core,
-        Math.min(1, 0.5 + 0.55 * pulse),
+        Math.min(1.35, 0.75 + 0.7 * pulse),
         coreColor,
       );
       glow.visible = glowOn;
@@ -3319,7 +3326,8 @@ float boltSeen(vec3 p) {
       od += block * ds;
     }
   }
-  return exp(-od * 0.006);
+  // Soft occlusion — thick media dims the channel without erasing the flash.
+  return mix(0.35, 1.0, exp(-od * 0.0028));
 }
 
 void main() {
