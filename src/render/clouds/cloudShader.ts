@@ -234,20 +234,22 @@ vec3 airBeta(vec3 rd, float midHeight) {
 }
 
 vec3 aerialFog(vec3 col, vec3 rd, float dist, float midHeight) {
-  vec3 beta = airBeta(rd, midHeight);
-  float near = max(uLodDistance, 8000.0) * 0.08;
+  vec3 beta = airBeta(rd, midHeight) * 0.72;
+  float near = max(uLodDistance, 8000.0) * 0.14;
   float path = max(0.0, dist - near);
   vec3 Tair = exp(-beta * path);
-  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.22 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
-  return col * Tair + inscatter * (vec3(1.0) - Tair);
+  // Mild haze only — keep distant decks white, not blue ghosts.
+  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.12 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
+  return col * Tair + inscatter * (vec3(1.0) - Tair) * 0.65;
 }
 
 float aerialAlpha(float alpha, vec3 rd, float dist, float midHeight) {
-  vec3 beta = airBeta(rd, midHeight);
-  float near = max(uLodDistance, 8000.0) * 0.08;
+  vec3 beta = airBeta(rd, midHeight) * 0.55;
+  float near = max(uLodDistance, 8000.0) * 0.18;
   float path = max(0.0, dist - near);
   float Tmean = exp(-dot(beta, vec3(0.333)) * path);
-  return alpha * mix(0.18, 1.0, pow(clamp(Tmean, 0.0, 1.0), 0.85));
+  // Mid-range stays opaque; only the far haze line dissolves.
+  return alpha * mix(0.55, 1.0, pow(clamp(Tmean, 0.0, 1.0), 0.7));
 }
 
 // Decode baked light: R encodes 1-exp(-od/8), G is sky visibility.
@@ -262,10 +264,11 @@ void bakedLight(vec3 uvw, out float odSun, out float skyVis) {
 }
 
 /**
- * Schneider-style remap: density = saturate((base - (1-n)*erode) / (1 - erode*soft)).
- * Shape noise carves large cauliflower; detail noise eats edges at close range.
+ * Schneider-style remap with multi-scale shape.
+ * shapeCarve stays strong at all distances (afar cauliflower silhouette);
+ * fineDetail (Worley micro) fades with range only.
  */
-vec3 sampleSigma(vec3 p, float detail) {
+vec3 sampleSigma(vec3 p, float shapeCarve, float fineDetail) {
   vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
   vec3 f = max(fieldTap(uvw).rgb * uFieldGain, vec3(0.0));
   float liq = f.x;
@@ -273,7 +276,7 @@ vec3 sampleSigma(vec3 p, float detail) {
   float rain = f.z;
 
   float anvilBase = 0.0, anvilPresence = 0.0;
-  bool doMamma = detail > 0.05 && ice > 0.002 && uMammatusDepth > 1.0;
+  bool doMamma = fineDetail > 0.08 && ice > 0.002 && uMammatusDepth > 1.0;
   if (doMamma) {
     float iceAbove = 0.0;
     int steps = 0;
@@ -291,58 +294,63 @@ vec3 sampleSigma(vec3 p, float detail) {
     }
   }
 
-  if (detail > 0.02 && (liq + ice) > 0.003) {
+  if (shapeCarve > 0.02 && (liq + ice) > 0.002) {
     vec3 pk = p * 0.001;
     float base = clamp(liq + ice, 0.0, 1.0);
-    float vigor = smoothstep(0.04, 0.38, liq);
-    float iceFrac = smoothstep(0.45, 0.92, ice / max(liq + ice, 1e-3));
+    float vigor = smoothstep(0.03, 0.32, liq);
+    float iceFrac = smoothstep(0.4, 0.9, ice / max(liq + ice, 1e-3));
     iceFrac *= 1.0 - vigor;
 
-    // Height soft-edge: denser mid-body, ragged top, flatter base.
+    // Flat dark base, dense body, ragged cauliflower top.
     float hNorm = clamp((p.y - uBoxMin.y) / max(uBoxMax.y - uBoxMin.y, 1.0), 0.0, 1.0);
-    float heightGrad = smoothstep(0.02, 0.12, hNorm) * (1.0 - 0.35 * smoothstep(0.72, 0.98, hNorm));
+    float heightGrad = smoothstep(0.015, 0.1, hNorm) * (1.0 - 0.28 * smoothstep(0.68, 0.98, hNorm));
 
+    // Coarse lobes (~2× tile) readable from afar + mid shape for towers.
+    vec4 shapeLo = shapeSample(pk * 0.45);
     vec4 shape = shapeSample(pk);
-    float sn = shapeFbm(shape);
-    // Rising cauliflower on vigorous towers.
-    if (vigor > 0.05) {
-      float billow = shape.g * 0.55 + shape.b * 0.3 + shape.a * 0.15;
-      float rise = fract(uTime * 0.004 + pk.x * 0.07 + pk.z * 0.05);
-      float tower = mix(sn, billow, 0.65 + 0.2 * sin(rise * 6.28318));
-      sn = mix(sn, tower, vigor);
+    float lobes = shapeLo.g * 0.5 + shapeLo.b * 0.3 + shapeLo.a * 0.2;
+    float sn = mix(shapeFbm(shape), lobes, 0.55);
+    // Cauliflower billows — stronger on liquid towers.
+    float billow = shape.g * 0.5 + shape.b * 0.32 + shape.a * 0.18;
+    sn = mix(sn, max(sn, billow), mix(0.35, 0.85, vigor));
+    if (vigor > 0.04) {
+      float rise = fract(uTime * 0.0035 + pk.x * 0.06 + pk.z * 0.04);
+      sn = mix(sn, billow, vigor * (0.55 + 0.25 * sin(rise * 6.28318)));
     }
-    // Fibrous ice stretch.
+    // Fibrous ice / anvil striations.
     if (iceFrac > 0.0) {
       vec3 iceUv = pk * uIceStretch + vec3(uTime * 0.00035, 0.0, 0.0);
       vec4 iceShape = shapeSample(iceUv);
-      float fibrous = iceShape.r * 0.45 + iceShape.g * 0.35 + iceShape.b * 0.2;
-      sn = mix(sn, fibrous, iceFrac);
+      float fibrous = iceShape.r * 0.4 + iceShape.g * 0.35 + iceShape.b * 0.25;
+      sn = mix(sn, fibrous, iceFrac * 0.9);
     }
 
+    // Shape erosion does NOT fade with camera distance — afar must stay lobed.
     float erodeAmt =
-      mix(mix(0.42, 0.78, vigor), 0.32, iceFrac) *
+      mix(mix(0.55, 0.92, vigor), 0.38, iceFrac) *
       mix(uErosionIce, uErosionLiquid, 1.0 - iceFrac) *
-      detail;
-    erodeAmt *= mix(0.55, 1.0, smoothstep(0.04, 0.35, base));
+      shapeCarve;
+    erodeAmt *= mix(0.7, 1.0, smoothstep(0.03, 0.3, base));
 
-    // Detail Worley eats the silhouette at close range.
-    if (detail > 0.08) {
-      vec3 dn = detailSample(pk * mix(1.0, 1.35, vigor));
+    // Micro Worley only nearby.
+    if (fineDetail > 0.1) {
+      vec3 dn = detailSample(pk * mix(1.05, 1.4, vigor));
       float df = detailFbm(dn);
-      float detailErode = mix(0.18, 0.55, vigor) * (1.0 - iceFrac * 0.65) * detail;
+      float detailErode = mix(0.22, 0.6, vigor) * (1.0 - iceFrac * 0.7) * fineDetail;
       sn = mix(sn, sn * df, detailErode);
-      erodeAmt *= mix(1.0, 1.25, detail * (1.0 - df));
+      erodeAmt *= mix(1.0, 1.3, fineDetail * (1.0 - df));
     }
 
-    // Hardish threshold remap — carves holes instead of soft ellipsoids.
-    float soft = mix(0.55, 0.22, vigor);
-    float d = (base * heightGrad - (1.0 - sn) * erodeAmt) / max(1.0 - erodeAmt * soft, 0.08);
+    // Hard threshold — crisp silhouette against sky (photo refs 2 & 4).
+    float soft = mix(0.28, 0.12, vigor);
+    float d = (base * heightGrad - (1.0 - sn) * erodeAmt) / max(1.0 - erodeAmt * soft, 0.06);
     d = clamp(d, 0.0, 1.0);
-    // Small opaque core for liquid only; ice stays translucent.
-    float coreFloor = base * mix(0.0, mix(0.22, 0.12, iceFrac), vigor * (1.0 - iceFrac));
+    // Opaque liquid core; ice thinner.
+    float coreFloor = base * mix(0.08, mix(0.28, 0.14, iceFrac), (1.0 - iceFrac) * mix(0.35, 1.0, vigor));
     d = max(d, coreFloor);
-    // Boost tower density after carve so cauliflower stays readable.
-    d = clamp(d * (1.0 + 2.8 * vigor) * mix(1.0, 0.82, iceFrac), 0.0, 1.0);
+    d = clamp(d * (1.0 + 3.2 * vigor) * mix(1.0, 0.78, iceFrac), 0.0, 1.0);
+    // Kill soft fringe so afar edges don't read as blue jelly.
+    d *= smoothstep(0.02, 0.12, d);
 
     float share = max(liq + ice, 1e-6);
     liq = d * (liq / share);
@@ -353,11 +361,11 @@ vec3 sampleSigma(vec3 p, float detail) {
     }
   }
 
-  if (detail > 0.05 && rain > 0.0004) {
+  if (fineDetail > 0.08 && rain > 0.0004) {
     vec3 sheared = p + uRainWindShear * (p.y - uBoxMin.y);
     vec3 pkR = sheared * 0.001;
     float streak = detailFbm(detailSample(vec3(pkR.x * 1.6, pkR.y * 0.05 - uTime * 0.001 * uRainFallSpeed, pkR.z * 1.6)));
-    rain *= mix(1.0, mix(0.45, 1.4, streak), detail * 0.55);
+    rain *= mix(1.0, mix(0.45, 1.4, streak), fineDetail * 0.55);
     rain = clamp(rain, 0.0, 1.0);
   }
 
@@ -432,9 +440,10 @@ void main() {
       continue;
     }
 
-    // Keep some carve at range so far decks do not collapse to voxels.
-    float detail = max(0.35, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
-    vec3 sig = sampleSigma(p, detail);
+    // Shape silhouette stays carved at all ranges; micro-detail fades afar.
+    float shapeCarve = max(0.82, 1.0 - 0.25 * smoothstep(uDetailFade.x, uDetailFade.y, t));
+    float fineDetail = max(0.0, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
+    vec3 sig = sampleSigma(p, shapeCarve, fineDetail);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
     float hSig = hailHere * hailHere * 3.2;
@@ -447,27 +456,36 @@ void main() {
         odSun = 4.0;
         skyVis = mix(0.35, skyVis, 0.4);
       }
-      skyVis = mix(0.22, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.4, uAmbientAtten)));
+      skyVis = mix(0.18, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.45, uAmbientAtten)));
 
       float powder = 1.0 - exp(-cloudSig * uPowderLength);
-      powder = mix(1.0 - 0.55 * uPowder, 1.0, powder);
+      powder = mix(1.0 - 0.6 * uPowder, 1.0, powder);
 
       float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
-      // Spotter look: dark flat bases, brighter tops — stronger contrast.
-      float baseDark = mix(0.28, 1.0, smoothstep(0.06, 0.52, h));
-      vec3 ambientBottom = uGroundColor * 0.75 + uSunColor * sunThrough(odSun) * 0.08;
-      vec3 ambient = mix(ambientBottom, uSkyColor, h) * skyVis * uAmbientStrength * baseDark;
-      // Bounded multi-scatter fill — no unconstrained white add.
-      float ms = clamp(sunThrough(odSun * 0.35), 0.0, 1.0);
-      vec3 coreFill = (uSkyColor * 0.45 + uGroundColor * 0.35 + uSunColor * 0.12 * ms) * 0.08;
+      // Photo look: dark bases, bright sunlit tops, grey crevices from OD.
+      float baseDark = mix(0.22, 1.0, smoothstep(0.05, 0.48, h));
+      float sunAmt = sunThrough(odSun);
+      float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.35);
+      // Neutral grey ambient — avoid sky-blue bleed that made afar blobs cyan.
+      vec3 cloudAlbedo = vec3(0.92, 0.94, 0.97);
+      vec3 ambientBottom = uGroundColor * 0.55 + cloudAlbedo * 0.12;
+      vec3 ambientTop = mix(cloudAlbedo * 0.35, uSkyColor * 0.55, 0.35);
+      vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark;
+      ambient *= mix(1.0, 0.55, crevice);
 
-      float sunLit = min(sunThrough(odSun) * phase * powder, 1.35);
-      sunLit += silver * sunThrough(odSun * 0.5) * powder;
-      vec3 cloudCol = uSunColor * sunLit * 0.55 + ambient * 0.9 + coreFill;
+      float ms = clamp(sunThrough(odSun * 0.28), 0.0, 1.0);
+      vec3 coreFill = cloudAlbedo * (0.06 + 0.1 * ms) + uSunColor * 0.04 * ms;
 
-      vec3 rainCol = uSunColor * sunThrough(odSun) * 0.35
-                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.45) * 0.8
-                   + coreFill * 0.35;
+      float sunLit = min(sunAmt * phase * powder, 1.55);
+      sunLit += silver * sunThrough(odSun * 0.45) * powder;
+      // Brilliant white lit lobes; cool grey in shadow (refs 2 & 4).
+      vec3 litWhite = mix(cloudAlbedo, vec3(1.0), 0.55) * uSunColor;
+      vec3 cloudCol = litWhite * sunLit * 0.72 + ambient * 0.85 + coreFill;
+      cloudCol = mix(cloudCol, cloudCol * vec3(0.72, 0.78, 0.88), crevice * 0.55);
+
+      vec3 rainCol = uSunColor * sunAmt * 0.32
+                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.45) * 0.75
+                   + coreFill * 0.3;
 
       vec3 flash = flashLight(p);
       cloudCol += flash;
@@ -476,7 +494,7 @@ void main() {
       vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
       if (hSig > 1e-4) {
         vec3 hailCol =
-          uSunColor * (sunThrough(odSun) * 0.45) * vec3(0.80, 0.84, 0.90)
+          uSunColor * (sunAmt * 0.45) * vec3(0.80, 0.84, 0.90)
           + ambient * vec3(0.70, 0.75, 0.82)
           + vec3(0.03);
         S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
@@ -485,7 +503,9 @@ void main() {
       float midH = mix(ro.y, p.y, 0.5);
       S = aerialFog(S, rd, t, midH);
 
-      float stepT = exp(-sigT * dtFine);
+      // Slightly denser optical steps so afar masses go opaque faster.
+      float densBoost = mix(1.35, 1.0, fineDetail);
+      float stepT = exp(-sigT * dtFine * densBoost);
       float w = T * (1.0 - stepT);
       col += S * w;
       distAcc += t * w;

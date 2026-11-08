@@ -258,13 +258,13 @@ export class App {
                   </label>
                   <label>
                     Base darkness
-                    <input id="cloud-sigma" type="range" min="0.0005" max="0.014" step="0.0001" value="0.0085" />
-                    <span id="cloud-sigma-val">0.0085</span>
+                    <input id="cloud-sigma" type="range" min="0.0005" max="0.014" step="0.0001" value="0.011" />
+                    <span id="cloud-sigma-val">0.0110</span>
                   </label>
                   <label>
                     Cloud distance
-                    <input id="cloud-distance" type="range" min="8000" max="80000" step="1000" value="25000" />
-                    <span id="cloud-distance-val">25 km</span>
+                    <input id="cloud-distance" type="range" min="8000" max="80000" step="1000" value="28000" />
+                    <span id="cloud-distance-val">28 km</span>
                   </label>
                   <label>
                     Liquid billow
@@ -1607,11 +1607,11 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.0085,
-      sigmaRain: 0.0022,
+      sigmaLiquid: 0.011,
+      sigmaRain: 0.0024,
       erosionLiquid: 1.0,
       erosionIce: 0.5,
-      lodDistance: 25000,
+      lodDistance: 28000,
     };
 
     const lookPreset =
