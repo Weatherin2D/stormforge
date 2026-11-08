@@ -5,72 +5,66 @@ import { computeSkyLighting } from './sunLighting';
 
 /** Everything that changes how the cloud looks, without touching the sim. All lengths in metres. */
 export interface CloudLook {
-  sigmaLiquid: number; // extinction at density 1, 1/m. ~0.04-0.1 gives an opaque, dark-based Cb
-  sigmaIce: number; // ~10x lower than liquid, so anvils stay translucent
+  sigmaLiquid: number; // extinction at density 1, 1/m
+  sigmaIce: number;
   sigmaRain: number;
   erosionLiquid: number; // 0..1, billow strength on liquid cloud
   erosionIce: number; // 0..1, keep low for smooth anvils
-  iceStretch: [number, number, number]; // fibre frequency multipliers (along wind, vertical, across wind)
+  iceStretch: [number, number, number]; // kept for preset / advanced compat
   phaseLiquid: [number, number]; // (forward g, backward g)
   phaseIce: [number, number];
   phaseRain: [number, number];
   backWeight: number;
-  multiScatter: [number, number, number]; // (a, b, c)
+  multiScatter: [number, number, number]; // kept for advanced compat (unused in cheap march)
   powder: number;
   powderLength: number;
   ambientStrength: number;
   ambientAtten: number;
   hazeDensity: number; // 1/m
   exposure: number;
-  shapeTileMeters: number; // size of one shape-noise tile
-  detailTileMeters: number; // size of one detail-noise tile
+  shapeTileMeters: number;
+  detailTileMeters: number;
   stepSize: number;
   lodDistance: number;
   detailFade: [number, number];
-  // Mammatus pouches under anvil base (metres).
   mammatusDepth: number;
   mammatusCell: number;
-  // Precipitation shafts below cloud base.
   shaftMax: number; // max shaft extinction, 1/km
-  freezing: number; // melting level height, metres
-  // Sub-grid shadow probes toward the sun (0 = off).
-  shadowProbes: number; // 0..2
+  freezing: number;
+  shadowProbes: number; // kept for advanced compat (unused — lighting is baked)
 }
 
 /**
- * Default look: opaque MeteoLAB-style extinction so cores read solid, with
- * enough soft fill that shaded bases stay grey rather than black.
- * (Afternoon high-deck soft look lives in lookdev preset E_afternoonHighDeck.)
+ * Spotter-realism defaults: opaque liquid cores, readable ice decks, low haze.
  */
 export const DEFAULT_LOOK: CloudLook = {
-  // Opaque enough that thin Uint8-packed decks read solid, not milky ghosts.
-  sigmaLiquid: 0.0055,
-  sigmaIce: 0.0014,
-  sigmaRain: 0.0016,
-  erosionLiquid: 1.0,
-  erosionIce: 0.85,
+  sigmaLiquid: 0.007,
+  sigmaIce: 0.0018,
+  sigmaRain: 0.002,
+  erosionLiquid: 0.85,
+  erosionIce: 0.55,
   iceStretch: [0.55, 2.8, 0.55],
-  phaseLiquid: [0.75, 0.15],
+  phaseLiquid: [0.78, 0.18],
   phaseIce: [0.75, 0.15],
   phaseRain: [0.85, 0.2],
-  backWeight: 0.3,
+  backWeight: 0.28,
   multiScatter: [0.5, 0.5, 0.5],
-  powder: 0.9,
-  powderLength: 1500,
-  ambientStrength: 0.95,
-  ambientAtten: 1.0,
-  hazeDensity: 1.2e-5,
-  exposure: 1.05,
+  powder: 0.75,
+  powderLength: 1200,
+  ambientStrength: 1.0,
+  ambientAtten: 0.9,
+  hazeDensity: 8e-6,
+  exposure: 1.08,
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
-  stepSize: 32,
+  stepSize: 40,
   lodDistance: 40000,
-  detailFade: [4500, 32000],
+  detailFade: [3500, 18000],
   mammatusDepth: 600,
   mammatusCell: 1600,
-  shaftMax: 6,
+  shaftMax: 7,
   freezing: 4000,
-  shadowProbes: 2,
+  shadowProbes: 0,
 };
 
 export interface VolumetricCloudOptions {
@@ -83,11 +77,25 @@ export interface VolumetricCloudOptions {
   fieldGain?: THREE.Vector3;
   look?: Partial<CloudLook>;
   /** Compile-time quality settings. */
-  quality?: { maxSteps?: number; lightSteps?: number; ambientSteps?: number; msOctaves?: number };
+  quality?: { maxSteps?: number };
 }
 
 const v2 = (a: [number, number]) => new THREE.Vector2(a[0], a[1]);
 const v3 = (a: [number, number, number]) => new THREE.Vector3(a[0], a[1], a[2]);
+
+/** 1×1×1 black 3D texture used until LightVolume is bound. */
+function emptyLightVol(): THREE.Data3DTexture {
+  const data = new Uint8Array(4);
+  const tex = new THREE.Data3DTexture(data, 1, 1, 1);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.wrapR = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   private look: CloudLook;
@@ -97,31 +105,29 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   private windSpeed = 8; // m/s
   private boil = 1.5; // m/s upward drift of the noise
   private frame = 0;
+  private readonly fallbackLight: THREE.Data3DTexture;
 
   constructor(opts: VolumetricCloudOptions) {
-    // Exact MeteoLAB noise cube (value-noise octaves in RGB) — not Perlin-Worley.
     const noise = noiseTexture();
     const look: CloudLook = { ...DEFAULT_LOOK, ...opts.look };
     const q = opts.quality ?? {};
+    const fallbackLight = emptyLightVol();
 
     super({
       vertexShader: cloudVertexShader,
       fragmentShader: cloudFragmentShader,
       defines: {
-        STEPS: 96,
-        MAX_STEPS: q.maxSteps ?? 192,
-        FINE_STEP: "40.0",
-        LIGHT_STEPS: q.lightSteps ?? 6,
-        AMBIENT_STEPS: q.ambientSteps ?? 2,
-        MS_OCTAVES: q.msOctaves ?? 4,
+        MAX_STEPS: q.maxSteps ?? 64,
+        FINE_STEP: "48.0",
       },
       uniforms: {
         uFields: { value: opts.fields },
         uFieldsPrev: { value: opts.fields },
         uVolumeMix: { value: 1 },
-        uStepBudget: { value: q.maxSteps ?? 192 },
+        uStepBudget: { value: q.maxSteps ?? 48 },
         uShapeNoise: { value: noise },
         uDetailNoise: { value: noise },
+        uLightVol: { value: fallbackLight },
         uBoxMin: { value: opts.boxMin.clone() },
         uBoxMax: { value: opts.boxMax.clone() },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
@@ -141,9 +147,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
         uDetailFade: { value: new THREE.Vector2() },
         uStepSize: { value: 0 },
         uLodDistance: { value: 0 },
-        uLightStep: { value: 150 },
-        uLightGrowth: { value: 2.0 },
-        uAmbientStep: { value: 600 },
         uFrame: { value: 0 },
         uPhaseLiquid: { value: new THREE.Vector2() },
         uPhaseIce: { value: new THREE.Vector2() },
@@ -172,13 +175,14 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
         uFreezing: { value: 0 },
         uShadowProbes: { value: 0 },
       },
-      side: THREE.BackSide, // so the camera can sit inside the box
+      side: THREE.BackSide,
       transparent: true,
       premultipliedAlpha: true,
       depthWrite: false,
       depthTest: false,
     });
 
+    this.fallbackLight = fallbackLight;
     this.look = look;
     this.setLook({});
     this.setSun(this.sunAzimuthDeg, this.sunElevationDeg);
@@ -187,6 +191,11 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
 
   private u<T>(name: string): { value: T } {
     return this.uniforms[name] as { value: T };
+  }
+
+  /** Bind the GPU-baked sun OD / sky-visibility volume. */
+  setLightVolume(tex: THREE.Texture | null): void {
+    this.u<THREE.Texture>('uLightVol').value = tex ?? this.fallbackLight;
   }
 
   /** Update any look parameters. Safe to call every frame from a GUI. */
@@ -212,17 +221,14 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     this.u<number>('uDetailFreq').value = 1 / l.detailTileMeters;
     this.u<number>('uStepSize').value = l.stepSize;
     this.u<number>('uLodDistance').value = l.lodDistance;
+    this.u<THREE.Vector2>('uDetailFade').value.set(l.detailFade[0], l.detailFade[1]);
     this.u<number>('uMammatusDepth').value = l.mammatusDepth;
     this.u<number>('uMammatusCell').value = l.mammatusCell;
     this.u<number>('uShaftMax').value = l.shaftMax;
     this.u<number>('uFreezing').value = l.freezing;
-    this.u<number>('uShadowProbes').value = l.shadowProbes;
+    this.u<number>('uShadowProbes').value = 0;
   }
 
-  /**
-   * Place the sun by compass direction. Azimuth 0 = -Z, 90 = +X (Three's default camera looks down -Z).
-   * Also recomputes the sun, sky, ground and haze colours for that elevation.
-   */
   setSun(azimuthDeg: number, elevationDeg: number): void {
     this.sunAzimuthDeg = azimuthDeg;
     this.sunElevationDeg = elevationDeg;
@@ -237,12 +243,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     this.u<THREE.Vector3>('uHazeColor').value.copy(c.haze);
   }
 
-  /**
-   * Place the sun relative to where the camera is looking, which is how you compare against photos.
-   *   0   = sun straight ahead (back-lit: silver lining, glowing anvil)
-   *   90  = sun to the right (side-lit: most sculpted)
-   *   180 = sun behind the camera (front-lit: bright and flat)
-   */
   setSunRelativeToCamera(camera: THREE.Camera, relativeAzimuthDeg: number, elevationDeg: number): void {
     const f = new THREE.Vector3();
     camera.getWorldDirection(f);
@@ -250,39 +250,32 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     this.setSun(headingDeg + relativeAzimuthDeg, elevationDeg);
   }
 
-  /** Wind direction on the XZ plane (need not be normalised) and speed in m/s. Drives anvil streak direction and noise drift. */
   setWind(dirX: number, dirZ: number, speed: number): void {
     this.windDir.set(dirX, 0, dirZ).normalize();
     this.windSpeed = speed;
     this.u<THREE.Vector3>('uWindDir').value.copy(this.windDir);
   }
 
-  /** Upward drift of the billow noise in m/s; this is what makes the towers look like they are boiling. */
   setBoil(metresPerSecond: number): void {
     this.boil = metresPerSecond;
   }
 
-  /** Swap in a new sim volume (same bounds). */
   setFields(fields: THREE.Data3DTexture): void {
     this.u<THREE.Data3DTexture>('uFields').value = fields;
   }
 
-  /** Previous packed volume. The shader blends it into uFields. */
   setFieldsPrev(fields: THREE.Data3DTexture): void {
     this.u<THREE.Data3DTexture>('uFieldsPrev').value = fields;
   }
 
-  /** 0 shows the previous volume, 1 the current one. */
   setVolumeMix(mix: number): void {
     this.u<number>('uVolumeMix').value = Math.min(1, Math.max(0, mix));
   }
 
-  /** Primary march cap. The shader stretches the step so the ray still crosses the box. */
   setStepBudget(steps: number): void {
     this.u<number>('uStepBudget').value = steps;
   }
 
-  /** One multiplier for liquid, ice, and rain. 1 means a packed dense core stays 1. */
   setFieldGain(gain: number): void {
     this.u<THREE.Vector3>('uFieldGain').value.set(gain, gain, gain);
   }
@@ -300,10 +293,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     };
   }
 
-  /**
-   * Full-resolution scene depth. The march is half resolution, so uResolution is the
-   * march target and the depth is sampled in the same NDC.
-   */
   setSceneDepth(depth: THREE.Texture, camera: THREE.PerspectiveCamera, resolution: THREE.Vector2): void {
     this.u<THREE.Texture>('uSceneDepth').value = depth;
     this.u<THREE.Matrix4>('uInvProjection').value.copy(camera.projectionMatrixInverse);
@@ -311,7 +300,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     this.u<THREE.Vector2>('uResolution').value.copy(resolution);
   }
 
-  /** Up to four flashes. Missing slots are turned off. */
   setFlashes(flashes: { x: number; y: number; z: number; r: number; g: number; b: number; amount: number }[]): void {
     const pos = this.u<THREE.Vector3[]>('uFlashPos').value;
     const col = this.u<THREE.Vector3[]>('uFlashColor').value;
@@ -328,7 +316,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
     }
   }
 
-  /** Call once per frame with elapsed seconds. */
   update(timeSeconds: number): void {
     this.frame++;
     this.u<number>('uFrame').value = this.frame % 64;
@@ -338,7 +325,6 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       this.boil * timeSeconds,
       -this.windDir.z * this.windSpeed * timeSeconds,
     );
-    // Rain wind shear: lean streaks in wind direction, ~1m horizontal per 1000m height
     this.u<THREE.Vector3>('uRainWindShear').value.set(
       this.windDir.x * this.windSpeed * 0.001,
       0,
@@ -347,12 +333,11 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   }
 }
 
-/** Convenience: a box mesh covering the sim domain, with the cloud material applied. */
 export function createCloudMesh(material: VolumetricCloudMaterial, boxMin: THREE.Vector3, boxMax: THREE.Vector3): THREE.Mesh {
   const size = new THREE.Vector3().subVectors(boxMax, boxMin);
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), material);
   mesh.position.copy(boxMin).addScaledVector(size, 0.5);
   mesh.frustumCulled = false;
-  mesh.renderOrder = 10; // after opaque geometry
+  mesh.renderOrder = 10;
   return mesh;
 }

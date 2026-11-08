@@ -5,8 +5,8 @@ import type { CloudLook, VolumetricCloudMaterial } from './VolumetricCloudMateri
  * Starting points for matching the reference photos.
  *
  * The SHAPE of the storm comes from the sim, so these presets only set the sun geometry
- * (relative to the camera) and the appearance parameters. The sun values are read by eye
- * from the photos; treat them as first guesses and tune against a side-by-side.
+ * (relative to the camera) and the appearance parameters. Tuned for the baked-light
+ * cheap march (spotter realism).
  */
 export interface LookdevPreset {
   description: string;
@@ -16,51 +16,70 @@ export interface LookdevPreset {
 }
 
 export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
-  // Photo 1: sunlit cauliflower tower with an anvil spreading above and shadowing it
   A_towerWithAnvil: {
     description: 'Side-lit congestus with a developing anvil; the anvil shadows the tower below it',
     sunRelativeAzimuthDeg: 100,
     sunElevationDeg: 45,
-    look: { erosionLiquid: 1.0, erosionIce: 1.0, powder: 0.8 },
+    look: {
+      erosionLiquid: 0.95,
+      erosionIce: 0.6,
+      powder: 0.8,
+      sigmaLiquid: 0.0075,
+      ambientStrength: 0.95,
+    },
   },
-  // Photos 2 and 4: mature Cb, smooth fibrous anvil, grey-blue underside
   B_matureAnvil: {
     description: 'Mature Cb, thin smooth anvil with striations, bluish shaded underside, hazy horizon',
     sunRelativeAzimuthDeg: 80,
     sunElevationDeg: 55,
-    look: { erosionLiquid: 1.0, erosionIce: 1.0, iceStretch: [0.2, 0.6, 3.0], sigmaIce: 0.006, hazeDensity: 3e-5 },
+    look: {
+      erosionLiquid: 0.85,
+      erosionIce: 0.45,
+      iceStretch: [0.2, 0.6, 3.0],
+      sigmaIce: 0.0024,
+      hazeDensity: 1.4e-5,
+      ambientStrength: 0.9,
+    },
   },
-  // Photo 3: flat dark base, bright crisp top, rain shaft underneath
   C_flatBaseRain: {
     description: 'Congestus / early Cb with a flat dark base and a visible rain shaft; sun mostly behind the camera',
     sunRelativeAzimuthDeg: 150,
     sunElevationDeg: 30,
-    look: { erosionLiquid: 1.0, sigmaRain: 0.015, ambientStrength: 0.6 },
+    look: {
+      erosionLiquid: 0.9,
+      sigmaRain: 0.0035,
+      shaftMax: 10,
+      ambientStrength: 0.7,
+      sigmaLiquid: 0.008,
+    },
   },
-  // Photo 5: big turret with pileus wisp, dark base, strong side light
   D_towerPileus: {
     description: 'Growing tower with a pileus wisp, dark flat base, strong side light',
     sunRelativeAzimuthDeg: 95,
     sunElevationDeg: 35,
-    look: { erosionLiquid: 1.0, powder: 0.9 },
+    look: {
+      erosionLiquid: 1.0,
+      powder: 0.85,
+      sigmaLiquid: 0.0075,
+      ambientStrength: 0.9,
+    },
   },
-  // Sydney 2 Nov 2026 ~15:00 AEST — optional soft high deck (not the default).
   E_afternoonHighDeck: {
     description:
       'Soft high overcast at mid-afternoon AEST: fibrous ice sheet, milky fill light, thin drizzle shafts',
     sunRelativeAzimuthDeg: 120,
     sunElevationDeg: 47,
     look: {
-      sigmaLiquid: 0.0022,
-      sigmaIce: 0.0005,
-      erosionLiquid: 0.7,
-      erosionIce: 0.4,
+      sigmaLiquid: 0.0045,
+      sigmaIce: 0.0012,
+      erosionLiquid: 0.55,
+      erosionIce: 0.35,
       iceStretch: [0.35, 1.2, 2.2],
-      powder: 0.75,
+      powder: 0.65,
       ambientStrength: 1.15,
       ambientAtten: 0.85,
-      hazeDensity: 2.2e-5,
-      sigmaRain: 0.001,
+      hazeDensity: 1.2e-5,
+      sigmaRain: 0.0012,
       shaftMax: 4.0,
       exposure: 1.02,
     },

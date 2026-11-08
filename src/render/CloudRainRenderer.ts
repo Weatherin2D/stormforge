@@ -178,19 +178,12 @@ export class CloudRainRenderer {
   private volumeBlendStart = 0;
   private volumeBlendDur = 1;
   private volumeBlendReady = false;
-  /** Primary raymarch cap. Sticky discrete levels — continuous lerp made clouds pulse. */
-  private stepBudget = 72;
-  /** Sticky quality ladder index: 0=48, 1=72, 2=96, 3=128 steps. */
-  private stepBudgetLevel = 1;
-  /** Wall time until quality may climb again (hysteresis against thrash). */
-  private qualityHoldUntil = 0;
-  /** Start cheap so the first frames after a shader compile stay interactive. */
+  /** Fixed primary raymarch cap — 48 day / 32 night (no adaptive ladder). */
+  private stepBudget = 48;
+  /** EMA of frame time (ms); still used to defer heavy light-volume rebuilds. */
   private frameMsEma = 48;
-  /** Fraction of the drawing buffer used for the cloud pass. */
-  private cloudResScale = 0.28;
-  /** Desired cloud-buffer scale; commits only after hysteresis. */
-  private pendingCloudResScale = 0.28;
-  private cloudScaleHoldUntil = 0;
+  /** Fixed fraction of the drawing buffer for the cloud pass. */
+  private cloudResScale = 0.5;
   /** Longest cloud-buffer edge last allocated, so a cap change resizes once. */
   private lastCloudEdge = 0;
   /** Last shadow-adapt value pushed into the cloud material. */
@@ -1235,7 +1228,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (partial.sigmaLiquid != null) {
       this.tune.sigmaLiquid =
         partial.sigmaLiquid > 0.01
-          ? partial.sigmaLiquid * (0.0055 / 0.08)
+          ? partial.sigmaLiquid * (0.007 / 0.08)
           : partial.sigmaLiquid;
     }
     if (partial.sigmaRain != null) {
@@ -1274,7 +1267,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       mammatusCell: this.tune.mammatusCell,
       shaftMax: this.tune.shaftMax * this.advRainShaft,
       freezing: this.tune.freezing,
-      shadowProbes: this.tune.shadowProbes,
+      shadowProbes: 0,
       lodDistance: this.tune.lodDistance,
     });
   }
@@ -1379,27 +1372,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
 
     const mammatus = tog.enableMammatus === false ? 0 : s.mammatusDepth;
     const shafts = tog.enableRainShafts === false ? 0 : s.shaftMax;
-    const probes = tog.enableShadowProbes === false ? 0 : s.shadowProbes;
     const powder = tog.enablePowder === false ? 0 : s.powder;
     const fogMul = tog.enableFog === false || tog.enableSkyHaze === false ? 0 : s.fogStrength;
     const iceStretch: [number, number, number] =
       tog.enableIceFibres === false
         ? [1, 1, 1]
         : [s.iceStretchX, s.iceStretchY, s.iceStretchZ];
-    const multi =
-      tog.enableMultiScatter === false
-        ? ([0.15, 0.15, 0.15] as [number, number, number])
-        : ([s.multiScatterA, s.multiScatterB, s.multiScatterC] as [
-            number,
-            number,
-            number,
-          ]);
     const anvil = tog.enableAnvilHighlight === false ? 0.55 : s.anvilOpacity;
 
     this.tune.mammatusDepth = mammatus;
     this.tune.mammatusCell = s.mammatusCell;
     this.tune.shaftMax = shafts;
-    this.tune.shadowProbes = probes;
+    // Nested shadow probes removed — lighting comes from LightVolume.
+    this.tune.shadowProbes = 0;
     this.tune.stepSize = s.stepSize;
     this.tune.lodDistance = s.lodDistance;
     this.syncViewDistance();
@@ -1429,7 +1414,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       stepSize: s.stepSize,
       lodDistance: s.lodDistance,
       detailFade: [s.detailFadeNear, s.detailFadeFar],
-      shadowProbes: probes,
+      shadowProbes: 0,
       sigmaIce: s.sigmaIce * anvil,
       mammatusDepth: mammatus,
       mammatusCell: s.mammatusCell,
@@ -1437,7 +1422,6 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       iceStretch,
       phaseLiquid: [s.phaseLiquidFwd, s.phaseLiquidBack],
       backWeight: s.backWeight,
-      multiScatter: multi,
       erosionLiquid: this.tune.erosionLiquid * s.cloudSoftness,
       sigmaRain: this.tune.sigmaRain * s.rainShaftOpacity,
     });
@@ -1539,13 +1523,10 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       g.g * (E[1] / Math.PI * skyGain + NIGHT_BOTTOM[1] * night),
       g.b * (E[2] / Math.PI * skyGain + NIGHT_BOTTOM[2] * night),
     );
-    // Night: slightly coarser march — keep the multiplier modest so horizon
-    // rays still hit thin decks (large steps read as concentric rings).
-    const nightStep = night > 0.55 ? 1.3 : night > 0.25 ? 1.12 : 1.0;
     this.cloudMat.setLook({
-      stepSize: Math.max(16, this.tune.stepSize * nightStep),
+      stepSize: this.tune.stepSize,
       lodDistance: this.tune.lodDistance,
-      shadowProbes: night > 0.7 ? 0 : this.tune.shadowProbes,
+      shadowProbes: 0,
     });
   }
 
@@ -1606,71 +1587,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.lastRenderMs = now;
     this.lastFrameDt = dt;
     if (dt > 0) {
-      // Steady slow frames must pull the budget down. Clamp a multi-second
-      // compile hitch so one stall does not pin quality at the floor.
       const sample = Math.min(dt, 80);
       this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
     }
-    const ms = this.frameMsEma;
-    // Discrete levels only — a continuous lerp changed OD every frame and
-    // made the whole deck breathe / pulse.
-    const levels = [48, 72, 96, 128];
-    let want = ms > 46 ? 0 : ms > 34 ? 1 : ms > 22 ? 2 : 3;
-    // Night pins a cheaper ladder so quality cannot thrash against flash cost.
-    if (this.sunFrac < 0.12) want = Math.min(want, 0);
-    else if (this.sunFrac < 0.35) want = Math.min(want, 1);
-    if (want < this.stepBudgetLevel || dt > 48) {
-      this.stepBudgetLevel = want;
-      this.qualityHoldUntil = now + 900;
-    } else if (want > this.stepBudgetLevel && now >= this.qualityHoldUntil) {
-      this.stepBudgetLevel = Math.min(this.stepBudgetLevel + 1, want);
-      this.qualityHoldUntil = now + 1400;
-    }
-    this.stepBudget = levels[this.stepBudgetLevel] ?? 72;
-    // A two-texture blend on an already slow frame is what locked the march.
+    // Fixed budgets — adaptive ladders made opacity pulse and resized the RT.
+    this.stepBudget = this.sunFrac < 0.15 ? 32 : 48;
     if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
-    this.syncCloudScale(now);
-  }
-
-  /** Coarser cloud buffer while frames are long; sharper once they recover. */
-  private syncCloudScale(now = performance.now()): void {
-    const ms = this.frameMsEma;
-    let want = this.cloudResScale;
-    if (ms > 46 || this.sunFrac < 0.12) want = 0.28;
-    else if (ms < 16 && this.sunFrac > 0.4) want = 0.75;
-    else if (ms < 26) want = 0.5;
-    else if (ms > 32) want = Math.min(this.cloudResScale, 0.5);
-
-    let next = this.cloudResScale;
-    if (want < this.cloudResScale - 0.01) {
-      // Drop immediately when the frame is heavy.
-      next = want;
-      this.pendingCloudResScale = want;
-      this.cloudScaleHoldUntil = now + 700;
-    } else if (want > this.cloudResScale + 0.01) {
-      // Climb only after the cheaper setting has held for a while.
-      if (Math.abs(this.pendingCloudResScale - want) > 0.01) {
-        this.pendingCloudResScale = want;
-        this.cloudScaleHoldUntil = now + 1600;
-      } else if (now >= this.cloudScaleHoldUntil) {
-        next = want;
-      }
-    } else {
-      this.pendingCloudResScale = this.cloudResScale;
-    }
-
     const cap = this.cloudEdgeCap();
-    if (Math.abs(next - this.cloudResScale) < 0.01 && cap === this.lastCloudEdge) return;
-    this.cloudResScale = next;
-    this.resize();
+    if (cap !== this.lastCloudEdge) this.resize();
   }
 
-  /** Longest edge of the cloud buffer for the current frame time. */
+  /** Fixed long-edge cap for the cloud buffer (stable; no quality thrash). */
   private cloudEdgeCap(): number {
-    const ms = this.frameMsEma;
-    if (ms > 42 || this.sunFrac < 0.12) return 160;
-    if (ms > 24 || this.sunFrac < 0.35) return 320;
-    return 512;
+    return this.sunFrac < 0.15 ? 320 : 512;
   }
 
   private rebuildCloudShadowMap(force: boolean): void {
@@ -2292,7 +2221,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 128, lightSteps: 6 },
+      quality: { maxSteps: 64 },
     });
     this.cloudMat.setFieldsPrev(prevTex);
     this.cloudMat.setVolumeMix(1);
@@ -2320,13 +2249,19 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       uBoxMax: { value: boxMax },
       uGrid: { value: new THREE.Vector3(disp.nx, disp.ny, disp.nz) },
       uHeight: { value: height },
-      uExtinction: { value: 0.0022 },
+      uExtinction: { value: 0.004 },
       uSunDir: { value: this.sunDir.clone() },
     };
     this.bindBoltVolume();
 
-    // Initialize LightVolume for GPU-based cloud lighting (volumetric / flash path).
+    // Baked sun OD + sky visibility — sampled by the cheap view march.
     this.lightVolume = new LightVolume(disp.nx, disp.ny, disp.nz, this.sharedUniforms, this.volumeTex);
+    this.cloudMat.setLightVolume(this.lightVolume.texture);
+    // Seed the bake once so the first day frame is not open-sky fallback.
+    if (this.sunDir.y > -0.02) {
+      this.lightVolume.update(this.renderer, this.volumeRevision, this.sunDir);
+      this.heavyAt = performance.now();
+    }
     // Force ground material to recompile with current shared + shadow uniforms.
     (this.ground.material as THREE.MeshStandardMaterial).needsUpdate = true;
     this.shadowMapRevision = -1;
@@ -2692,6 +2627,9 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.lightVolume.update(this.renderer, lightRev, this.sunDir);
     }
     if (!deferHeavy) this.heavyAt = frameNow;
+    if (this.cloudMat && this.lightVolume) {
+      this.cloudMat.setLightVolume(this.lightVolume.texture);
+    }
 
     if (this.cloudMat) {
       this.cloudMat.setVolumeMix(volumeMix);
