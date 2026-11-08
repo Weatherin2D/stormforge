@@ -35,8 +35,8 @@ export function packRainSwath(
   }
 }
 
-/** A couple of centimetres already reads as a white cover. */
-const SNOW_FULL_M = 0.025;
+/** ~10 cm of fresh snow reads as a full white cover. */
+const SNOW_FULL_M = 0.1;
 const HAIL_DIAM_FULL_MM = 80;
 const RAIN_FULL_MM = 16;
 /** Stones/m² that fill the ground with hail dots. Logarithmic so light and heavy swaths both show. */

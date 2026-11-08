@@ -479,20 +479,20 @@ const ACCUM_STOPS: RgbaStop[] = [
 /** Snow depth — pale blue into white, centimetres of fresh snow. */
 const SNOW_DEPTH_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.2, 118, 148, 176],
-  [1, 168, 196, 214],
-  [4, 206, 222, 232],
-  [12, 230, 238, 244],
-  [40, 250, 252, 255],
+  [1, 70, 96, 128],
+  [4, 132, 164, 190],
+  [10, 186, 208, 222],
+  [20, 224, 234, 240],
+  [40, 248, 250, 252],
 ];
 
 /** Hail on the ground — cool gray into bright white, mm liquid equivalent. */
 const HAIL_ACCUM_STOPS: RgbaStop[] = [
   [0, 22, 32, 48],
-  [0.05, 110, 124, 150],
-  [0.5, 160, 170, 186],
-  [2, 196, 200, 206],
-  [8, 228, 226, 220],
+  [0.5, 88, 104, 132],
+  [2, 150, 162, 178],
+  [6, 196, 198, 204],
+  [15, 228, 226, 220],
   [40, 255, 250, 240],
 ];
 
