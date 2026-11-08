@@ -217,6 +217,40 @@ float sunThrough(float od){
   return max(exp(-od), 1.0 / (1.0 + 1.7 * od));
 }
 
+// Realistic aerial perspective: Koschmieder visibility from uLodDistance,
+// stronger toward the horizon and through low air, chromatic (blue fades first).
+vec3 airBeta(vec3 rd, float midHeight) {
+  float vis = max(uLodDistance, 8000.0);
+  // β ≈ 3.2/V plus user haze density so "Haze density" still thickens the air.
+  float beta0 = 3.2 / vis + uHazeDensity * 2.4;
+  float elev = rd.y;
+  float horizon = pow(1.0 - smoothstep(-0.04, 0.32, elev), 1.35);
+  float heightFac = exp(-max(midHeight, 0.0) / 2400.0);
+  float scale = mix(0.55, 1.55, horizon) * mix(0.65, 1.25, heightFac);
+  // R scatters less than B → distant decks warm/grey into the haze.
+  return vec3(0.78, 1.0, 1.32) * (beta0 * scale);
+}
+
+vec3 aerialFog(vec3 col, vec3 rd, float dist, float midHeight) {
+  vec3 beta = airBeta(rd, midHeight);
+  // Clear near field so close towers stay crisp.
+  float near = max(uLodDistance, 8000.0) * 0.08;
+  float path = max(0.0, dist - near);
+  vec3 Tair = exp(-beta * path);
+  // Horizon haze picks up a touch of sky so it matches the dome.
+  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.22 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
+  return col * Tair + inscatter * (vec3(1.0) - Tair);
+}
+
+float aerialAlpha(float alpha, vec3 rd, float dist, float midHeight) {
+  vec3 beta = airBeta(rd, midHeight);
+  float near = max(uLodDistance, 8000.0) * 0.08;
+  float path = max(0.0, dist - near);
+  float Tmean = exp(-dot(beta, vec3(0.333)) * path);
+  // Distant decks dissolve into the sky instead of sitting as opaque silhouettes.
+  return alpha * mix(0.18, 1.0, pow(clamp(Tmean, 0.0, 1.0), 0.85));
+}
+
 // Decode baked light: R encodes 1-exp(-od/8), G is sky visibility.
 void bakedLight(vec3 uvw, out float odSun, out float skyVis) {
   vec4 L = textureLod(uLightVol, clamp(uvw, vec3(0.0), vec3(1.0)), 0.0);
@@ -401,6 +435,10 @@ void main() {
         S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
       }
 
+      // Per-sample aerial perspective along the view ray (Hillaire-style).
+      float midH = mix(ro.y, p.y, 0.5);
+      S = aerialFog(S, rd, t, midH);
+
       float stepT = exp(-sigT * dt);
       float w = T * (1.0 - stepT);
       col += S * w;
@@ -417,13 +455,14 @@ void main() {
 
   vec3 straight = col / max(1.0 - T, 1e-4);
   float avgDist = distAcc / max(weightAcc, 1e-4);
-  float hazeScale = 22000.0 / max(uLodDistance, 4000.0);
-  float haze = 1.0 - exp(-avgDist * uHazeDensity * hazeScale);
-  straight = mix(straight, uHazeColor, haze) * uExposure;
+  float midH = ro.y + rd.y * avgDist * 0.5;
+  // Colour was fogged per sample; fade opacity so distant decks dissolve into sky.
+  alpha = aerialAlpha(alpha, rd, avgDist, midH);
+  if (alpha < 0.001) discard;
+
+  straight *= uExposure;
   straight = straight / (vec3(1.0) + straight * 0.5);
   straight = max(straight, vec3(0.0));
-  // No per-pixel dither here — the blit pass already dithers, and a second
-  // layer stacked on IGN jitter read as a checkerboard on distant decks.
 
   gl_FragColor = vec4(straight, alpha);
   #include <tonemapping_fragment>

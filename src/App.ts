@@ -263,8 +263,8 @@ export class App {
                   </label>
                   <label>
                     Cloud distance
-                    <input id="cloud-distance" type="range" min="8000" max="80000" step="1000" value="40000" />
-                    <span id="cloud-distance-val">40 km</span>
+                    <input id="cloud-distance" type="range" min="8000" max="80000" step="1000" value="25000" />
+                    <span id="cloud-distance-val">25 km</span>
                   </label>
                   <label>
                     Liquid billow
@@ -1611,7 +1611,7 @@ export class App {
       sigmaRain: 0.002,
       erosionLiquid: 0.85,
       erosionIce: 0.55,
-      lodDistance: 40000,
+      lodDistance: 25000,
     };
 
     const lookPreset =

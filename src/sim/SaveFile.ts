@@ -95,7 +95,7 @@ export const DEFAULT_SAVED_VIEW: SavedView = {
     sigmaRain: 0.002,
     erosionLiquid: 0.85,
     erosionIce: 0.55,
-    lodDistance: 40000,
+    lodDistance: 25000,
   },
   lightningFreq: 1,
   clockPaused: false,

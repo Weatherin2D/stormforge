@@ -274,13 +274,13 @@ export const CATEGORY_LABELS: Record<SettingCategory, string> = {
 export const SETTING_DEFS: SettingDef[] = [
   // Display
   { id: "exposure", category: "display", label: "Exposure", min: 0.4, max: 2.5, step: 0.05, default: 1.08, decimals: 2 },
-  { id: "hazeDensity", category: "display", label: "Haze density", min: 0, max: 8e-5, step: 1e-6, default: 8e-6, decimals: 6 },
+  { id: "hazeDensity", category: "display", label: "Haze density", min: 0, max: 8e-5, step: 1e-6, default: 1.8e-5, decimals: 6 },
   { id: "ambientStrength", category: "display", label: "Ambient light", min: 0.2, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "ambientAtten", category: "display", label: "Ambient atten", min: 0.2, max: 2.5, step: 0.05, default: 0.9, decimals: 2 },
   { id: "powder", category: "display", label: "Powder sugar", min: 0, max: 2, step: 0.05, default: 0.75, decimals: 2 },
   { id: "powderLength", category: "display", label: "Powder length", min: 200, max: 4000, step: 50, default: 1200, unit: "m", decimals: 0 },
   { id: "stepSize", category: "display", label: "Ray step size", min: 8, max: 96, step: 1, default: 40, unit: "m", decimals: 0 },
-  { id: "lodDistance", category: "display", label: "Cloud view distance", min: 8000, max: 80000, step: 1000, default: 40000, unit: "m", decimals: 0 },
+  { id: "lodDistance", category: "display", label: "Cloud view distance", min: 8000, max: 80000, step: 1000, default: 25000, unit: "m", decimals: 0 },
   { id: "detailFadeNear", category: "display", label: "Detail near", min: 1000, max: 20000, step: 250, default: 6000, unit: "m", decimals: 0 },
   { id: "detailFadeFar", category: "display", label: "Detail far", min: 8000, max: 80000, step: 500, default: 40000, unit: "m", decimals: 0 },
   { id: "shadowProbes", category: "display", label: "Shadow probes (unused)", min: 0, max: 2, step: 1, default: 0, decimals: 0 },

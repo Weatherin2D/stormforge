@@ -53,12 +53,14 @@ export const DEFAULT_LOOK: CloudLook = {
   powderLength: 1200,
   ambientStrength: 1.0,
   ambientAtten: 0.9,
-  hazeDensity: 8e-6,
+  // Extra turbidity on top of Koschmieder visibility from lodDistance.
+  hazeDensity: 1.8e-5,
   exposure: 1.08,
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
   stepSize: 40,
-  lodDistance: 40000,
+  // Characteristic visibility (~25 km) — distant decks dissolve into the haze.
+  lodDistance: 25000,
   detailFade: [6000, 40000],
   mammatusDepth: 600,
   mammatusCell: 1600,
