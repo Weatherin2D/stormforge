@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { cloudFragmentShader, cloudVertexShader } from './cloudShader';
-import { noiseTexture } from '../noise';
+import { createCloudNoise } from './noiseTextures';
 import { computeSkyLighting } from './sunLighting';
 
 /** Everything that changes how the cloud looks, without touching the sim. All lengths in metres. */
@@ -35,33 +35,33 @@ export interface CloudLook {
 }
 
 /**
- * Spotter-realism defaults: opaque liquid cores, readable ice decks, low haze.
+ * Spotter-realism defaults: carved liquid towers, translucent ice, contrasty lighting.
  */
 export const DEFAULT_LOOK: CloudLook = {
-  sigmaLiquid: 0.007,
-  sigmaIce: 0.0018,
-  sigmaRain: 0.002,
-  erosionLiquid: 0.85,
-  erosionIce: 0.55,
+  sigmaLiquid: 0.0085,
+  sigmaIce: 0.0016,
+  sigmaRain: 0.0022,
+  erosionLiquid: 1.0,
+  erosionIce: 0.5,
   iceStretch: [0.55, 2.8, 0.55],
   phaseLiquid: [0.78, 0.18],
   phaseIce: [0.75, 0.15],
   phaseRain: [0.85, 0.2],
   backWeight: 0.28,
   multiScatter: [0.5, 0.5, 0.5],
-  powder: 0.75,
-  powderLength: 1200,
-  ambientStrength: 1.0,
-  ambientAtten: 0.9,
+  powder: 0.88,
+  powderLength: 900,
+  ambientStrength: 0.8,
+  ambientAtten: 0.95,
   // Extra turbidity on top of Koschmieder visibility from lodDistance.
   hazeDensity: 1.8e-5,
-  exposure: 1.08,
-  shapeTileMeters: 8000,
-  detailTileMeters: 2000,
-  stepSize: 40,
+  exposure: 0.98,
+  shapeTileMeters: 7000,
+  detailTileMeters: 1800,
+  stepSize: 48,
   // Characteristic visibility (~25 km) — distant decks dissolve into the haze.
   lodDistance: 25000,
-  detailFade: [6000, 40000],
+  detailFade: [5000, 32000],
   mammatusDepth: 600,
   mammatusCell: 1600,
   shaftMax: 7,
@@ -110,7 +110,7 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
   private readonly fallbackLight: THREE.Data3DTexture;
 
   constructor(opts: VolumetricCloudOptions) {
-    const noise = noiseTexture();
+    const noise = createCloudNoise();
     const look: CloudLook = { ...DEFAULT_LOOK, ...opts.look };
     const q = opts.quality ?? {};
     const fallbackLight = emptyLightVol();
@@ -119,16 +119,17 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       vertexShader: cloudVertexShader,
       fragmentShader: cloudFragmentShader,
       defines: {
-        MAX_STEPS: q.maxSteps ?? 160,
-        FINE_STEP: "32.0",
+        MAX_STEPS: q.maxSteps ?? 128,
+        FINE_STEP: "40.0",
+        COARSE_STEP_MUL: "2.75",
       },
       uniforms: {
         uFields: { value: opts.fields },
         uFieldsPrev: { value: opts.fields },
         uVolumeMix: { value: 1 },
-        uStepBudget: { value: q.maxSteps ?? 160 },
-        uShapeNoise: { value: noise },
-        uDetailNoise: { value: noise },
+        uStepBudget: { value: q.maxSteps ?? 128 },
+        uShapeNoise: { value: noise.shape },
+        uDetailNoise: { value: noise.detail },
         uLightVol: { value: fallbackLight },
         uBoxMin: { value: opts.boxMin.clone() },
         uBoxMax: { value: opts.boxMax.clone() },

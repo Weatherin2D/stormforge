@@ -5,8 +5,8 @@ import type { CloudLook, VolumetricCloudMaterial } from './VolumetricCloudMateri
  * Starting points for matching the reference photos.
  *
  * The SHAPE of the storm comes from the sim, so these presets only set the sun geometry
- * (relative to the camera) and the appearance parameters. Tuned for the baked-light
- * cheap march (spotter realism).
+ * (relative to the camera) and the appearance parameters. Tuned for Perlin-Worley carve
+ * + baked-light march (spotter realism).
  */
 export interface LookdevPreset {
   description: string;
@@ -21,11 +21,12 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunRelativeAzimuthDeg: 100,
     sunElevationDeg: 45,
     look: {
-      erosionLiquid: 0.95,
-      erosionIce: 0.6,
-      powder: 0.8,
-      sigmaLiquid: 0.0075,
-      ambientStrength: 0.95,
+      erosionLiquid: 1.0,
+      erosionIce: 0.55,
+      powder: 0.9,
+      sigmaLiquid: 0.009,
+      ambientStrength: 0.78,
+      exposure: 0.96,
     },
   },
   B_matureAnvil: {
@@ -33,12 +34,14 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunRelativeAzimuthDeg: 80,
     sunElevationDeg: 55,
     look: {
-      erosionLiquid: 0.85,
-      erosionIce: 0.45,
+      erosionLiquid: 0.95,
+      erosionIce: 0.4,
       iceStretch: [0.2, 0.6, 3.0],
-      sigmaIce: 0.0024,
+      sigmaIce: 0.0022,
       hazeDensity: 1.4e-5,
-      ambientStrength: 0.9,
+      ambientStrength: 0.72,
+      powder: 0.85,
+      exposure: 0.95,
     },
   },
   C_flatBaseRain: {
@@ -46,11 +49,13 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunRelativeAzimuthDeg: 150,
     sunElevationDeg: 30,
     look: {
-      erosionLiquid: 0.9,
+      erosionLiquid: 1.0,
       sigmaRain: 0.0035,
       shaftMax: 10,
-      ambientStrength: 0.7,
-      sigmaLiquid: 0.008,
+      ambientStrength: 0.62,
+      sigmaLiquid: 0.0095,
+      powder: 0.88,
+      exposure: 0.94,
     },
   },
   D_towerPileus: {
@@ -59,9 +64,10 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunElevationDeg: 35,
     look: {
       erosionLiquid: 1.0,
-      powder: 0.85,
-      sigmaLiquid: 0.0075,
-      ambientStrength: 0.9,
+      powder: 0.92,
+      sigmaLiquid: 0.009,
+      ambientStrength: 0.75,
+      exposure: 0.96,
     },
   },
   E_afternoonHighDeck: {
@@ -70,18 +76,18 @@ export const LOOKDEV_PRESETS: Record<string, LookdevPreset> = {
     sunRelativeAzimuthDeg: 120,
     sunElevationDeg: 47,
     look: {
-      sigmaLiquid: 0.0045,
+      sigmaLiquid: 0.005,
       sigmaIce: 0.0012,
-      erosionLiquid: 0.55,
-      erosionIce: 0.35,
+      erosionLiquid: 0.65,
+      erosionIce: 0.38,
       iceStretch: [0.35, 1.2, 2.2],
-      powder: 0.65,
-      ambientStrength: 1.15,
+      powder: 0.7,
+      ambientStrength: 0.95,
       ambientAtten: 0.85,
       hazeDensity: 1.2e-5,
       sigmaRain: 0.0012,
       shaftMax: 4.0,
-      exposure: 1.02,
+      exposure: 0.98,
     },
   },
 };

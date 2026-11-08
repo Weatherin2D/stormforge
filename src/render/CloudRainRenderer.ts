@@ -44,7 +44,7 @@ import type { VortexLevel } from "../sim/fieldPack";
  * SUN_GAIN scales cloud sun only; baking it into intensity too bleaches the ground.
  * SUN_DISC is below MeteoLAB's 40 so low-sun Mie + disc don't clip to white.
  */
-const SUN_GAIN = 3, SKY_GAIN = 12, SUN_DISC = 16;
+const SUN_GAIN = 2, SKY_GAIN = 12, SUN_DISC = 16;
 /** Soft ceiling on sky/disc gain so twilight adaptation can't blow the frame. */
 const SKY_GAIN_CAP = 48;
 const SUN_DISC_LUM_CAP = 6.5;
@@ -129,7 +129,7 @@ void main() {
     vec4 hist = texture(uHistory, vUv);
     // Stronger sky blend than 0.25 — half-res march dither was left as a
     // checkerboard when history barely mixed in.
-    fragColor = mix(curr, hist, uMix * 0.72);
+    fragColor = mix(curr, hist, uMix * 0.82);
     return;
   }
   vec4 ndc = vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -180,12 +180,12 @@ export class CloudRainRenderer {
   private volumeBlendStart = 0;
   private volumeBlendDur = 1;
   private volumeBlendReady = false;
-  /** Full march budget — no night/day throttle, no adaptive quality ladder. */
-  private stepBudget = 160;
+  /** Adaptive march budget (72–128). Lower when frames are long. */
+  private stepBudget = 112;
   /** EMA of frame time (ms); still used to defer heavy light-volume rebuilds. */
   private frameMsEma = 48;
-  /** Full-resolution cloud pass — sub-res + edge caps caused holes and dither. */
-  private cloudResScale = 1;
+  /** Half-res cloud pass + TAA — ~3× fewer fragments than full-res. */
+  private cloudResScale = 0.55;
   /** Last shadow-adapt value pushed into the cloud material. */
   private lastPushedAdapt = -1;
   /** Wall time of the last shadow + light-volume rebuild. */
@@ -718,7 +718,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const present = this.sceneBlit.material as THREE.ShaderMaterial;
       present.uniforms.uTex.value = this.sceneTarget.texture;
     }
-    // Full-resolution cloud buffer (no scale / edge caps).
+    // Half-res cloud buffer; resolve/TAA cleans dither (see resolveFrag).
     const hw = Math.max(1, Math.floor(bw * this.cloudResScale));
     const hh = Math.max(1, Math.floor(bh * this.cloudResScale));
     if (
@@ -1579,7 +1579,16 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const sample = Math.min(dt, 80);
       this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
     }
-    this.stepBudget = 160;
+    // Map frame cost → march steps. Night stays lean; headroom buys detail.
+    const night = this.sunDir.y <= -0.02 || this.sunFrac < 0.08;
+    const ema = this.frameMsEma;
+    let budget = 112;
+    if (night) budget = 72;
+    else if (ema > 55) budget = 72;
+    else if (ema > 42) budget = 88;
+    else if (ema > 32) budget = 104;
+    else if (ema < 22) budget = 128;
+    this.stepBudget = budget;
     if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
   }
 
@@ -2202,7 +2211,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 160 },
+      quality: { maxSteps: 128 },
     });
     this.cloudMat.setFieldsPrev(prevTex);
     this.cloudMat.setVolumeMix(1);

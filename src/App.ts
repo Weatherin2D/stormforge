@@ -258,8 +258,8 @@ export class App {
                   </label>
                   <label>
                     Base darkness
-                    <input id="cloud-sigma" type="range" min="0.0005" max="0.014" step="0.0001" value="0.007" />
-                    <span id="cloud-sigma-val">0.0070</span>
+                    <input id="cloud-sigma" type="range" min="0.0005" max="0.014" step="0.0001" value="0.0085" />
+                    <span id="cloud-sigma-val">0.0085</span>
                   </label>
                   <label>
                     Cloud distance
@@ -268,18 +268,18 @@ export class App {
                   </label>
                   <label>
                     Liquid billow
-                    <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="0.85" />
-                    <span id="cloud-erosion-val">0.85</span>
+                    <input id="cloud-erosion" type="range" min="0" max="1" step="0.05" value="1" />
+                    <span id="cloud-erosion-val">1.00</span>
                   </label>
                   <label>
                     Ice fibres
-                    <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.55" />
-                    <span id="cloud-erosion-ice-val">0.55</span>
+                    <input id="cloud-erosion-ice" type="range" min="0" max="1" step="0.05" value="0.5" />
+                    <span id="cloud-erosion-ice-val">0.50</span>
                   </label>
                   <label>
                     Rain shaft thickness
-                    <input id="cloud-sigma-rain" type="range" min="0.0002" max="0.008" step="0.0001" value="0.002" />
-                    <span id="cloud-sigma-rain-val">0.0020</span>
+                    <input id="cloud-sigma-rain" type="range" min="0.0002" max="0.008" step="0.0001" value="0.0022" />
+                    <span id="cloud-sigma-rain-val">0.0022</span>
                   </label>
                   <label>
                     Lightning frequency
@@ -1607,10 +1607,10 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.007,
-      sigmaRain: 0.002,
-      erosionLiquid: 0.85,
-      erosionIce: 0.55,
+      sigmaLiquid: 0.0085,
+      sigmaRain: 0.0022,
+      erosionLiquid: 1.0,
+      erosionIce: 0.5,
       lodDistance: 25000,
     };
 
