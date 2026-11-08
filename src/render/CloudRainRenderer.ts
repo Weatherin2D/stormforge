@@ -1193,8 +1193,22 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.applyCloudSun();
   }
 
-  cloudTune(): { gain: number; sigmaLiquid: number; sigmaRain: number; erosionLiquid: number; erosionIce: number } {
-    return { ...this.tune };
+  cloudTune(): {
+    gain: number;
+    sigmaLiquid: number;
+    sigmaRain: number;
+    erosionLiquid: number;
+    erosionIce: number;
+    lodDistance: number;
+  } {
+    return {
+      gain: this.tune.gain,
+      sigmaLiquid: this.tune.sigmaLiquid,
+      sigmaRain: this.tune.sigmaRain,
+      erosionLiquid: this.tune.erosionLiquid,
+      erosionIce: this.tune.erosionIce,
+      lodDistance: this.tune.lodDistance,
+    };
   }
 
   /** Live knobs. fieldGain is one multiplier for liquid, ice, and rain. */
@@ -1204,6 +1218,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     sigmaRain?: number;
     erosionLiquid?: number;
     erosionIce?: number;
+    lodDistance?: number;
   }): void {
     if (partial.gain != null) this.tune.gain = partial.gain;
     // Pre-MeteoLAB UI/saves used ~0.08 liquid / ~0.18 rain. Map those into
@@ -1211,17 +1226,21 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (partial.sigmaLiquid != null) {
       this.tune.sigmaLiquid =
         partial.sigmaLiquid > 0.01
-          ? partial.sigmaLiquid * (0.0035 / 0.08)
+          ? partial.sigmaLiquid * (0.0055 / 0.08)
           : partial.sigmaLiquid;
     }
     if (partial.sigmaRain != null) {
       this.tune.sigmaRain =
         partial.sigmaRain > 0.02
-          ? partial.sigmaRain * (0.0014 / 0.18)
+          ? partial.sigmaRain * (0.0016 / 0.18)
           : partial.sigmaRain;
     }
     if (partial.erosionLiquid != null) this.tune.erosionLiquid = partial.erosionLiquid;
     if (partial.erosionIce != null) this.tune.erosionIce = partial.erosionIce;
+    if (partial.lodDistance != null) {
+      this.tune.lodDistance = Math.max(4000, partial.lodDistance);
+      this.syncViewDistance();
+    }
     this.applyTune();
   }
 
@@ -1247,7 +1266,17 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       shaftMax: this.tune.shaftMax * this.advRainShaft,
       freezing: this.tune.freezing,
       shadowProbes: this.tune.shadowProbes,
+      lodDistance: this.tune.lodDistance,
     });
+  }
+
+  /** Keep the camera far plane past the cloud view-distance slider. */
+  private syncViewDistance(): void {
+    const far = Math.max(8000, this.domainSpan * 3, this.tune.lodDistance * 1.35);
+    if (Math.abs(this.camera.far - far) < 1) return;
+    this.camera.far = far;
+    this.camera.updateProjectionMatrix();
+    this.sky.scale.setScalar(this.camera.far);
   }
 
   private advSoftness = 1;
@@ -1364,6 +1393,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.tune.shadowProbes = probes;
     this.tune.stepSize = s.stepSize;
     this.tune.lodDistance = s.lodDistance;
+    this.syncViewDistance();
     this.precipitation.setTune({
       spawn: s.precipSpawn,
       rainFall: s.rainFallVisual,
@@ -2129,8 +2159,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.groundFlashMesh.scale.set(9000, 9000, 1);
       this.groundFlashMesh.position.y = this.groundY + 1;
     }
-    this.camera.far = Math.max(8000, this.domainSpan * 3);
-    this.camera.updateProjectionMatrix();
+    this.syncViewDistance();
     const haze = Math.max(4000, this.domainSpan * 0.28);
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = haze;

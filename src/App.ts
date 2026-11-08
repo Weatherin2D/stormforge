@@ -29,6 +29,7 @@ import {
   mountAdvancedSettingsUI,
   replaceAdvanced,
   replaceToggles,
+  setAdvanced,
   type AdvancedToggles,
   type AdvancedValues,
 } from "./sim/AdvancedSettings";
@@ -257,8 +258,13 @@ export class App {
                   </label>
                   <label>
                     Base darkness
-                    <input id="cloud-sigma" type="range" min="0.0005" max="0.008" step="0.0001" value="0.0035" />
-                    <span id="cloud-sigma-val">0.0035</span>
+                    <input id="cloud-sigma" type="range" min="0.0005" max="0.012" step="0.0001" value="0.0055" />
+                    <span id="cloud-sigma-val">0.0055</span>
+                  </label>
+                  <label>
+                    Cloud distance
+                    <input id="cloud-distance" type="range" min="8000" max="80000" step="1000" value="40000" />
+                    <span id="cloud-distance-val">40 km</span>
                   </label>
                   <label>
                     Liquid billow
@@ -272,8 +278,8 @@ export class App {
                   </label>
                   <label>
                     Rain shaft thickness
-                    <input id="cloud-sigma-rain" type="range" min="0.0002" max="0.006" step="0.0001" value="0.0013" />
-                    <span id="cloud-sigma-rain-val">0.0013</span>
+                    <input id="cloud-sigma-rain" type="range" min="0.0002" max="0.008" step="0.0001" value="0.0016" />
+                    <span id="cloud-sigma-rain-val">0.0016</span>
                   </label>
                   <label>
                     Lightning frequency
@@ -845,20 +851,24 @@ export class App {
     const lookEl = q("#cloud-look") as HTMLSelectElement;
     const gainEl = q("#cloud-gain") as HTMLInputElement;
     const sigmaEl = q("#cloud-sigma") as HTMLInputElement;
+    const distanceEl = q("#cloud-distance") as HTMLInputElement;
     const sigmaRainEl = q("#cloud-sigma-rain") as HTMLInputElement;
     const erosionEl = q("#cloud-erosion") as HTMLInputElement;
     const erosionIceEl = q("#cloud-erosion-ice") as HTMLInputElement;
     const lightningFreqEl = q("#lightning-freq") as HTMLInputElement;
+    const fmtKm = (m: number) => `${Math.round(m / 1000)} km`;
     const showTune = () => {
       const tune = this.renderer?.cloudTune();
       if (!tune) return;
       gainEl.value = String(tune.gain);
       sigmaEl.value = String(tune.sigmaLiquid);
+      distanceEl.value = String(tune.lodDistance);
       sigmaRainEl.value = String(tune.sigmaRain);
       erosionEl.value = String(tune.erosionLiquid);
       erosionIceEl.value = String(tune.erosionIce);
       (q("#cloud-gain-val") as HTMLElement).textContent = tune.gain.toFixed(2);
       (q("#cloud-sigma-val") as HTMLElement).textContent = tune.sigmaLiquid.toFixed(4);
+      (q("#cloud-distance-val") as HTMLElement).textContent = fmtKm(tune.lodDistance);
       (q("#cloud-sigma-rain-val") as HTMLElement).textContent = tune.sigmaRain.toFixed(4);
       (q("#cloud-erosion-val") as HTMLElement).textContent = tune.erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = tune.erosionIce.toFixed(2);
@@ -866,12 +876,22 @@ export class App {
     const pushTune = () => {
       const gain = Number(gainEl.value);
       const sigmaLiquid = Number(sigmaEl.value);
+      const lodDistance = Number(distanceEl.value);
       const sigmaRain = Number(sigmaRainEl.value);
       const erosionLiquid = Number(erosionEl.value);
       const erosionIce = Number(erosionIceEl.value);
-      this.renderer?.setCloudTune({ gain, sigmaLiquid, sigmaRain, erosionLiquid, erosionIce });
+      this.renderer?.setCloudTune({
+        gain,
+        sigmaLiquid,
+        sigmaRain,
+        erosionLiquid,
+        erosionIce,
+        lodDistance,
+      });
+      setAdvanced({ lodDistance });
       (q("#cloud-gain-val") as HTMLElement).textContent = gain.toFixed(2);
       (q("#cloud-sigma-val") as HTMLElement).textContent = sigmaLiquid.toFixed(4);
+      (q("#cloud-distance-val") as HTMLElement).textContent = fmtKm(lodDistance);
       (q("#cloud-sigma-rain-val") as HTMLElement).textContent = sigmaRain.toFixed(4);
       (q("#cloud-erosion-val") as HTMLElement).textContent = erosionLiquid.toFixed(2);
       (q("#cloud-erosion-ice-val") as HTMLElement).textContent = erosionIce.toFixed(2);
@@ -880,7 +900,7 @@ export class App {
       this.renderer?.setCloudLook(lookEl.value);
       showTune();
     });
-    for (const el of [gainEl, sigmaEl, sigmaRainEl, erosionEl, erosionIceEl]) {
+    for (const el of [gainEl, sigmaEl, distanceEl, sigmaRainEl, erosionEl, erosionIceEl]) {
       el.addEventListener("input", pushTune);
     }
     lightningFreqEl.addEventListener("input", () => {
@@ -940,6 +960,11 @@ export class App {
     if (advHost) {
       this.advancedSync = mountAdvancedSettingsUI(advHost, () => {
         this.applyAdvancedSettings();
+        const dist = getAdvanced().lodDistance;
+        const distInput = q("#cloud-distance") as HTMLInputElement | null;
+        const distVal = q("#cloud-distance-val") as HTMLElement | null;
+        if (distInput) distInput.value = String(dist);
+        if (distVal) distVal.textContent = `${Math.round(dist / 1000)} km`;
       });
       this.applyAdvancedSettings();
     }
@@ -1582,10 +1607,11 @@ export class App {
 
     const tune = this.renderer?.cloudTune() ?? {
       gain: 1,
-      sigmaLiquid: 0.0035,
-      sigmaRain: 0.0014,
+      sigmaLiquid: 0.0055,
+      sigmaRain: 0.0016,
       erosionLiquid: 1,
       erosionIce: 1,
+      lodDistance: 40000,
     };
 
     const lookPreset =
@@ -1718,6 +1744,14 @@ export class App {
     setSlider("#cloud-sigma-rain", ct.sigmaRain, 4);
     setSlider("#cloud-erosion", ct.erosionLiquid, 2);
     setSlider("#cloud-erosion-ice", ct.erosionIce, 2);
+    {
+      const dist = ct.lodDistance ?? getAdvanced().lodDistance;
+      const input = this.simScreen.querySelector("#cloud-distance") as HTMLInputElement | null;
+      const span = this.simScreen.querySelector("#cloud-distance-val") as HTMLElement | null;
+      if (input) input.value = String(dist);
+      if (span) span.textContent = `${Math.round(dist / 1000)} km`;
+      this.renderer?.setCloudTune({ lodDistance: dist });
+    }
     const lf = v.lightningFreq ?? 1;
     this.lightningFreq = lf;
     const lfEl = this.simScreen.querySelector("#lightning-freq") as HTMLInputElement | null;

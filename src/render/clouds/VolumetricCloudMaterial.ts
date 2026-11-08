@@ -43,10 +43,10 @@ export interface CloudLook {
  * (Afternoon high-deck soft look lives in lookdev preset E_afternoonHighDeck.)
  */
 export const DEFAULT_LOOK: CloudLook = {
-  // Above MeteoLAB 2.2/km so Uint8-packed decks go solid rather than milky.
-  sigmaLiquid: 0.0035,
-  sigmaIce: 0.0007,
-  sigmaRain: 0.0014,
+  // Opaque enough that thin Uint8-packed decks read solid, not milky ghosts.
+  sigmaLiquid: 0.0055,
+  sigmaIce: 0.0014,
+  sigmaRain: 0.0016,
   erosionLiquid: 1.0,
   erosionIce: 0.85,
   iceStretch: [0.55, 2.8, 0.55],
@@ -59,13 +59,13 @@ export const DEFAULT_LOOK: CloudLook = {
   powderLength: 1500,
   ambientStrength: 0.95,
   ambientAtten: 1.0,
-  hazeDensity: 1.5e-5,
+  hazeDensity: 1.2e-5,
   exposure: 1.05,
   shapeTileMeters: 8000,
   detailTileMeters: 2000,
   stepSize: 32,
-  lodDistance: 22000,
-  detailFade: [4500, 24000],
+  lodDistance: 40000,
+  detailFade: [4500, 32000],
   mammatusDepth: 600,
   mammatusCell: 1600,
   shaftMax: 6,

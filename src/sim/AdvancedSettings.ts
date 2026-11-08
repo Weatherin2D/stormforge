@@ -274,15 +274,15 @@ export const CATEGORY_LABELS: Record<SettingCategory, string> = {
 export const SETTING_DEFS: SettingDef[] = [
   // Display
   { id: "exposure", category: "display", label: "Exposure", min: 0.4, max: 2.5, step: 0.05, default: 1.05, decimals: 2 },
-  { id: "hazeDensity", category: "display", label: "Haze density", min: 0, max: 8e-5, step: 1e-6, default: 1.5e-5, decimals: 6 },
+  { id: "hazeDensity", category: "display", label: "Haze density", min: 0, max: 8e-5, step: 1e-6, default: 1.2e-5, decimals: 6 },
   { id: "ambientStrength", category: "display", label: "Ambient light", min: 0.2, max: 2, step: 0.05, default: 0.9, decimals: 2 },
   { id: "ambientAtten", category: "display", label: "Ambient atten", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
   { id: "powder", category: "display", label: "Powder sugar", min: 0, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "powderLength", category: "display", label: "Powder length", min: 200, max: 4000, step: 50, default: 1500, unit: "m", decimals: 0 },
   { id: "stepSize", category: "display", label: "Ray step size", min: 8, max: 96, step: 1, default: 32, unit: "m", decimals: 0 },
-  { id: "lodDistance", category: "display", label: "LOD distance", min: 4000, max: 40000, step: 500, default: 22000, unit: "m", decimals: 0 },
+  { id: "lodDistance", category: "display", label: "Cloud view distance", min: 8000, max: 80000, step: 1000, default: 40000, unit: "m", decimals: 0 },
   { id: "detailFadeNear", category: "display", label: "Detail near", min: 1000, max: 12000, step: 250, default: 4500, unit: "m", decimals: 0 },
-  { id: "detailFadeFar", category: "display", label: "Detail far", min: 8000, max: 50000, step: 500, default: 24000, unit: "m", decimals: 0 },
+  { id: "detailFadeFar", category: "display", label: "Detail far", min: 8000, max: 80000, step: 500, default: 32000, unit: "m", decimals: 0 },
   { id: "shadowProbes", category: "display", label: "Shadow probes", min: 0, max: 2, step: 1, default: 2, decimals: 0 },
   { id: "dropletOpacity", category: "display", label: "Droplet opacity", min: 0.1, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "dropletSize", category: "display", label: "Droplet size", min: 0.4, max: 2.5, step: 0.05, default: 1, decimals: 2 },
@@ -290,7 +290,7 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "groundBrightness", category: "display", label: "Ground bright", min: 0.4, max: 1.8, step: 0.05, default: 1, decimals: 2 },
 
   // Clouds
-  { id: "sigmaIce", category: "clouds", label: "Ice extinction", min: 0.00005, max: 0.003, step: 0.00005, default: 0.00065, decimals: 5 },
+  { id: "sigmaIce", category: "clouds", label: "Ice extinction", min: 0.00005, max: 0.004, step: 0.00005, default: 0.0014, decimals: 5 },
   { id: "mammatusDepth", category: "clouds", label: "Mammatus depth", min: 0, max: 2000, step: 50, default: 600, unit: "m", decimals: 0 },
   { id: "mammatusCell", category: "clouds", label: "Mammatus cell", min: 400, max: 4000, step: 50, default: 1600, unit: "m", decimals: 0 },
   { id: "shaftMax", category: "clouds", label: "Shaft max", min: 0, max: 20, step: 0.5, default: 6, decimals: 1 },

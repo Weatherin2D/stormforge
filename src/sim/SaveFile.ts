@@ -42,6 +42,8 @@ export interface SavedView {
     sigmaRain: number;
     erosionLiquid: number;
     erosionIce: number;
+    /** Metres; how far volumetric clouds stay readable before haze. Optional on older saves. */
+    lodDistance?: number;
   };
   lightningFreq: number;
   clockPaused: boolean;
@@ -89,10 +91,11 @@ export const DEFAULT_SAVED_VIEW: SavedView = {
   cloudLookPreset: "",
   cloudTune: {
     gain: 1,
-    sigmaLiquid: 0.0035,
-    sigmaRain: 0.0014,
+    sigmaLiquid: 0.0055,
+    sigmaRain: 0.0016,
     erosionLiquid: 1,
     erosionIce: 1,
+    lodDistance: 40000,
   },
   lightningFreq: 1,
   clockPaused: false,

@@ -243,15 +243,17 @@ vec4 fieldTap(vec3 uvw) {
   return mix(textureLod(uFieldsPrev, uvw, 0.0), cur, clamp(uVolumeMix, 0.0, 1.0));
 }
 
-// Wide soft filter — packed Uint8 cloud opacity saturates to 1 fast, so a
-// 1-texel tap still reads as lego bricks. Two-texel cross + diagonals blur it.
+// Soft filter — packed Uint8 cloud opacity saturates to 1 fast, so a 1-texel
+// tap still reads as lego bricks. Keep a strong centre weight so thin decks
+// stay opaque after the blur (a flat 3/13 average used to ghost them).
 vec3 sampleFieldsSoft(vec3 uvw){
   ivec3 sz = textureSize(uFields, 0);
   vec3 t = 1.0 / max(vec3(sz), vec3(1.0));
   vec3 t2 = t * 1.6;
   // Detail filter reads the current volume only. Blending both textures here
   // doubles thirteen taps on every lit sample and stalls the frame.
-  vec3 sum = textureLod(uFields, uvw, 0.0).rgb * 3.0;
+  vec3 center = textureLod(uFields, uvw, 0.0).rgb;
+  vec3 sum = center * 8.0;
   sum += textureLod(uFields, uvw + vec3(t.x, 0.0, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw - vec3(t.x, 0.0, 0.0), 0.0).rgb;
   sum += textureLod(uFields, uvw + vec3(0.0, t.y, 0.0), 0.0).rgb;
@@ -264,8 +266,9 @@ vec3 sampleFieldsSoft(vec3 uvw){
   sum += textureLod(uFields, uvw + vec3(-t2.x, 0.0, -t2.z), 0.0).rgb * 0.7;
   sum += textureLod(uFields, uvw + vec3(0.0, t2.y, 0.0), 0.0).rgb * 0.6;
   sum += textureLod(uFields, uvw - vec3(0.0, t2.y, 0.0), 0.0).rgb * 0.6;
-  // Weights: 3 + 6 + 2.8 + 1.2 = 13
-  return max(sum * (1.0 / 13.0) * uFieldGain, vec3(0.0));
+  // Weights: 8 + 6 + 2.8 + 1.2 = 18. Preserve peaks so thin stratus stay solid.
+  vec3 blurred = sum * (1.0 / 18.0);
+  return max(max(blurred, center * 0.92) * uFieldGain, vec3(0.0));
 }
 
 // Mammatus: rounded pouches hanging up to uMammatusDepth under the base of an anvil.
@@ -398,10 +401,10 @@ vec3 sampleSigma(vec3 p, float detail) {
         detail;
       erode *= mix(0.3, 1.0, smoothstep(0.06, 0.4, base));
       float d = base * 1.35 - (1.0 - n) * erode * (1.0 - base * 0.6);
-      // Keep a floor of the packed field so noise valleys stay translucent, not voids.
-      d = max(d, base * mix(0.55, 0.12, vigor));
+      // Keep a solid floor of the packed field so noise valleys stay cloudy, not ghostly.
+      d = max(d, base * mix(0.78, 0.28, vigor));
       float carved = clamp(
-        d * (1.0 + 4.0 * vigor) * mix(1.0, 0.75, iceFrac),
+        d * (1.0 + 4.0 * vigor) * mix(1.0, 0.85, iceFrac),
         0.0,
         1.0
       );
@@ -515,7 +518,11 @@ void main() {
   // kilometres, so the storm sat past the last sample and drew as clear sky.
   float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 40.0, float(MAX_STEPS));
   float fine = clamp(max(uStepSize, FINE_STEP), 16.0, 64.0);
-  float coarse = clamp(pathLen / budget, fine, 1200.0);
+  // uLodDistance stretches empty-space steps so a longer view distance still
+  // reaches the far wall without burning the whole budget on near air.
+  float viewDist = max(uLodDistance, 4000.0);
+  float coarseCap = clamp(viewDist * 0.055, 900.0, 2800.0);
+  float coarse = clamp(pathLen / budget, fine, coarseCap);
   float dt = coarse;
   float t = tNear + fine * ign(gl_FragCoord.xy + uFrame * 5.588238);
   bool inside = false;
@@ -643,7 +650,9 @@ void main() {
 
   vec3 straight = col / max(1.0 - T, 1e-4);
   float avgDist = distAcc / max(weightAcc, 1e-4);
-  float haze = 1.0 - exp(-avgDist * uHazeDensity);
+  // Scale aerial haze by view distance so raising the slider keeps far decks readable.
+  float hazeScale = 22000.0 / max(uLodDistance, 4000.0);
+  float haze = 1.0 - exp(-avgDist * uHazeDensity * hazeScale);
   straight = mix(straight, uHazeColor, haze) * uExposure;
   // Stronger highlight compress so silver linings / sunset rims don't clip to white.
   straight = straight / (vec3(1.0) + straight * 0.55);
