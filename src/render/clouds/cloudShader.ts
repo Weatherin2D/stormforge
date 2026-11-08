@@ -20,10 +20,10 @@ void main() {
 
 export const cloudFragmentShader = /* glsl */ `
 #ifndef MAX_STEPS
-#define MAX_STEPS 64
+#define MAX_STEPS 160
 #endif
 #ifndef FINE_STEP
-#define FINE_STEP 48.0
+#define FINE_STEP 32.0
 #endif
 
 varying vec3 vWorldPos;
@@ -325,15 +325,11 @@ void main() {
   float phase = dualLobe(cosT, uPhaseLiquid);
 
   float pathLen = max(tFar - tNear, 1.0);
-  float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 24.0, float(MAX_STEPS));
-  float fine = clamp(max(uStepSize, FINE_STEP), 24.0, 80.0);
-  float viewDist = max(uLodDistance, 4000.0);
-  float coarseCap = clamp(viewDist * 0.06, 1000.0, 3200.0);
-  float coarse = clamp(pathLen / budget, fine, coarseCap);
-  float dt = coarse;
-  float t = tNear + fine * ign(gl_FragCoord.xy + uFrame * 5.588238);
-  bool inside = false;
-  int clearRun = 0;
+  float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 48.0, float(MAX_STEPS));
+  // Uniform step across the whole ray — no coarse/fine empty-space skip, no
+  // edge/length caps. Those systems punched holes and checkerboarded far decks.
+  float dt = max(max(uStepSize, FINE_STEP), pathLen / budget);
+  float t = tNear + dt * 0.5 * ign(gl_FragCoord.xy);
 
   vec3 col = vec3(0.0);
   float T = 1.0;
@@ -343,41 +339,22 @@ void main() {
   bool night = uSunDir.y < -0.02;
 
   for (int i = 0; i < MAX_STEPS; i++) {
-    if (float(i) >= budget || t >= tFar || T < 0.015) break;
+    if (float(i) >= budget || t >= tFar || T < 0.01) break;
     vec3 p = ro + rd * t;
 
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
     vec4 field = fieldTap(uvw);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
-    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.0008;
+    bool cloudy = (probe.x + probe.y + probe.z + hailHere) >= 0.0005;
 
-    if (!inside) {
-      if (cloudy && coarse > fine * 1.05) {
-        inside = true;
-        clearRun = 0;
-        t = max(tNear, t - coarse * 0.95);
-        dt = fine;
-        continue;
-      }
-    } else if (!cloudy) {
-      clearRun += 1;
-      if (float(clearRun) * fine > coarse + fine) {
-        inside = false;
-        dt = coarse;
-      }
-    } else {
-      clearRun = 0;
-      dt = fine;
-    }
-
-    if (!cloudy && !inside) {
+    if (!cloudy) {
       t += dt;
       continue;
     }
 
-    // Billow carve only near the camera — far samples stay a single tap.
-    float detail = max(0.0, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
+    // Keep some billow at range so far decks do not collapse to voxels.
+    float detail = max(0.45, 1.0 - smoothstep(uDetailFade.x, uDetailFade.y, t));
     vec3 sig = sampleSigma(p, detail);
     float cloudSig = sig.x + sig.y;
     float rainSig = sig.z;
@@ -435,9 +412,8 @@ void main() {
     t += dt;
   }
 
-  T *= smoothstep(0.02, 0.1, T);
   float alpha = 1.0 - T;
-  if (alpha < 0.003) discard;
+  if (alpha < 0.001) discard;
 
   vec3 straight = col / max(1.0 - T, 1e-4);
   float avgDist = distAcc / max(weightAcc, 1e-4);
@@ -446,9 +422,8 @@ void main() {
   straight = mix(straight, uHazeColor, haze) * uExposure;
   straight = straight / (vec3(1.0) + straight * 0.5);
   straight = max(straight, vec3(0.0));
-  float dn = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-  float dm = fract(sin(dot(gl_FragCoord.xy + 19.19, vec2(12.9898, 78.233))) * 43758.5453);
-  straight += (dn + dm - 1.0) / 255.0;
+  // No per-pixel dither here — the blit pass already dithers, and a second
+  // layer stacked on IGN jitter read as a checkerboard on distant decks.
 
   gl_FragColor = vec4(straight, alpha);
   #include <tonemapping_fragment>

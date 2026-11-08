@@ -127,7 +127,9 @@ void main() {
   float depth = texture(uDepth, vUv).r;
   if (depth > 0.998) {
     vec4 hist = texture(uHistory, vUv);
-    fragColor = mix(curr, hist, uMix * 0.25);
+    // Stronger sky blend than 0.25 — half-res march dither was left as a
+    // checkerboard when history barely mixed in.
+    fragColor = mix(curr, hist, uMix * 0.72);
     return;
   }
   vec4 ndc = vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -178,14 +180,12 @@ export class CloudRainRenderer {
   private volumeBlendStart = 0;
   private volumeBlendDur = 1;
   private volumeBlendReady = false;
-  /** Fixed primary raymarch cap — 48 day / 32 night (no adaptive ladder). */
-  private stepBudget = 48;
+  /** Full march budget — no night/day throttle, no adaptive quality ladder. */
+  private stepBudget = 160;
   /** EMA of frame time (ms); still used to defer heavy light-volume rebuilds. */
   private frameMsEma = 48;
-  /** Fixed fraction of the drawing buffer for the cloud pass. */
-  private cloudResScale = 0.5;
-  /** Longest cloud-buffer edge last allocated, so a cap change resizes once. */
-  private lastCloudEdge = 0;
+  /** Full-resolution cloud pass — sub-res + edge caps caused holes and dither. */
+  private cloudResScale = 1;
   /** Last shadow-adapt value pushed into the cloud material. */
   private lastPushedAdapt = -1;
   /** Wall time of the last shadow + light-volume rebuild. */
@@ -718,20 +718,9 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const present = this.sceneBlit.material as THREE.ShaderMaterial;
       present.uniforms.uTex.value = this.sceneTarget.texture;
     }
-    // Drops toward a quarter of the buffer while frames are slow, and climbs
-    // back toward 3/4 once the march is cheap again. The long edge is capped
-    // so a fullscreen window cannot schedule a multi-megapixel march.
-    const scale = Math.min(0.75, Math.max(0.25, this.cloudResScale));
-    let hw = Math.max(1, Math.floor(bw * scale));
-    let hh = Math.max(1, Math.floor(bh * scale));
-    const cap = this.cloudEdgeCap();
-    this.lastCloudEdge = cap;
-    const edge = Math.max(hw, hh);
-    if (edge > cap) {
-      const fit = cap / edge;
-      hw = Math.max(1, Math.floor(hw * fit));
-      hh = Math.max(1, Math.floor(hh * fit));
-    }
+    // Full-resolution cloud buffer (no scale / edge caps).
+    const hw = Math.max(1, Math.floor(bw * this.cloudResScale));
+    const hh = Math.max(1, Math.floor(bh * this.cloudResScale));
     if (
       !this.cloudTarget ||
       this.cloudTarget.width !== hw ||
@@ -1590,16 +1579,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const sample = Math.min(dt, 80);
       this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
     }
-    // Fixed budgets — adaptive ladders made opacity pulse and resized the RT.
-    this.stepBudget = this.sunFrac < 0.15 ? 32 : 48;
+    this.stepBudget = 160;
     if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
-    const cap = this.cloudEdgeCap();
-    if (cap !== this.lastCloudEdge) this.resize();
-  }
-
-  /** Fixed long-edge cap for the cloud buffer (stable; no quality thrash). */
-  private cloudEdgeCap(): number {
-    return this.sunFrac < 0.15 ? 320 : 512;
   }
 
   private rebuildCloudShadowMap(force: boolean): void {
@@ -2221,7 +2202,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 64 },
+      quality: { maxSteps: 160 },
     });
     this.cloudMat.setFieldsPrev(prevTex);
     this.cloudMat.setVolumeMix(1);
