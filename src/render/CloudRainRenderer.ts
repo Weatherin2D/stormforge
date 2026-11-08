@@ -178,14 +178,23 @@ export class CloudRainRenderer {
   private volumeBlendStart = 0;
   private volumeBlendDur = 1;
   private volumeBlendReady = false;
-  /** Primary raymarch cap. Drops when a frame runs long, climbs back when it doesn't. */
-  private stepBudget = 64;
+  /** Primary raymarch cap. Sticky discrete levels — continuous lerp made clouds pulse. */
+  private stepBudget = 72;
+  /** Sticky quality ladder index: 0=48, 1=72, 2=96, 3=128 steps. */
+  private stepBudgetLevel = 1;
+  /** Wall time until quality may climb again (hysteresis against thrash). */
+  private qualityHoldUntil = 0;
   /** Start cheap so the first frames after a shader compile stay interactive. */
   private frameMsEma = 48;
   /** Fraction of the drawing buffer used for the cloud pass. */
   private cloudResScale = 0.28;
+  /** Desired cloud-buffer scale; commits only after hysteresis. */
+  private pendingCloudResScale = 0.28;
+  private cloudScaleHoldUntil = 0;
   /** Longest cloud-buffer edge last allocated, so a cap change resizes once. */
   private lastCloudEdge = 0;
+  /** Last shadow-adapt value pushed into the cloud material. */
+  private lastPushedAdapt = -1;
   /** Wall time of the last shadow + light-volume rebuild. */
   private heavyAt = 0;
   private lastRenderMs = 0;
@@ -1603,24 +1612,53 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
     }
     const ms = this.frameMsEma;
-    // Below ~40 steps the march no longer reaches a cloud base above the camera.
-    const target = ms > 42 ? 48 : ms > 28 ? 72 : ms > 18 ? 96 : 128;
-    // A long frame drops the cap immediately; recovery eases back up.
-    if (dt > 40) this.stepBudget = Math.min(this.stepBudget, target);
-    else this.stepBudget += (target - this.stepBudget) * 0.25;
+    // Discrete levels only — a continuous lerp changed OD every frame and
+    // made the whole deck breathe / pulse.
+    const levels = [48, 72, 96, 128];
+    let want = ms > 46 ? 0 : ms > 34 ? 1 : ms > 22 ? 2 : 3;
+    // Night pins a cheaper ladder so quality cannot thrash against flash cost.
+    if (this.sunFrac < 0.12) want = Math.min(want, 0);
+    else if (this.sunFrac < 0.35) want = Math.min(want, 1);
+    if (want < this.stepBudgetLevel || dt > 48) {
+      this.stepBudgetLevel = want;
+      this.qualityHoldUntil = now + 900;
+    } else if (want > this.stepBudgetLevel && now >= this.qualityHoldUntil) {
+      this.stepBudgetLevel = Math.min(this.stepBudgetLevel + 1, want);
+      this.qualityHoldUntil = now + 1400;
+    }
+    this.stepBudget = levels[this.stepBudgetLevel] ?? 72;
     // A two-texture blend on an already slow frame is what locked the march.
     if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
-    this.syncCloudScale();
+    this.syncCloudScale(now);
   }
 
   /** Coarser cloud buffer while frames are long; sharper once they recover. */
-  private syncCloudScale(): void {
+  private syncCloudScale(now = performance.now()): void {
     const ms = this.frameMsEma;
+    let want = this.cloudResScale;
+    if (ms > 46 || this.sunFrac < 0.12) want = 0.28;
+    else if (ms < 16 && this.sunFrac > 0.4) want = 0.75;
+    else if (ms < 26) want = 0.5;
+    else if (ms > 32) want = Math.min(this.cloudResScale, 0.5);
+
     let next = this.cloudResScale;
-    if (ms > 42) next = 0.28;
-    else if (ms < 18) next = 0.75;
-    else if (ms < 28 && this.cloudResScale < 0.5) next = 0.5;
-    else if (ms > 30 && this.cloudResScale > 0.5) next = 0.5;
+    if (want < this.cloudResScale - 0.01) {
+      // Drop immediately when the frame is heavy.
+      next = want;
+      this.pendingCloudResScale = want;
+      this.cloudScaleHoldUntil = now + 700;
+    } else if (want > this.cloudResScale + 0.01) {
+      // Climb only after the cheaper setting has held for a while.
+      if (Math.abs(this.pendingCloudResScale - want) > 0.01) {
+        this.pendingCloudResScale = want;
+        this.cloudScaleHoldUntil = now + 1600;
+      } else if (now >= this.cloudScaleHoldUntil) {
+        next = want;
+      }
+    } else {
+      this.pendingCloudResScale = this.cloudResScale;
+    }
+
     const cap = this.cloudEdgeCap();
     if (Math.abs(next - this.cloudResScale) < 0.01 && cap === this.lastCloudEdge) return;
     this.cloudResScale = next;
@@ -1630,8 +1668,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
   /** Longest edge of the cloud buffer for the current frame time. */
   private cloudEdgeCap(): number {
     const ms = this.frameMsEma;
-    if (ms > 42) return 160;
-    if (ms > 24) return 320;
+    if (ms > 42 || this.sunFrac < 0.12) return 160;
+    if (ms > 24 || this.sunFrac < 0.35) return 320;
     return 512;
   }
 
@@ -1809,7 +1847,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
    */
   private applyLocalShadowAdapt(): void {
     const target = this.sampleOverheadShadow();
-    this.shadowAdapt += (target - this.shadowAdapt) * 0.1;
+    // Slow iris — a 0.1 lerp tracked every volume pack and made the deck pulse.
+    this.shadowAdapt += (target - this.shadowAdapt) * 0.035;
     const s = this.shadowAdapt;
     this.renderer.toneMappingExposure = 1.0 * (1 + s * 0.9);
     // Intensity baseline is 1 (gain is in sunLight.color); dim further under cloud.
@@ -1818,7 +1857,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const groundMat = this.ground.material as THREE.MeshStandardMaterial;
     // Mild global dim — spatial cloud shadows do the real work.
     groundMat.color.setScalar(1 - s * 0.22);
-    if (this.cloudMat) {
+    if (this.cloudMat && Math.abs(s - this.lastPushedAdapt) > 0.012) {
+      this.lastPushedAdapt = s;
       this.cloudMat.setLook({
         exposure: DEFAULT_LOOK.exposure * (1 + s * 1.45),
         ambientStrength: DEFAULT_LOOK.ambientStrength * (1 + s * 0.7),
@@ -2231,6 +2271,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     this.volNy = disp.ny;
     this.volNz = disp.nz;
     this.shadowAdapt = 0;
+    this.lastPushedAdapt = -1;
     this.ensureCloudShadowMap(disp.nx, disp.ny);
     // Texture axes are the world box: X east, Y up, Z south.
     this.volumeTex = this.makeVolumeTexture(this.volumeData, disp.nx, disp.nz, disp.ny);
@@ -2435,7 +2476,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     if (blend && this.volumeDataPrev && this.volumeTexPrev) {
       this.volumeDataPrev.set(this.volumeData);
       this.volumeTexPrev.needsUpdate = true;
-      this.volumeBlendDur = Math.min(700, Math.max(50, gap));
+      // Keep the crossfade short — long blends read as the whole cloud pulsing.
+      this.volumeBlendDur = Math.min(160, Math.max(40, gap * 0.45));
       this.volumeBlendStart = now;
     }
     if (empty) {
@@ -2623,19 +2665,25 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       this.precipitation.update(performance.now());
     }
 
-    const volumeMix = this.volumeMixNow();
     // Ground cloud shadows + light volume when density or sun moved.
     // Both stay on the previous field until the blend finishes, then catch up once.
     // Skip that catch-up while the frame is already saturated — rebuilding the
     // light volume is a full extra march and was holding the clock at zero.
     // The light-volume pass is a second full march. While frames are long,
     // keep the last one instead of rebuilding on every upload.
+    const night = this.sunDir.y <= -0.02 || this.sunFrac < 0.08;
+    // Night skips the two-texture volume blend — cheaper march, no crossfade pulse.
+    const volumeMix = night ? 1 : this.volumeMixNow();
     const sinceHeavy = frameNow - this.heavyAt;
+    const heavyGap = night ? 6000 : 2500;
     const deferHeavy =
       this.heavyAt > 0 &&
-      (this.frameMsEma > 80 || this.lastFrameDt > 70 || sinceHeavy < 2500);
+      (night ||
+        this.frameMsEma > 80 ||
+        this.lastFrameDt > 70 ||
+        sinceHeavy < heavyGap);
     if (!deferHeavy) this.rebuildCloudShadowMap(false);
-    if (this.lightVolume && !deferHeavy) {
+    if (this.lightVolume && !deferHeavy && !night) {
       if (this.sharedUniforms.uSunDir) {
         (this.sharedUniforms.uSunDir.value as THREE.Vector3).copy(this.sunDir);
       }
