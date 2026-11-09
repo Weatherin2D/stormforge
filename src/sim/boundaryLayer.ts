@@ -229,15 +229,17 @@ export function stepGrayLongwave(
         }
       }
       if (clearRate > 0) {
-        for (let k = k0; k < nz; k++) {
+        // Free troposphere only — leave the heated BL alone so daytime
+        // CAPE is not raised uniformly in every clear column.
+        const kClear0 = Math.min(nz - 1, k0 + Math.max(2, Math.ceil(1500 / Math.max(dz, 1))));
+        for (let k = kClear0; k < nz; k++) {
           const id = i + j * nx + k * nxny;
-          // Skip heavy cloud cells — cloud-top LW handles those.
           if (f.qc[id] + f.qi[id] > 5e-5) continue;
           const d0 = f.theta0[k] - f.theta[id];
-          // Prefer cooling warm free-troposphere anomalies; cold ones recover slower.
-          let step = d0 > 0 ? Math.min(d0, clearRate * 0.5) : Math.max(d0, -clearRate);
-          if (step > 0.25) step = 0.25;
-          if (step < -0.25) step = -0.25;
+          // Cool warm anomalies; barely touch cold ones.
+          let step = d0 < 0 ? Math.max(d0, -clearRate) : Math.min(d0, clearRate * 0.25);
+          if (step > 0.2) step = 0.2;
+          if (step < -0.2) step = -0.2;
           f.theta[id] += step;
         }
       }

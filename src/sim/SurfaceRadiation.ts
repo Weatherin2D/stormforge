@@ -109,10 +109,43 @@ export function cosZenith(
   );
 }
 
+/** Per-run seed so heating mottling is not the same tattoo every launch. */
+let landMaskSeed = (Math.random() * 1e9) | 0 || 1;
+
+export function reseedLandMask(seed?: number): void {
+  landMaskSeed = seed != null ? seed | 0 : (Math.random() * 1e9) | 0;
+  if (!landMaskSeed) landMaskSeed = 1;
+}
+
+function hash2(i: number, j: number): number {
+  let n =
+    Math.imul(i, 374761393) +
+    Math.imul(j, 668265263) +
+    Math.imul(landMaskSeed, 2246822519);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+
+function valueNoise(x: number, y: number): number {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const fx = x - x0;
+  const fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const v00 = hash2(x0, y0);
+  const v10 = hash2(x0 + 1, y0);
+  const v01 = hash2(x0, y0 + 1);
+  const v11 = hash2(x0 + 1, y0 + 1);
+  const a = v00 + (v10 - v00) * sx;
+  const b = v01 + (v11 - v01) * sx;
+  return a + (b - a) * sy;
+}
+
 /**
  * Land/water heating weight per column.
- * Land is uniform (1) so daylight does not stamp the same noise hotspots
- * every run. Painted water and the optional marine SE corner still cool.
+ * Mild per-run mottling seeds discrete cumulus without a fixed domain tattoo.
+ * Painted water and the optional marine SE corner still cool.
  */
 export function buildLandMask(
   nx: number,
@@ -121,27 +154,34 @@ export function buildLandMask(
   water?: ArrayLike<number> | null,
 ): Float32Array {
   const mask = new Float32Array(nx * ny);
+  const amp = Math.max(0, Math.min(0.25, getAdvanced().heatingNoiseAmp));
+  const scale = Math.max(3, Math.round(Math.min(nx, ny) / 10));
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);
   for (let j = 0; j < ny; j++) {
     const row = j * nx;
     const yn = j / yDen;
+    const y = j / scale;
     for (let i = 0; i < nx; i++) {
+      // Centered noise in ~[-amp, +amp]; mean stays near 1.
+      const mottled =
+        amp > 0 ? 1 + (valueNoise(i / scale, y) * 2 - 1) * amp : 1;
+      const land = Math.max(0.75, Math.min(1.25, mottled));
       const painted = water && water.length === nx * ny ? water[row + i] : -1;
       if (painted >= 0) {
         const wet = painted > 1 ? 1 : painted;
-        mask[row + i] = 1 - 0.92 * wet;
+        mask[row + i] = land * (1 - wet) + 0.08 * wet;
         continue;
       }
       if (!marine) {
-        mask[row + i] = 1;
+        mask[row + i] = land;
         continue;
       }
       const xn = i / xDen;
       const sea =
         Math.min(1, Math.max(0, (xn - 0.7) / 0.1)) *
         Math.min(1, Math.max(0, (0.3 - yn) / 0.1));
-      mask[row + i] = 1 - 0.92 * sea;
+      mask[row + i] = land * (1 - sea) + 0.08 * sea;
     }
   }
   return mask;

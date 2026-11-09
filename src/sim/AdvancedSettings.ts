@@ -176,6 +176,8 @@ export interface AdvancedValues {
   coldPoolStrength: number;
   /** Nest box size when auto-spawned (fraction of parent domain). */
   nestAutoFrac: number;
+  /** Mild per-run land heating mottling (±amp). 0 = perfectly uniform. */
+  heatingNoiseAmp: number;
 }
 
 /** Boolean feature gates consumed by sim + render. */
@@ -328,14 +330,15 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "vorticityBoost", category: "fluid", label: "Vorticity", min: 0, max: 5, step: 0.1, default: 0, decimals: 1 },
   { id: "buoyancyScale", category: "fluid", label: "Buoyancy", min: 0.4, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "viscosityScale", category: "fluid", label: "Viscosity", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
-  { id: "horizMixing", category: "fluid", label: "Horiz mixing", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
+  { id: "horizMixing", category: "fluid", label: "Horiz mixing", min: 0.2, max: 3, step: 0.05, default: 0.75, decimals: 2 },
   { id: "vertMixing", category: "fluid", label: "Vert mixing", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
   { id: "divergenceDamp", category: "fluid", label: "Div. damping", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
   { id: "wDamping", category: "fluid", label: "W damping", min: 0, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "spongeStrength", category: "fluid", label: "Sponge strength", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
-  { id: "profileNudgeTau", category: "fluid", label: "Profile restore (h)", min: 2, max: 24, step: 0.5, default: 8, decimals: 1 },
-  { id: "qvFloorFrac", category: "fluid", label: "qv floor vs sounding", min: 0.05, max: 0.6, step: 0.05, default: 0.25, decimals: 2 },
-  { id: "clearSkyCooling", category: "radiation", label: "Clear-sky cool (K/d)", min: 0, max: 4, step: 0.1, default: 1.5, decimals: 1 },
+  { id: "profileNudgeTau", category: "fluid", label: "Profile restore (h)", min: 2, max: 24, step: 0.5, default: 12, decimals: 1 },
+  { id: "qvFloorFrac", category: "fluid", label: "qv floor vs sounding", min: 0.05, max: 0.6, step: 0.05, default: 0.1, decimals: 2 },
+  { id: "clearSkyCooling", category: "radiation", label: "Clear-sky cool (K/d)", min: 0, max: 4, step: 0.1, default: 1, decimals: 1 },
+  { id: "heatingNoiseAmp", category: "radiation", label: "Heating mottling", min: 0, max: 0.25, step: 0.01, default: 0.12, decimals: 2 },
   { id: "coriolisScale", category: "fluid", label: "Coriolis", min: 0, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "pressureRelax", category: "fluid", label: "Pressure relax", min: 0.4, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "advectionSharpness", category: "fluid", label: "Advection sharp", min: 0.5, max: 1.5, step: 0.05, default: 1, decimals: 2 },

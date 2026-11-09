@@ -22,11 +22,11 @@ const meanQv = (): number => {
 };
 for (let i = 0; i < 240; i++) s.step(5); // 20 min sim
 const end = meanQv();
-const floor = qv0 * 0.2;
+const floor = qv0 * 0.08;
 const stats = s.cloudRainStats();
 console.log("Stormforge profile-restore smoke:", { qv0, end, floor, cloud: stats });
 if (end < floor) {
-  console.error("FAIL: mid-level qv collapsed below 20% of sounding");
+  console.error("FAIL: mid-level qv collapsed below 8% of sounding");
   process.exit(2);
 }
 if (stats.cloudMax <= 0 && stats.rainMax <= 0) {
