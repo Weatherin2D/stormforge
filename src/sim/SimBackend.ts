@@ -122,5 +122,12 @@ export interface SimBackend {
   packMapProduct(id: MapProductId, out: Uint8Array): void;
   cloudRainStats(): { cloudMax: number; rainMax: number; cloudMass: number };
   rollLightning(dt: number): LightningStrike[];
+  /**
+   * GPU backends: pack volume + stats on device and read back only those.
+   * No-op on CPU. Call before packVolumeRGBA / cloudRainStats after steps.
+   */
+  syncDisplay?(): Promise<void>;
+  /** GPU backends: mirror full fields to CPU (hybrid nest / debug). */
+  syncFields?(): Promise<void>;
   dispose?(): void;
 }

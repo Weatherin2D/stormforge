@@ -16,6 +16,11 @@ export interface NestRect {
   y1: number;
   /** 2 or 3. */
   refinement: number;
+  /**
+   * When true (default), the live solver recenters this box on the storm.
+   * Manual draws stay as the initial footprint; tracking may move them.
+   */
+  follow?: boolean;
 }
 
 /** 0 land, 1 lake, 2 ocean. */
@@ -129,9 +134,12 @@ export function bindSurfaceDraw(
   drawVeg = cover?.veg ?? null;
 }
 
+/**
+ * True when painted terrain / water / soil needs the CPU FluidSolver.
+ * Nest alone does not force CPU — hybrid GPU parent + CPU nest handles that.
+ */
 export function setupNeedsCpu(spec: SurfaceSpec | null | undefined): boolean {
   if (!spec) return false;
-  if (spec.nest) return true;
   if (spec.terrain) {
     for (let i = 0; i < spec.terrain.length; i++) {
       if (spec.terrain[i] > 1) return true;
@@ -210,7 +218,10 @@ export function normalizeNest(nest: NestRect): NestRect {
   const xs = expandSpan(x0, x1);
   const ys = expandSpan(y0, y1);
   const refinement = nest.refinement >= 3 ? 3 : 2;
-  return { x0: xs.a, x1: xs.b, y0: ys.a, y1: ys.b, refinement };
+  const out: NestRect = { x0: xs.a, x1: xs.b, y0: ys.a, y1: ys.b, refinement };
+  if (nest.follow === false) out.follow = false;
+  else if (nest.follow === true) out.follow = true;
+  return out;
 }
 
 function expandSpan(a0: number, a1: number): { a: number; b: number } {

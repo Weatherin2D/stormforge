@@ -34,24 +34,27 @@ import {
   buildLandMask,
 } from "./SurfaceRadiation";
 import { exnerFromP, qsat, TFromTheta } from "./thermo";
-import { stepMicrophysics } from "./Microphysics";
 import { stepColdMicrophysics } from "./coldMicrophysics";
 import { getActiveSynoptic, advanceSynoptic, setActiveSynoptic } from "./synoptic";
 import type { SynopticSetup } from "./synoptic";
 import { applySynopticPattern } from "./synopticForcing";
-import { stepSaturationAdjustment } from "./saturation";
 import { stepSlowColumnPhysics } from "./boundaryLayer";
 import { WebGPUDevice } from "./WebGPUDevice";
 import type { LightningStrike } from "./FluidSolver";
-import { volumeDisplaySize, copyFullVolumeToDisplay } from "./Grid3D";
+import { volumeDisplaySize } from "./Grid3D";
 import { bindColumnFloor, bindSurfaceDraw } from "./surface";
 import {
   MapProductId,
   packLightning,
   packMapProduct as packMapProductRGBA,
-  reflectivityDbz,
 } from "./mapProducts";
 import { isPlannedProduct, packPlannedProduct } from "./mapPlanned";
+import {
+  warmSatWgsl,
+  warmKesslerWgsl,
+  packVolumeWgsl,
+  columnStatsWgsl,
+} from "./webgpuWarmPack";
 
 const TILE_X = 16;
 const TILE_Y = 16;
@@ -610,6 +613,24 @@ const KERNELS: Record<string, KernelSpec> = {
   copy: { wgsl: copyWgsl, entry: "main", storage: [
     { binding: 0, readonly: true }, { binding: 1, readonly: false },
   ]},
+  warmSat: { wgsl: warmSatWgsl, entry: "main", storage: [
+    { binding: 0, readonly: true }, { binding: 1, readonly: true },
+    { binding: 2, readonly: false }, { binding: 3, readonly: false }, { binding: 4, readonly: false },
+  ]},
+  warmKessler: { wgsl: warmKesslerWgsl, entry: "main", storage: [
+    { binding: 0, readonly: true }, { binding: 1, readonly: true }, { binding: 2, readonly: true },
+    { binding: 3, readonly: false }, { binding: 4, readonly: false }, { binding: 5, readonly: false }, { binding: 6, readonly: false },
+  ]},
+  packVolume: { wgsl: packVolumeWgsl, entry: "main", storage: [
+    { binding: 0, readonly: true }, { binding: 1, readonly: true }, { binding: 2, readonly: true },
+    { binding: 3, readonly: true }, { binding: 4, readonly: true }, { binding: 5, readonly: true },
+    { binding: 6, readonly: false },
+  ]},
+  columnStats: { wgsl: columnStatsWgsl, entry: "main", storage: [
+    { binding: 0, readonly: true }, { binding: 1, readonly: true }, { binding: 2, readonly: true },
+    { binding: 3, readonly: true }, { binding: 4, readonly: true }, { binding: 5, readonly: true },
+    { binding: 6, readonly: false },
+  ]},
 };
 
 export class WebGPUBackend implements SimBackend {
@@ -634,22 +655,38 @@ export class WebGPUBackend implements SimBackend {
   private device: WebGPUDevice | null = null;
   private b: {
     theta: GPUBuffer; qv: GPUBuffer; qc: GPUBuffer; qr: GPUBuffer; p: GPUBuffer;
+    qi: GPUBuffer; qs: GPUBuffer; qg: GPUBuffer; qh: GPUBuffer;
     u: GPUBuffer; v: GPUBuffer; w: GPUBuffer;
     thetaNext: GPUBuffer; qvNext: GPUBuffer; qcNext: GPUBuffer; qrNext: GPUBuffer;
     uNext: GPUBuffer; vNext: GPUBuffer; wNext: GPUBuffer;
     div: GPUBuffer; pNext: GPUBuffer;
     theta0: GPUBuffer; qv0: GPUBuffer; p0: GPUBuffer; rho0: GPUBuffer; rho0w: GPUBuffer;
-    u0: GPUBuffer; v0: GPUBuffer;
-    uniforms: GPUBuffer; readback: GPUBuffer;
+    u0: GPUBuffer; v0: GPUBuffer; exner: GPUBuffer;
+    uniforms: GPUBuffer; packUniforms: GPUBuffer;
+    packBuf: GPUBuffer; colStats: GPUBuffer;
+    packReadback: GPUBuffer; statsReadback: GPUBuffer;
+    /** Full-field readback kept for optional debug / hybrid nest sync. */
+    readback: GPUBuffer;
   } | null = null;
   private pipe: Map<string, GPUComputePipeline> = new Map();
   private storLayout: Map<string, GPUBindGroupLayout> = new Map();
   private unifLayout: GPUBindGroupLayout | null = null;
   private unifBG: GPUBindGroup | null = null;
+  private packUnifBG: GPUBindGroup | null = null;
+  private packUnifLayout: GPUBindGroupLayout | null = null;
   private ready = false;
   private initError: string | null = null;
   private readyResolve!: () => void;
   private readonly readyPromise: Promise<void>;
+  /** Cached display pack from last syncDisplay(). */
+  private packCache: Uint8Array | null = null;
+  private packCacheNx = 0;
+  private packCacheNy = 0;
+  private packCacheNz = 0;
+  private statsCache = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
+  private packDirty = true;
+  /** When true, step() also mirrors full fields to CPU (hybrid nest / debug). */
+  fullReadback = false;
 
   constructor() {
     this.grid = { nx: 8, ny: 8, nz: 8, zTop: 2000, xExtent: 8000, yExtent: 8000, xyExtent: 8000, dx: 1000, dy: 1000, dz: 250, n: 512, nu: 576, nv: 576, nw: 576 } as unknown as Grid3D;
@@ -695,8 +732,13 @@ export class WebGPUBackend implements SimBackend {
       }
       return d.createBuffer(bytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
     };
+    const disp = volumeDisplaySize(g.nx, g.ny, g.nz);
+    const packCount = disp.nx * disp.ny * disp.nz; // u32 RGBA
+    const colCount = g.nx * g.ny; // vec4 per column → 4 f32
     const totalReadback = 5 * g.n + g.nu + g.nv + g.nw;
     const readback = d.createReadbackBuffer(this.byteLen(totalReadback));
+    const packReadback = d.createReadbackBuffer(packCount * 4);
+    const statsReadback = d.createReadbackBuffer(this.byteLen(colCount * 4));
     if (this.byteLen(totalReadback) > maxBuf) {
       this.initError = `Readback buffer ${this.byteLen(totalReadback)} bytes exceeds device limit ${maxBuf} bytes — grid too large for WebGPU backend`;
       return null;
@@ -705,13 +747,19 @@ export class WebGPUBackend implements SimBackend {
     if (!theta) return null;
     return {
       theta, qv: mk(g.n, "qv")!, qc: mk(g.n, "qc")!, qr: mk(g.n, "qr")!, p: mk(g.n, "p")!,
+      qi: mk(g.n, "qi")!, qs: mk(g.n, "qs")!, qg: mk(g.n, "qg")!, qh: mk(g.n, "qh")!,
       u: mk(g.nu, "u")!, v: mk(g.nv, "v")!, w: mk(g.nw, "w")!,
       thetaNext: mk(g.n, "thetaNext")!, qvNext: mk(g.n, "qvNext")!, qcNext: mk(g.n, "qcNext")!, qrNext: mk(g.n, "qrNext")!,
       uNext: mk(g.nu, "uNext")!, vNext: mk(g.nv, "vNext")!, wNext: mk(g.nw, "wNext")!,
       div: mk(g.n, "div")!, pNext: mk(g.n, "pNext")!,
       theta0: mk(g.nz, "theta0")!, qv0: mk(g.nz, "qv0")!, p0: mk(g.nz, "p0")!, rho0: mk(g.nz, "rho0")!, rho0w: mk(g.nz + 1, "rho0w")!,
-      u0: mk(g.nz, "u0")!, v0: mk(g.nz, "v0")!,
+      u0: mk(g.nz, "u0")!, v0: mk(g.nz, "v0")!, exner: mk(g.nz, "exner")!,
       uniforms: d.createBuffer(this.byteLen(UNIFORM_COUNT), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
+      packUniforms: d.createBuffer(this.byteLen(UNIFORM_COUNT), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
+      packBuf: mk(packCount, "pack")!,
+      colStats: mk(colCount * 4, "colStats")!,
+      packReadback,
+      statsReadback,
       readback,
     };
   }
@@ -726,6 +774,10 @@ export class WebGPUBackend implements SimBackend {
     this.writeBuffer(b.qc, fields.qc);
     this.writeBuffer(b.qr, fields.qr);
     this.writeBuffer(b.p, fields.p);
+    this.writeBuffer(b.qi, fields.qi);
+    this.writeBuffer(b.qs, fields.qs);
+    this.writeBuffer(b.qg, fields.qg);
+    this.writeBuffer(b.qh, fields.qh);
     this.writeBuffer(b.u, fields.u);
     this.writeBuffer(b.v, fields.v);
     this.writeBuffer(b.w, fields.w);
@@ -743,6 +795,18 @@ export class WebGPUBackend implements SimBackend {
     this.writeBuffer(b.rho0w, fields.rho0w);
     this.writeBuffer(b.u0, fields.u0);
     this.writeBuffer(b.v0, fields.v0);
+    const exner = new Float32Array(g.nz);
+    for (let k = 0; k < g.nz; k++) exner[k] = exnerFromP(fields.p0[k]);
+    this.writeBuffer(b.exner, exner);
+  }
+
+  private setPackUniforms(g: Grid3D): void {
+    const d = volumeDisplaySize(g.nx, g.ny, g.nz);
+    const u = new Float32Array(UNIFORM_COUNT);
+    u[0] = g.nx; u[1] = g.ny; u[2] = g.nz;
+    u[3] = d.nx; u[4] = d.ny; u[5] = d.nz;
+    u[6] = d.sx; u[7] = d.sy; u[8] = d.sz;
+    this.dev().queue.writeBuffer(this.b!.packUniforms, 0, u.buffer, u.byteOffset, u.byteLength);
   }
 
   private setUniforms(g: Grid3D, dt: number): void {
@@ -756,11 +820,12 @@ export class WebGPUBackend implements SimBackend {
     this.dev().queue.writeBuffer(this.b!.uniforms, 0, u.buffer, u.byteOffset, u.byteLength);
   }
 
-  private buildPipelines(g: Grid3D): void {
+  private buildPipelines(_g: Grid3D): void {
     const d = this.dev();
     this.unifLayout = d.device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } }],
     });
+    this.packUnifLayout = this.unifLayout;
     for (const [key, spec] of Object.entries(KERNELS)) {
       const storageEntries = spec.storage.map((s, idx) => ({
         binding: idx,
@@ -771,7 +836,9 @@ export class WebGPUBackend implements SimBackend {
       }));
       const layout = d.device.createBindGroupLayout({ entries: storageEntries });
       this.storLayout.set(key, layout);
-      const pipelineLayout = d.device.createPipelineLayout({ bindGroupLayouts: [this.unifLayout!, layout] });
+      const usePack = key === "packVolume";
+      const uLayout = usePack ? this.packUnifLayout! : this.unifLayout!;
+      const pipelineLayout = d.device.createPipelineLayout({ bindGroupLayouts: [uLayout, layout] });
       const module = d.device.createShaderModule({ code: spec.wgsl });
       this.pipe.set(key, d.device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: spec.entry } }));
     }
@@ -801,11 +868,16 @@ export class WebGPUBackend implements SimBackend {
     this.uploadFields(this.fields, grid, this.b);
     this.buildPipelines(grid);
     const d = this.dev();
-    // Uniform bind group (shared)
     this.unifBG = d.device.createBindGroup({
       layout: this.unifLayout!,
       entries: [{ binding: 0, resource: { buffer: b.uniforms, offset: 0, size: this.byteLen(UNIFORM_COUNT) } }],
     });
+    this.packUnifBG = d.device.createBindGroup({
+      layout: this.packUnifLayout!,
+      entries: [{ binding: 0, resource: { buffer: b.packUniforms, offset: 0, size: this.byteLen(UNIFORM_COUNT) } }],
+    });
+    this.packDirty = true;
+    this.packCache = null;
   }
 
   reset(sounding: SoundingLevel[], opts: InitOptions): void {
@@ -880,10 +952,14 @@ export class WebGPUBackend implements SimBackend {
     this.radiation.solarHour = ((hour % 24) + 24) % 24;
   }
   getSolarStatus(): SolarStatus {
-    return { cosZ: 0, isDay: true, sunFrac: 0, clock: "12:00", label: "day" };
+    return solarStatus(this.radiation);
   }
 
-  /** Submit GPU dynamical-core work and read fields back into CPU mirrors. */
+  /**
+   * Submit GPU dynamical core + warm sat/Kessler. Fields stay device-resident;
+   * only pack/stats are read back via syncDisplay(). Set fullReadback for
+   * hybrid nest sync or debug mirrors.
+   */
   async step(dt: number): Promise<void> {
     if (!this.b || !this.pipe) return;
     const g = this.grid;
@@ -894,14 +970,24 @@ export class WebGPUBackend implements SimBackend {
     const enc = d.device.createCommandEncoder();
     const pass = enc.beginComputePass();
 
-    const dispatch = (key: string, nxg: number, nyg: number, nzg: number, bg1: GPUBindGroup) => {
+    const dispatch = (
+      key: string,
+      nxg: number,
+      nyg: number,
+      nzg: number,
+      bg1: GPUBindGroup,
+      unifBG: GPUBindGroup = this.unifBG!,
+    ) => {
       const pipeline = this.pipe!.get(key)!;
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, this.unifBG!);
+      pass.setBindGroup(0, unifBG);
       pass.setBindGroup(1, bg1);
-      const gx = Math.max(1, Math.ceil(nxg / TILE_X));
-      const gy = Math.max(1, Math.ceil(nyg / TILE_Y));
-      const gz = Math.max(1, nzg);
+      const tileX = key === "packVolume" ? 4 : TILE_X;
+      const tileY = key === "packVolume" ? 4 : TILE_Y;
+      const tileZ = key === "packVolume" ? 4 : 1;
+      const gx = Math.max(1, Math.ceil(nxg / tileX));
+      const gy = Math.max(1, Math.ceil(nyg / tileY));
+      const gz = Math.max(1, Math.ceil(nzg / tileZ));
       pass.dispatchWorkgroups(gx, gy, gz);
     };
 
@@ -911,64 +997,60 @@ export class WebGPUBackend implements SimBackend {
     const isHydrostatic =
       this.hydrostatic === "on" ||
       (this.hydrostatic === "auto" && Math.min(g.dx, g.dy) > 5000);
-    // 1) Buoyancy: w += buoy*dt (w in place) — skipped in hydrostatic balance
     if (!isHydrostatic) {
       dispatch("buoyancy", g.nx, g.ny, 1, makeBG("buoyancy", [b.theta, b.qv, b.qc, b.qr, b.theta0, b.qv0, b.w]));
     }
 
-    // 2) Advect velocity into Next buffers
     dispatch("advectU", g.nx + 1, g.ny, g.nz, makeBG("advectU", [b.u, b.v, b.w, b.uNext]));
     dispatch("advectV", g.nx, g.ny + 1, g.nz, makeBG("advectV", [b.u, b.v, b.w, b.vNext]));
     dispatch("advectW", g.nx, g.ny, g.nz + 1, makeBG("advectW", [b.u, b.v, b.w, b.wNext]));
 
-    // 3) Copy Next -> current (u, v, w)
     dispatch("copy", g.nu, 1, 1, makeBG("copy", [b.uNext, b.u]));
     dispatch("copy", g.nv, 1, 1, makeBG("copy", [b.vNext, b.v]));
     dispatch("copy", g.nw, 1, 1, makeBG("copy", [b.wNext, b.w]));
 
-    // 4) Fill divergence
     dispatch("fillDiv", g.nx, g.ny, g.nz, makeBG("fillDiv", [b.u, b.v, b.w, b.rho0, b.rho0w, b.div]));
 
-    // 5) Jacobi pressure iterations (ping-pong p/pNext), rhs = div
     let pSrc = b.p; let pDst = b.pNext;
-    for (let it = 0; it < 32; it++) {
+    // Deeper than the original flat 32 when residency is real.
+    const jacobiIters = 48;
+    for (let it = 0; it < jacobiIters; it++) {
       dispatch("jacobi", g.nx, g.ny, g.nz, makeBG("jacobi", [pSrc, b.div, b.rho0, b.rho0w, pDst]));
       const tmp = pSrc; pSrc = pDst; pDst = tmp;
     }
-    // Ensure final pressure is in b.p
     if (pSrc !== b.p) {
       dispatch("copy", g.n, 1, 1, makeBG("copy", [pSrc, b.p]));
     }
 
-    // 6) Correct velocity
     dispatch("correctVel", g.nx, g.ny, g.nz, makeBG("correctVel", [b.p, b.rho0, b.u, b.v, b.w]));
 
-    // Set lids (w = 0 at k=0 and k=nz) — done on CPU mirror after readback
-
-    // 7) Advect scalars into Next
     dispatch("advectScalars", g.nx, g.ny, g.nz, makeBG("advectScalars", [
       b.u, b.v, b.w, b.theta, b.qv, b.qc, b.qr, b.theta0, b.qv0,
       b.thetaNext, b.qvNext, b.qcNext, b.qrNext,
     ]));
 
-    // 8) Copy Next -> current scalars
     dispatch("copy", g.n, 1, 1, makeBG("copy", [b.thetaNext, b.theta]));
     dispatch("copy", g.n, 1, 1, makeBG("copy", [b.qvNext, b.qv]));
     dispatch("copy", g.n, 1, 1, makeBG("copy", [b.qcNext, b.qc]));
     dispatch("copy", g.n, 1, 1, makeBG("copy", [b.qrNext, b.qr]));
 
+    // Warm sat + Kessler stay on GPU so residency is real.
+    dispatch("warmSat", g.nx, g.ny, 1, makeBG("warmSat", [b.p0, b.exner, b.theta, b.qv, b.qc]));
+    dispatch("warmKessler", g.nx, g.ny, 1, makeBG("warmKessler", [
+      b.p0, b.exner, b.rho0, b.theta, b.qv, b.qc, b.qr,
+    ]));
+
     pass.end();
     d.queue.submit([enc.finish()]);
     await d.queue.onSubmittedWorkDone();
 
-    // Read back all fields into CPU mirrors
-    await this.readbackFields();
-
-    // Apply CPU physics tendencies on the mirrored state
-    this.applyPhysicsTendencies(dt);
-
-    // Upload physics-modified state back to GPU for the next step
-    this.uploadFields(this.fields, g, b);
+    this.packDirty = true;
+    if (this.fullReadback) {
+      await this.readbackFields();
+      // Cold micro still on CPU when a full mirror is requested (hybrid nest).
+      this.applyColdMicroOnly(dt);
+      this.uploadFields(this.fields, g, b);
+    }
 
     this.time += dt;
     if (this.followStorm) {
@@ -976,6 +1058,86 @@ export class WebGPUBackend implements SimBackend {
       this.groundNorth += this.frameV * dt;
     }
     this.stepCount++;
+  }
+
+  /**
+   * Pack volume + column stats on GPU and read back only those (kilobytes…
+   * megabytes for large display packs), not the full dynamical state.
+   */
+  async syncDisplay(): Promise<void> {
+    if (!this.b || !this.packDirty && this.packCache) return;
+    const g = this.grid;
+    const b = this.b;
+    const d = this.dev();
+    const disp = volumeDisplaySize(g.nx, g.ny, g.nz);
+    this.setPackUniforms(g);
+    this.setUniforms(g, 1);
+
+    const enc = d.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    const makeBG = (key: string, bufs: GPUBuffer[]): GPUBindGroup =>
+      this.bindGroup(bufs, this.storLayout.get(key)!);
+
+    const packPipe = this.pipe.get("packVolume")!;
+    pass.setPipeline(packPipe);
+    pass.setBindGroup(0, this.packUnifBG!);
+    pass.setBindGroup(1, makeBG("packVolume", [
+      b.qc, b.qr, b.qi, b.qs, b.qg, b.qh, b.packBuf,
+    ]));
+    pass.dispatchWorkgroups(
+      Math.max(1, Math.ceil(disp.nx / 4)),
+      Math.max(1, Math.ceil(disp.ny / 4)),
+      Math.max(1, Math.ceil(disp.nz / 4)),
+    );
+
+    const statsPipe = this.pipe.get("columnStats")!;
+    pass.setPipeline(statsPipe);
+    pass.setBindGroup(0, this.unifBG!);
+    pass.setBindGroup(1, makeBG("columnStats", [
+      b.qc, b.qr, b.qi, b.qs, b.qg, b.qh, b.colStats,
+    ]));
+    pass.dispatchWorkgroups(
+      Math.max(1, Math.ceil(g.nx / TILE_X)),
+      Math.max(1, Math.ceil(g.ny / TILE_Y)),
+      1,
+    );
+    pass.end();
+
+    const packBytes = disp.nx * disp.ny * disp.nz * 4;
+    enc.copyBufferToBuffer(b.packBuf, 0, b.packReadback, 0, packBytes);
+    enc.copyBufferToBuffer(b.colStats, 0, b.statsReadback, 0, this.byteLen(g.nx * g.ny * 4));
+    d.queue.submit([enc.finish()]);
+    await d.queue.onSubmittedWorkDone();
+
+    await b.packReadback.mapAsync(GPUMapMode.READ);
+    const packedView = new Uint8Array(b.packReadback.getMappedRange());
+    this.packCache = packedView.slice(0, packBytes);
+    this.packCacheNx = disp.nx;
+    this.packCacheNy = disp.ny;
+    this.packCacheNz = disp.nz;
+    b.packReadback.unmap();
+
+    await b.statsReadback.mapAsync(GPUMapMode.READ);
+    const colsView = new Float32Array(b.statsReadback.getMappedRange());
+    const cols = colsView.slice(0);
+    let cloudMax = 0;
+    let rainMax = 0;
+    let cloudMass = 0;
+    const nCol = g.nx * g.ny;
+    for (let i = 0; i < nCol; i++) {
+      const o = i * 4;
+      if (cols[o] > cloudMax) cloudMax = cols[o];
+      if (cols[o + 1] > rainMax) rainMax = cols[o + 1];
+      cloudMass += cols[o + 2];
+    }
+    this.statsCache = { cloudMax, rainMax, cloudMass };
+    b.statsReadback.unmap();
+    this.packDirty = false;
+  }
+
+  /** Full-field mirror for hybrid nest blending / CPU cold micro. */
+  async syncFields(): Promise<void> {
+    await this.readbackFields();
   }
 
   private async readbackFields(): Promise<void> {
@@ -1011,19 +1173,13 @@ export class WebGPUBackend implements SimBackend {
     b.readback.unmap();
   }
 
-  private applyPhysicsTendencies(dt: number): void {
-    // GPU dynamics kernels are not the shipping solver; CPU FluidSolver is.
-    // Keep a minimal CPU physics pass so the scaffold still runs smoke tests.
+  /** Cold micro on the CPU mirror (slower cadence path when fullReadback is on). */
+  private applyColdMicroOnly(dt: number): void {
     const g = this.grid;
     const f = this.fields;
-    const landMask = buildLandMask(g.nx, g.ny, getActiveSynoptic().marine);
     const exner = new Float32Array(g.nz);
     for (let k = 0; k < g.nz; k++) exner[k] = exnerFromP(f.p0[k]);
-    const qrScratch = new Float32Array(g.n);
     const iceScratch = new Float32Array(g.n);
-
-    stepSaturationAdjustment(g, f, exner, null);
-    stepMicrophysics(g, f, dt, qrScratch, exner);
     stepColdMicrophysics(
       g,
       f,
@@ -1032,6 +1188,7 @@ export class WebGPUBackend implements SimBackend {
       iceScratch,
       solarStatus(this.radiation).sunFrac,
     );
+    const landMask = buildLandMask(g.nx, g.ny, getActiveSynoptic().marine);
     stepSlowColumnPhysics(g, f, dt, {
       landMask,
       radiation: this.radiation,
@@ -1046,89 +1203,36 @@ export class WebGPUBackend implements SimBackend {
   }
 
   packVolumeRGBA(out: Uint8Array): void {
+    const cache = this.packCache;
+    if (cache) {
+      const n = Math.min(out.length, cache.length);
+      out.set(cache.subarray(0, n));
+      return;
+    }
+    // Fallback: CPU pack from last mirrored fields (may be stale without sync).
     const f = this.fields;
-    const { nx, ny, nz, n } = this.grid;
+    const { nx, ny, nz } = this.grid;
+    const d = volumeDisplaySize(nx, ny, nz);
     const cloudOpacity = (c: number): number =>
       c > 3e-5 ? 1 - Math.exp(-(c - 3e-5) / 4e-4) : 0;
-    const coldOpacity = (id: number): number => {
-      const iceCloud = cloudOpacity(0.25 * f.qi[id]);
-      const qs = f.qs[id];
-      const snow = qs > 1e-8 ? Math.min(1, Math.pow(qs / 0.00015, 0.55)) : 0;
-      const graupel = cloudOpacity(0.2 * f.qg[id]);
-      return Math.min(1, iceCloud + snow * 0.85 + graupel);
-    };
-    // Rain channel saturates near 1.5 g/kg. M^0.65 boosts drizzle so a few-dBZ
-    // shaft still packs a transparent curtain instead of vanishing to 0.
-    const rainUnit = 0.0015;
     const byte01 = (v: number): number => {
       if (v <= 0) return 0;
       const x = v * 255;
       return x >= 255 ? 255 : x | 0;
     };
-    const rainByte = (qr: number): number => {
-      if (qr <= 0) return 0;
-      const x = Math.pow(qr / rainUnit, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const hailByte = (qh: number): number => {
-      if (qh <= 1e-7) return 0;
-      const x = Math.pow(qh / 0.0008, 0.65) * 255;
-      return x >= 255 ? 255 : x | 0;
-    };
-    const write = (id: number, _k: number, o: number): void => {
-      out[o] = byte01(cloudOpacity(f.qc[id]));
-      out[o + 1] = byte01(coldOpacity(id));
-      out[o + 2] = rainByte(f.qr[id]);
-      out[o + 3] = hailByte(f.qh[id]);
-    };
-    const d = volumeDisplaySize(nx, ny, nz);
-    const need = d.nx * d.ny * d.nz * 4;
-    if (out.length >= n * 4) {
-      for (let k = 0; k < nz; k++) {
-        for (let j = 0; j < ny; j++) {
-          const row = k + nz * (ny - 1 - j);
-          for (let i = 0; i < nx; i++) {
-            write(i + nx * (j + ny * k), k, (i + nx * row) * 4);
-          }
-        }
-      }
-      return;
-    }
-    // Max-pool stride blocks (same as FluidSolver) so thin cloud is not
-    // dropped by nearest-neighbour holes on the display grid.
     for (let k = 0; k < d.nz; k++) {
-      const k0 = Math.min(nz - 1, k * d.sz);
-      const k1 = Math.min(nz, k0 + d.sz);
+      const ks = Math.min(nz - 1, k * d.sz);
       for (let j = 0; j < d.ny; j++) {
-        const j0 = Math.min(ny - 1, j * d.sy);
-        const j1 = Math.min(ny, j0 + d.sy);
+        const js = Math.min(ny - 1, j * d.sy);
         const row = k + d.nz * (d.ny - 1 - j);
         for (let i = 0; i < d.nx; i++) {
-          const i0 = Math.min(nx - 1, i * d.sx);
-          const i1 = Math.min(nx, i0 + d.sx);
-          let bestQc = 0;
-          let bestCold = 0;
-          let bestQr = 0;
-          let bestQh = 0;
-          for (let kk = k0; kk < k1; kk++) {
-            for (let jj = j0; jj < j1; jj++) {
-              const base = nx * (jj + ny * kk);
-              for (let ii = i0; ii < i1; ii++) {
-                const id = ii + base;
-                const liq = cloudOpacity(f.qc[id]);
-                if (liq > bestQc) bestQc = liq;
-                const cold = coldOpacity(id);
-                if (cold > bestCold) bestCold = cold;
-                if (f.qr[id] > bestQr) bestQr = f.qr[id];
-                if (f.qh[id] > bestQh) bestQh = f.qh[id];
-              }
-            }
-          }
+          const is = Math.min(nx - 1, i * d.sx);
+          const id = is + nx * (js + ny * ks);
           const o = (i + d.nx * row) * 4;
-          out[o] = byte01(bestQc);
-          out[o + 1] = byte01(bestCold);
-          out[o + 2] = rainByte(bestQr);
-          out[o + 3] = hailByte(bestQh);
+          out[o] = byte01(cloudOpacity(f.qc[id]));
+          out[o + 1] = byte01(cloudOpacity(0.25 * f.qi[id]));
+          out[o + 2] = byte01(Math.min(1, f.qr[id] / 0.0015));
+          out[o + 3] = byte01(Math.min(1, f.qh[id] / 0.0008));
         }
       }
     }
@@ -1172,6 +1276,9 @@ export class WebGPUBackend implements SimBackend {
   }
 
   cloudRainStats(): { cloudMax: number; rainMax: number; cloudMass: number } {
+    if (!this.packDirty || this.statsCache.cloudMax > 0 || this.statsCache.rainMax > 0) {
+      return { ...this.statsCache };
+    }
     const f = this.fields;
     let cloudMax = 0; let rainMax = 0; let cloudMass = 0;
     for (let i = 0; i < f.qc.length; i++) {
@@ -1185,5 +1292,34 @@ export class WebGPUBackend implements SimBackend {
   }
   rollLightning(_dt: number): LightningStrike[] {
     return [];
+  }
+
+  /** Display-path shims so the live worker can treat GPU like FluidSolver. */
+  prepareView(): void {}
+  get displayFields(): SimFields {
+    return this.fields;
+  }
+  get viewGrid(): Grid3D {
+    return this.grid;
+  }
+  get viewFields(): SimFields {
+    return this.fields;
+  }
+  setMapDomain(_domain: "parent" | "nest"): void {}
+  groundCoverOffset(): { east: number; north: number } {
+    return this.frameOffset();
+  }
+  rollDisplayLightning(_dt: number): LightningStrike[] {
+    return [];
+  }
+  getNestRect(): null {
+    return null;
+  }
+  getNestInfo(): null {
+    return null;
+  }
+  setNestFollow(_on: boolean | null): void {}
+  getNestFollow(): boolean {
+    return false;
   }
 }

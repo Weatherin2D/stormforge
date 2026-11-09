@@ -60,6 +60,7 @@ export class TerrainEditor {
   private valueInput: HTMLInputElement;
   private brushInput: HTMLInputElement;
   private refineInput: HTMLSelectElement;
+  private followInput: HTMLInputElement;
   private layerInput: HTMLSelectElement;
 
   constructor() {
@@ -120,6 +121,10 @@ export class TerrainEditor {
           <option value="3">3×</option>
         </select>
       </label>
+      <label class="surface-field" title="Keep the fine nest locked on the storm as it moves">
+        <input id="sf-nest-follow" type="checkbox" checked />
+        Follow storm
+      </label>
       </div>
       <canvas id="sf-terrain-canvas"></canvas>
     `;
@@ -128,9 +133,14 @@ export class TerrainEditor {
     this.valueInput = this.root.querySelector("#sf-sst") as HTMLInputElement;
     this.brushInput = this.root.querySelector("#sf-brush") as HTMLInputElement;
     this.refineInput = this.root.querySelector("#sf-nest-refine") as HTMLSelectElement;
+    this.followInput = this.root.querySelector("#sf-nest-follow") as HTMLInputElement;
     this.layerInput = this.root.querySelector("#sf-cover-layer") as HTMLSelectElement;
     this.waterTemp.fill(this.sstC);
     this.syncCoverLayer();
+    this.followInput.addEventListener("change", () => {
+      if (!this.nest) return;
+      this.nest.follow = this.followInput.checked;
+    });
 
     this.layerInput.addEventListener("change", () => {
       this.coverLayer = this.layerInput.value as CoverLayer;
@@ -291,8 +301,12 @@ export class TerrainEditor {
       this.nest = normalizeNest({
         ...data.nest,
         refinement: data.nest.refinement >= 3 ? 3 : 2,
+        follow: data.nest.follow !== false,
       });
       this.refineInput.value = String(this.nest.refinement);
+      this.followInput.checked = this.nest.follow !== false;
+    } else {
+      this.followInput.checked = true;
     }
 
     if (opts?.syncMarine !== false) {
@@ -466,6 +480,7 @@ export class TerrainEditor {
         x1: p.x,
         y1: p.y,
         refinement: Number(this.refineInput.value) >= 3 ? 3 : 2,
+        follow: this.followInput.checked,
       };
       this.draw();
       return;
@@ -507,6 +522,7 @@ export class TerrainEditor {
         x1,
         y1,
         refinement: this.nest.refinement >= 3 ? 3 : 2,
+        follow: this.followInput.checked,
       });
       this.draw();
     }

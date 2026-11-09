@@ -45,6 +45,20 @@ export interface LiveState {
   frameEast: number;
   frameNorth: number;
   followStorm: boolean;
+  /** Live nest footprint in parent [0..1]^2 when a nest is active. */
+  nest:
+    | {
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+        refinement: number;
+        nx: number;
+        ny: number;
+        xExtent: number;
+        yExtent: number;
+      }
+    | null;
   /** Pinned column, when the Maps 2D probe is active. */
   probe: ColumnProbe | null;
   /** Vertical curtain, when a cross-section is defined. */

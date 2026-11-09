@@ -60,6 +60,18 @@ import { stepSlowColumnPhysics } from "./boundaryLayer";
 import { stepCumulusMassFlux } from "./cumulus";
 import { stepHydrostaticDynamics } from "./hydrostaticStep";
 import { musclAdvectVelocity, musclAdvectScalars } from "./musclAdvection";
+import {
+  NEST_DEFAULT_FRAC,
+  NEST_IDLE_SECONDS,
+  NEST_IDLE_THRESH,
+  NEST_SPAWN_THRESH,
+  NEST_TRACK_CADENCE,
+  emaCentroid,
+  findStormCentroid,
+  nestBoxAround,
+  nestNeedsMove,
+  shiftNestTo,
+} from "./nestTrack";
 
 export type LightningKind = "negcg" | "poscg" | "spider" | "ic" | "sprite";
 
@@ -176,6 +188,19 @@ export class FluidSolver implements SimBackend {
   /** This solver is the one-way nest; it does not advance the parent clock. */
   private nestChild = false;
   private mapDomain: "parent" | "nest" = "parent";
+  /** Surface / sounding kept so the nest can move or auto-spawn mid-run. */
+  private nestSurface: SurfaceSpec | null = null;
+  private nestSounding: SoundingLevel[] | null = null;
+  /** EMA storm centroid in parent [0..1]^2. */
+  private nestCx = 0.5;
+  private nestCy = 0.5;
+  private nestHasTrack = false;
+  private nestTrackClock = 0;
+  private nestQuietClock = 0;
+  /** Nest was created by auto-spawn (may idle-clear when quiet). */
+  private nestAutoSpawned = false;
+  /** Runtime override for nest follow; null → Advanced + NestRect.follow. */
+  private nestFollowOverride: boolean | null = null;
   /** Accumulated simulated time since the last slow-physics pass (s). */
   private slowClock = 0;
   /** Slow physics cadence (surface / PBL / longwave / cumulus), seconds. */
@@ -621,7 +646,51 @@ export class FluidSolver implements SimBackend {
       }
     }
     // Nest always runs storm-mode inside the parent.
+    if (!this.nestChild) this.updateStormNest(dt);
     this.stepNest(dt);
+  }
+
+  /** Current nest footprint in parent [0..1]^2, or null. */
+  getNestRect(): NestRect | null {
+    return this.nestRect ? { ...this.nestRect } : null;
+  }
+
+  /** Nest box + child grid extents for map outline / domain switch. */
+  getNestInfo(): {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    refinement: number;
+    nx: number;
+    ny: number;
+    xExtent: number;
+    yExtent: number;
+  } | null {
+    const nest = this.nestRect;
+    const child = this.child;
+    if (!nest || !child) return null;
+    return {
+      x0: nest.x0,
+      y0: nest.y0,
+      x1: nest.x1,
+      y1: nest.y1,
+      refinement: nest.refinement,
+      nx: child.grid.nx,
+      ny: child.grid.ny,
+      xExtent: child.grid.xExtent,
+      yExtent: child.grid.yExtent,
+    };
+  }
+
+  /** Whether the nest box is tracking the storm centroid. */
+  getNestFollow(): boolean {
+    return this.nestFollowEnabled();
+  }
+
+  /** Override nest follow (null restores Advanced / NestRect default). */
+  setNestFollow(on: boolean | null): void {
+    this.nestFollowOverride = on;
   }
 
   /** Virtual-θ buoyancy + condensate loading on interior w-faces. */
@@ -2179,6 +2248,10 @@ export class FluidSolver implements SimBackend {
   ): void {
     this.child = null;
     this.nestRect = null;
+    this.nestAutoSpawned = false;
+    this.nestHasTrack = false;
+    this.nestTrackClock = 0;
+    this.nestQuietClock = 0;
     this.heightGrid = null;
     this.waterGrid = null;
     this.kindGrid = null;
@@ -2186,12 +2259,95 @@ export class FluidSolver implements SimBackend {
     this.soilGrid = null;
     this.vegGrid = null;
     this.openK = null;
-    if (!spec || this.nestChild) return;
+    if (this.nestChild) return;
+    this.nestSurface = spec ? { ...spec } : null;
+    this.nestSounding = sounding;
+    if (!spec) return;
     this.installHeights(spec, 0, 0, 1, 1);
     if (!spec.nest) return;
-    const nest = normalizeNest(spec.nest);
-    this.nestRect = nest;
-    const cg = nestGrid(this.grid, nest);
+    this.mountNest(normalizeNest(spec.nest), sounding, opts, false);
+  }
+
+  private nestFollowEnabled(): boolean {
+    if (this.nestFollowOverride != null) return this.nestFollowOverride;
+    if (!getToggles().enableNestFollow) return false;
+    if (this.nestRect?.follow === false) return false;
+    return true;
+  }
+
+  /**
+   * Track / auto-spawn / idle the nest on a slow cadence so the fine box
+   * stays locked on convection without rebuilding every step.
+   */
+  private updateStormNest(dt: number): void {
+    if (this.nestChild || dt <= 0) return;
+    this.nestTrackClock += dt;
+    if (this.nestTrackClock < NEST_TRACK_CADENCE) return;
+    this.nestTrackClock = 0;
+
+    const hit = findStormCentroid(this.grid, this.fields);
+    const smoothed = emaCentroid(
+      this.nestCx,
+      this.nestCy,
+      hit,
+      this.nestHasTrack,
+    );
+    this.nestCx = smoothed.x;
+    this.nestCy = smoothed.y;
+    this.nestHasTrack = true;
+
+    const tog = getToggles();
+    const follow = this.nestFollowEnabled();
+
+    if (!this.nestRect) {
+      if (
+        tog.enableNestAutoSpawn &&
+        hit.intensity >= NEST_SPAWN_THRESH &&
+        this.nestSounding
+      ) {
+        const frac = Math.max(
+          0.18,
+          Math.min(0.4, getAdvanced().nestAutoFrac || NEST_DEFAULT_FRAC),
+        );
+        const box = nestBoxAround(this.nestCx, this.nestCy, frac, 2);
+        box.follow = true;
+        this.mountNest(box, this.nestSounding, this.lastBubbleOpts, true);
+      }
+      return;
+    }
+
+    if (hit.intensity < NEST_IDLE_THRESH) {
+      this.nestQuietClock += NEST_TRACK_CADENCE;
+      if (
+        this.nestAutoSpawned &&
+        this.nestQuietClock >= NEST_IDLE_SECONDS
+      ) {
+        this.clearNest();
+      }
+      return;
+    }
+    this.nestQuietClock = 0;
+
+    if (!follow) return;
+    if (!nestNeedsMove(this.nestRect, this.nestCx, this.nestCy)) return;
+    const next = shiftNestTo(this.nestRect, this.nestCx, this.nestCy);
+    if (this.nestRect.follow !== false) next.follow = this.nestRect.follow;
+    this.relocateNest(next);
+  }
+
+  private mountNest(
+    nest: NestRect,
+    sounding: SoundingLevel[],
+    opts: InitOptions,
+    auto: boolean,
+  ): void {
+    const spec = this.nestSurface;
+    if (!spec) return;
+    const n = normalizeNest(nest);
+    this.nestRect = n;
+    this.nestAutoSpawned = auto;
+    this.nestQuietClock = 0;
+    const cg = nestGrid(this.grid, n);
     const child = new FluidSolver(cg);
     child.nestChild = true;
     child.rebuild(cg, sounding, {
@@ -2200,9 +2356,120 @@ export class FluidSolver implements SimBackend {
     });
     child.hydrostatic = "off";
     child.setRadiation(this.radiation);
-    child.installHeights(spec, nest.x0, nest.y0, nest.x1, nest.y1);
+    child.installHeights(spec, n.x0, n.y0, n.x1, n.y1);
     this.child = child;
     this.blendChild(true);
+    if (this.mapDomain !== "nest") this.mapDomain = "parent";
+  }
+
+  private clearNest(): void {
+    this.child = null;
+    this.nestRect = null;
+    this.nestAutoSpawned = false;
+    this.nestQuietClock = 0;
+  }
+
+  /** Rebuild the child footprint and remap fields from parent + old child. */
+  private relocateNest(next: NestRect): void {
+    const oldChild = this.child;
+    const oldNest = this.nestRect;
+    const sounding = this.nestSounding;
+    const spec = this.nestSurface;
+    if (!sounding || !spec || !oldNest) return;
+    const n = normalizeNest(next);
+    const cg = nestGrid(this.grid, n);
+    const child = new FluidSolver(cg);
+    child.nestChild = true;
+    child.rebuild(cg, sounding, {
+      bubbleStrength: this.lastBubbleOpts.bubbleStrength,
+      synoptic: this.lastBubbleOpts.synoptic,
+    });
+    child.hydrostatic = "off";
+    child.setRadiation(this.radiation);
+    child.installHeights(spec, n.x0, n.y0, n.x1, n.y1);
+    this.child = child;
+    this.nestRect = n;
+    this.blendChild(true);
+    if (oldChild) this.remapChildFromOld(oldChild, oldNest, child, n);
+  }
+
+  /** Prefer fine old-child samples where the footprints overlap. */
+  private remapChildFromOld(
+    oldChild: FluidSolver,
+    oldNest: NestRect,
+    neu: FluidSolver,
+    nest: NestRect,
+  ): void {
+    const og = oldChild.grid;
+    const of = oldChild.fields;
+    const cg = neu.grid;
+    const cf = neu.fields;
+    const keys = ["theta", "qv", "qc", "qr", "qi", "qs", "qg", "qh", "ni", "p"] as const;
+    const ofx = oldNest.x1 - oldNest.x0;
+    const ofy = oldNest.y1 - oldNest.y0;
+    const nfx = nest.x1 - nest.x0;
+    const nfy = nest.y1 - nest.y0;
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * nfx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * nfy;
+        if (xn < oldNest.x0 || xn > oldNest.x1 || yn < oldNest.y0 || yn > oldNest.y1) {
+          continue;
+        }
+        const ox = ((xn - oldNest.x0) / Math.max(1e-6, ofx)) * og.nx - 0.5;
+        const oy = ((yn - oldNest.y0) / Math.max(1e-6, ofy)) * og.ny - 0.5;
+        for (let k = 0; k < cg.nz; k++) {
+          for (const key of keys) {
+            cf[key][cg.idx(i, j, k)] = bilerpPlane(of[key], og.nx, og.ny, ox, oy, k);
+          }
+        }
+      }
+    }
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i <= cg.nx; i++) {
+        const ic = i >= cg.nx ? cg.nx - 1 : i;
+        const xn = nest.x0 + (i / cg.nx) * nfx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * nfy;
+        if (xn < oldNest.x0 || xn > oldNest.x1 || yn < oldNest.y0 || yn > oldNest.y1) {
+          continue;
+        }
+        const ox = ((xn - oldNest.x0) / Math.max(1e-6, ofx)) * og.nx;
+        const oy = ((yn - oldNest.y0) / Math.max(1e-6, ofy)) * og.ny - 0.5;
+        for (let k = 0; k < cg.nz; k++) {
+          const id = cg.uIdx(i, j, k);
+          cf.u[id] = bilerpPlane(of.u, og.nx + 1, og.ny, ox, oy, k);
+          void ic;
+        }
+      }
+    }
+    for (let j = 0; j <= cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * nfx;
+        const yn = nest.y0 + (j / cg.ny) * nfy;
+        if (xn < oldNest.x0 || xn > oldNest.x1 || yn < oldNest.y0 || yn > oldNest.y1) {
+          continue;
+        }
+        const ox = ((xn - oldNest.x0) / Math.max(1e-6, ofx)) * og.nx - 0.5;
+        const oy = ((yn - oldNest.y0) / Math.max(1e-6, ofy)) * og.ny;
+        for (let k = 0; k < cg.nz; k++) {
+          cf.v[cg.vIdx(i, j, k)] = bilerpPlane(of.v, og.nx, og.ny + 1, ox, oy, k);
+        }
+      }
+    }
+    for (let j = 0; j < cg.ny; j++) {
+      for (let i = 0; i < cg.nx; i++) {
+        const xn = nest.x0 + ((i + 0.5) / cg.nx) * nfx;
+        const yn = nest.y0 + ((j + 0.5) / cg.ny) * nfy;
+        if (xn < oldNest.x0 || xn > oldNest.x1 || yn < oldNest.y0 || yn > oldNest.y1) {
+          continue;
+        }
+        const ox = ((xn - oldNest.x0) / Math.max(1e-6, ofx)) * og.nx - 0.5;
+        const oy = ((yn - oldNest.y0) / Math.max(1e-6, ofy)) * og.ny - 0.5;
+        for (let k = 0; k <= cg.nz; k++) {
+          cf.w[cg.wIdx(i, j, k)] = bilerpPlane(of.w, og.nx, og.ny, ox, oy, k);
+        }
+      }
+    }
   }
 
   private installHeights(
@@ -2480,6 +2747,30 @@ export class FluidSolver implements SimBackend {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Advance nest tracking + child only (parent already stepped elsewhere).
+   * Used by the hybrid GPU-parent / CPU-nest path.
+   */
+  advanceNestOnly(dt: number): void {
+    if (this.nestChild || dt <= 0) return;
+    this.updateStormNest(dt);
+    this.stepNest(dt);
+  }
+
+  /** Copy parent dynamical fields from an external mirror (GPU readback). */
+  ingestParentFields(src: SimFields): void {
+    if (this.nestChild) return;
+    const keys = [
+      "theta", "qv", "qc", "qr", "qi", "qs", "qg", "qh", "ni", "p",
+      "u", "v", "w",
+    ] as const;
+    for (const key of keys) {
+      const dst = this.fields[key];
+      const from = src[key];
+      if (dst.length === from.length) dst.set(from);
     }
   }
 

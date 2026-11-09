@@ -25,8 +25,14 @@ import {
   type SectionImage,
   type SectionRequest,
 } from "./inspect";
+import { HybridNestBackend } from "./HybridNestBackend";
+import { WebGPUBackend } from "./WebGPUBackend";
+import { setupNeedsCpu, type SurfaceSpec } from "./surface";
 
-let solver: FluidSolver | null = null;
+/** Live solver: CPU, GPU, or hybrid GPU-parent + CPU-nest. */
+type LiveSolver = FluidSolver | WebGPUBackend | HybridNestBackend;
+
+let solver: LiveSolver | null = null;
 
 interface StepMsg {
   type: "step";
@@ -76,6 +82,28 @@ function frontPositions(): DrawnFront[] {
 let cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
 let statsAge = 0;
 
+function asLive(s: LiveSolver): {
+  prepareView(): void;
+  displayFields: import("./InitFromSounding").SimFields;
+  viewGrid: Grid3D;
+  viewFields: import("./InitFromSounding").SimFields;
+  groundCoverOffset(): { east: number; north: number };
+  rollDisplayLightning(dt: number): LightningStrike[];
+  getNestInfo(): ReturnType<FluidSolver["getNestInfo"]>;
+  setMapDomain?(domain: "parent" | "nest"): void;
+} {
+  return s as unknown as {
+    prepareView(): void;
+    displayFields: import("./InitFromSounding").SimFields;
+    viewGrid: Grid3D;
+    viewFields: import("./InitFromSounding").SimFields;
+    groundCoverOffset(): { east: number; north: number };
+    rollDisplayLightning(dt: number): LightningStrike[];
+    getNestInfo(): ReturnType<FluidSolver["getNestInfo"]>;
+    setMapDomain?(domain: "parent" | "nest"): void;
+  };
+}
+
 function publish(extra: {
   volume: Uint8Array | null;
   map: Uint8Array | null;
@@ -93,6 +121,7 @@ function publish(extra: {
   refreshStats?: boolean;
 }): void {
   if (!solver) return;
+  const live = asLive(solver);
   const sun = solver.getSolarStatus();
   statsAge++;
   if (extra.refreshStats || extra.volume || statsAge >= 24) {
@@ -138,6 +167,7 @@ function publish(extra: {
     frameEast: fo.east,
     frameNorth: fo.north,
     followStorm: solver.getFollowStorm(),
+    nest: live.getNestInfo(),
     probe: extra.probe ?? null,
     section: extra.section ?? null,
   };
@@ -147,8 +177,29 @@ function publish(extra: {
   );
 }
 
+async function buildSolver(
+  grid: Grid3D,
+  sounding: SoundingLevel[],
+  opts: InitOptions,
+): Promise<LiveSolver> {
+  const surface = opts.surface as SurfaceSpec | null | undefined;
+  // Complex terrain stays CPU. Nest uses hybrid GPU parent + CPU child when
+  // WebGPU is available; plain sandbox uses GPU-resident pack path.
+  if (setupNeedsCpu(surface ? { ...surface, nest: null } : null)) {
+    const cpu = new FluidSolver(grid);
+    cpu.rebuild(grid, sounding, opts);
+    return cpu;
+  }
+  const created = await HybridNestBackend.create(grid, sounding, opts);
+  return created;
+}
+
 self.onmessage = (ev: MessageEvent) => {
-  const msg = ev.data as
+  void handleMessage(ev.data);
+};
+
+async function handleMessage(msg: unknown): Promise<void> {
+  const data = msg as
     | {
         type: "rebuild";
         grid: {
@@ -173,14 +224,14 @@ self.onmessage = (ev: MessageEvent) => {
     | { type: "followStorm"; on: boolean }
     | StepMsg
     | ViewMsg;
-  if (msg.type === "rebuild") {
+
+  if (data.type === "rebuild") {
     try {
-      const grid = new Grid3D(msg.grid);
-      solver = new FluidSolver(grid);
-      solver.rebuild(grid, msg.sounding, msg.opts);
-      solver.setRadiation(msg.radiation);
-      solver.clockPaused = msg.clockPaused;
-      if (msg.hydrostatic) solver.hydrostatic = msg.hydrostatic;
+      const grid = new Grid3D(data.grid);
+      solver = await buildSolver(grid, data.sounding, data.opts);
+      solver.setRadiation(data.radiation);
+      solver.clockPaused = data.clockPaused;
+      if (data.hydrostatic) solver.hydrostatic = data.hydrostatic;
       cachedStats = { cloudMax: 0, rainMax: 0, cloudMass: 0 };
       statsAge = 99;
       publish({
@@ -201,9 +252,7 @@ self.onmessage = (ev: MessageEvent) => {
     return;
   }
   if (!solver) {
-    // A step sent before rebuild finished must still answer, or the clock
-    // waits forever on a worker that has nothing to advance.
-    if (msg.type === "step" || msg.type === "view") {
+    if (data.type === "step" || data.type === "view") {
       (self as unknown as { postMessage(message: unknown): void }).postMessage({
         type: "error",
         message: "Physics is not ready.",
@@ -211,45 +260,46 @@ self.onmessage = (ev: MessageEvent) => {
     }
     return;
   }
-  if (msg.type === "reset") {
-    solver.reset(msg.sounding, msg.opts);
+  if (data.type === "reset") {
+    solver.reset(data.sounding, data.opts);
     publish({ volume: null, map: null, mapId: null, winds: null, strikes: [] });
     return;
   }
-  if (msg.type === "bubble") {
-    solver.respawnBubble({ bubbleStrength: msg.strength });
+  if (data.type === "bubble") {
+    solver.respawnBubble({ bubbleStrength: data.strength });
     return;
   }
-  if (msg.type === "radiation") {
-    solver.setRadiation(msg.radiation);
+  if (data.type === "radiation") {
+    solver.setRadiation(data.radiation);
     return;
   }
-  if (msg.type === "clock") {
-    solver.clockPaused = msg.paused;
+  if (data.type === "clock") {
+    solver.clockPaused = data.paused;
     return;
   }
-  if (msg.type === "synoptic") {
-    // Fronts edited while the run is going: swap the pattern in place.
-    solver.setSynoptic(msg.setup);
+  if (data.type === "synoptic") {
+    solver.setSynoptic(data.setup);
     return;
   }
-  if (msg.type === "followStorm") {
-    solver.setFollowStorm(!!msg.on);
+  if (data.type === "followStorm") {
+    solver.setFollowStorm(!!data.on);
     return;
   }
-  // Physics returns before any texture pack, so the next step can start
-  // while the picture is built on its own message.
-  if (msg.type === "step") {
+  if (data.type === "step") {
     try {
-      // One pass. App already caps dt with stableOuterDt; splitting here
-      // would repeat the whole dynamics core on coarse grids.
-      if (msg.dt > 1e-6) solver.step(msg.dt);
+      if (data.dt > 1e-6) {
+        const result = solver.step(data.dt) as void | Promise<void>;
+        if (result && typeof (result as Promise<void>).then === "function") {
+          await result;
+        }
+      }
+      const live = asLive(solver);
       publish({
         volume: null,
         map: null,
         mapId: null,
         winds: null,
-        strikes: solver.rollDisplayLightning(msg.wall),
+        strikes: live.rollDisplayLightning(data.wall),
         refreshStats: false,
       });
     } catch (err) {
@@ -265,78 +315,93 @@ self.onmessage = (ev: MessageEvent) => {
     }
     return;
   }
-  if (msg.type !== "view") return;
+  if (data.type !== "view") return;
   try {
-  solver.setMapDomain(msg.mapDomain === "nest" ? "nest" : "parent");
-  solver.prepareView();
-  const shown = solver.displayGrid;
-  const shownFields = solver.displayFields;
-  const mapped = solver.viewGrid;
-  const mappedFields = solver.viewFields;
-  let volume: Uint8Array | null = null;
-  if (msg.wantVolume) {
-    const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
-    // Display texture is at most 128×128×48. A full-grid buffer is rejected
-    // by the renderer, which is why clouds vanished above that size.
-    volume = new Uint8Array(d.nx * d.ny * d.nz * 4);
-    solver.packVolumeRGBA(volume);
-  }
-  let map: Uint8Array | null = null;
-  if (msg.map) {
-    map = new Uint8Array(mapped.nx * mapped.ny * 4);
-    solver.packMapProduct(msg.map, map);
-  }
-  const winds = msg.winds ? sampleSurfaceWinds(shown, shownFields) : null;
-  let swath: Uint8Array | null = null;
-  if (msg.wantSwath) {
-    swath = new Uint8Array(shown.nx * shown.ny * 4);
-    packRainSwath(shown, shownFields, swath);
-  }
-  let coldPool: Uint8Array | null = null;
-  if (msg.wantColdPool) {
-    coldPool = new Uint8Array(shown.nx * shown.ny * 4);
-    packColdPoolMap(shown, shownFields, coldPool);
-  }
-  let field: Uint8Array | null = null;
-  const fieldMode = msg.fieldMode && msg.fieldMode !== "off" ? msg.fieldMode : null;
-  if (fieldMode) {
-    const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
-    field = new Uint8Array(d.nx * d.ny * d.nz * 4);
-    packFieldVolume(fieldMode, shown, shownFields, field);
-  }
-  let vortex: Float32Array | null = null;
-  if (msg.wantVortex) {
-    vortex = packVortexLevels(findVortexColumn(shown, shownFields));
-  }
-  // Ground cover only when something visible is refreshing — packing it every
-  // physics reply dominates large domains.
-  let ground: Uint8Array | null = null;
-  if (msg.wantVolume || msg.map || msg.winds || msg.wantSwath || msg.wantColdPool) {
-    ground = new Uint8Array(shown.nx * shown.ny * 4);
-    packGroundCover(shown, shownFields, ground, solver.groundCoverOffset());
-  }
-  const probe = msg.probe
-    ? sampleColumn(mapped, mappedFields, msg.probe.i, msg.probe.j, solver.time)
-    : null;
-  const section = msg.section
-    ? sampleSection(mapped, mappedFields, msg.section)
-    : null;
-  publish({
-    volume,
-    map,
-    mapId: msg.map,
-    winds,
-    strikes: [],
-    swath,
-    coldPool,
-    field,
-    fieldMode,
-    vortex,
-    ground,
-    probe,
-    section,
-    refreshStats: !!msg.wantVolume,
-  });
+    const live = asLive(solver);
+    live.setMapDomain?.(data.mapDomain === "nest" ? "nest" : "parent");
+
+    const needFields =
+      !!data.map ||
+      data.winds ||
+      !!data.wantSwath ||
+      !!data.wantColdPool ||
+      !!(data.fieldMode && data.fieldMode !== "off") ||
+      !!data.wantVortex ||
+      !!data.probe ||
+      !!data.section;
+
+    const syncable = solver as LiveSolver & {
+      syncDisplay?: () => Promise<void>;
+      syncFields?: () => Promise<void>;
+    };
+    if (syncable.syncDisplay) await syncable.syncDisplay();
+    if (needFields && syncable.syncFields) await syncable.syncFields();
+
+    live.prepareView();
+    const shown = solver.displayGrid;
+    const shownFields = live.displayFields;
+    const mapped = live.viewGrid;
+    const mappedFields = live.viewFields;
+    let volume: Uint8Array | null = null;
+    if (data.wantVolume) {
+      const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
+      volume = new Uint8Array(d.nx * d.ny * d.nz * 4);
+      solver.packVolumeRGBA(volume);
+    }
+    let map: Uint8Array | null = null;
+    if (data.map) {
+      map = new Uint8Array(mapped.nx * mapped.ny * 4);
+      solver.packMapProduct(data.map, map);
+    }
+    const winds = data.winds ? sampleSurfaceWinds(shown, shownFields) : null;
+    let swath: Uint8Array | null = null;
+    if (data.wantSwath) {
+      swath = new Uint8Array(shown.nx * shown.ny * 4);
+      packRainSwath(shown, shownFields, swath);
+    }
+    let coldPool: Uint8Array | null = null;
+    if (data.wantColdPool) {
+      coldPool = new Uint8Array(shown.nx * shown.ny * 4);
+      packColdPoolMap(shown, shownFields, coldPool);
+    }
+    let field: Uint8Array | null = null;
+    const fieldMode = data.fieldMode && data.fieldMode !== "off" ? data.fieldMode : null;
+    if (fieldMode) {
+      const d = volumeDisplaySize(shown.nx, shown.ny, shown.nz);
+      field = new Uint8Array(d.nx * d.ny * d.nz * 4);
+      packFieldVolume(fieldMode, shown, shownFields, field);
+    }
+    let vortex: Float32Array | null = null;
+    if (data.wantVortex) {
+      vortex = packVortexLevels(findVortexColumn(shown, shownFields));
+    }
+    let ground: Uint8Array | null = null;
+    if (data.wantVolume || data.map || data.winds || data.wantSwath || data.wantColdPool) {
+      ground = new Uint8Array(shown.nx * shown.ny * 4);
+      packGroundCover(shown, shownFields, ground, live.groundCoverOffset());
+    }
+    const probe = data.probe
+      ? sampleColumn(mapped, mappedFields, data.probe.i, data.probe.j, solver.time)
+      : null;
+    const section = data.section
+      ? sampleSection(mapped, mappedFields, data.section)
+      : null;
+    publish({
+      volume,
+      map,
+      mapId: data.map,
+      winds,
+      strikes: [],
+      swath,
+      coldPool,
+      field,
+      fieldMode,
+      vortex,
+      ground,
+      probe,
+      section,
+      refreshStats: !!data.wantVolume,
+    });
   } catch (err) {
     console.error("Stormforge view pack failed", err);
     publish({
@@ -348,7 +413,7 @@ self.onmessage = (ev: MessageEvent) => {
       refreshStats: false,
     });
   }
-};
+}
 
 (self as unknown as { postMessage(message: unknown): void }).postMessage({
   type: "hello",

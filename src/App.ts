@@ -1295,13 +1295,19 @@ export class App {
 
   /** Select the WebGPU backend when available, otherwise the CPU FluidSolver. */
   private async createSolver(grid: Grid3D): Promise<SimBackend> {
-    if (setupNeedsCpu(this.surfaceOf(this.pendingSetup))) {
+    const surface = this.surfaceOf(this.pendingSetup);
+    // Painted terrain / water stays CPU. Nest uses hybrid GPU parent + CPU
+    // child; plain sandbox uses the GPU-resident pack path.
+    if (setupNeedsCpu(surface ? { ...surface, nest: null } : null)) {
       return new FluidSolver(grid);
     }
-    const gpu = new WebGPUBackend();
-    await gpu.whenReady();
-    if (gpu.available) return gpu;
-    return new FluidSolver(grid);
+    const { HybridNestBackend } = await import("./sim/HybridNestBackend");
+    const created = await HybridNestBackend.create(grid, this.sounding, {
+      bubbleStrength: this.pendingSetup?.bubbleStrength ?? 3,
+      synoptic: this.synoptic,
+      surface,
+    });
+    return created;
   }
 
   /** Height of the 0 �C level above ground from the current sounding, in metres. */
@@ -1990,6 +1996,27 @@ export class App {
     this.solver.time = st.time;
     this.solver.setSolarHour(st.solarHour);
     this.renderer.setGroundFrameOffset(st.frameEast ?? 0, st.frameNorth ?? 0);
+    if (st.nest) {
+      const parent = this.solver.grid;
+      this.radar2d?.setDomains(
+        {
+          nx: parent.nx,
+          ny: parent.ny,
+          xExtent: parent.xExtent,
+          yExtent: parent.yExtent,
+        },
+        {
+          nx: st.nest.nx,
+          ny: st.nest.ny,
+          xExtent: st.nest.xExtent,
+          yExtent: st.nest.yExtent,
+          x0: st.nest.x0,
+          y0: st.nest.y0,
+          x1: st.nest.x1,
+          y1: st.nest.y1,
+        },
+      );
+    }
     this.liveDth = st.dThSfc;
     this.liveCloud = {
       cloudMax: st.cloudMax,

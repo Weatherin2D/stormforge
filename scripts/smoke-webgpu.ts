@@ -1,11 +1,11 @@
 /**
- * WebGPU scaffold smoke. The shipping solver is the CPU FluidSolver; the
- * WGSL kernels are not compared for field parity.
+ * WebGPU smoke: device init, pack-only residency path, non-zero cloud pack.
  */
 import { Grid3D } from "../src/sim/Grid3D";
 import { FluidSolver } from "../src/sim/FluidSolver";
 import { WebGPUBackend } from "../src/sim/WebGPUBackend";
 import { defaultSounding } from "../src/sim/thermo";
+import { volumeDisplaySize } from "../src/sim/Grid3D";
 
 const g = new Grid3D({ nx: 32, ny: 32, nz: 24, zTop: 12000 });
 const sounding = defaultSounding(12000, 25);
@@ -31,7 +31,21 @@ if (!gpu.available) {
   process.exit(0);
 }
 
-console.log(
-  "WebGPU backend present, but GPU kernels are not the shipping solver; skipping field parity.",
-);
+gpu.rebuild(g, sounding, opts);
+for (let i = 0; i < 40; i++) await gpu.step(2);
+await gpu.syncDisplay();
+const stats = gpu.cloudRainStats();
+const disp = volumeDisplaySize(g.nx, g.ny, g.nz);
+const pack = new Uint8Array(disp.nx * disp.ny * disp.nz * 4);
+gpu.packVolumeRGBA(pack);
+let nonzero = 0;
+for (let i = 0; i < pack.length; i++) if (pack[i]) nonzero++;
+console.log("Stormforge WebGPU smoke (GPU pack-only):", stats, {
+  packBytes: pack.length,
+  nonzero,
+});
+if (nonzero <= 0 && stats.cloudMax <= 0 && stats.rainMax <= 0) {
+  console.error("FAIL: GPU pack/stats empty after steps");
+  process.exit(3);
+}
 console.log("OK");

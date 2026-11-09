@@ -165,6 +165,8 @@ export interface AdvancedValues {
   frontForce: number;
   followStormGain: number;
   coldPoolStrength: number;
+  /** Nest box size when auto-spawned (fraction of parent domain). */
+  nestAutoFrac: number;
 }
 
 /** Boolean feature gates consumed by sim + render. */
@@ -256,6 +258,10 @@ export interface AdvancedToggles {
   enableColdPool: boolean;
   enableFollowStormGain: boolean;
   enableBubbleScale: boolean;
+  /** Recenter the nest on the storm centroid (EMA). */
+  enableNestFollow: boolean;
+  /** Spawn a default nest when convection appears and none was drawn. */
+  enableNestAutoSpawn: boolean;
 }
 
 export const CATEGORY_LABELS: Record<SettingCategory, string> = {
@@ -396,6 +402,7 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "frontForce", category: "storm", label: "Front force", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
   { id: "followStormGain", category: "storm", label: "Follow-storm gain", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
   { id: "coldPoolStrength", category: "storm", label: "Cold-pool strength", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
+  { id: "nestAutoFrac", category: "storm", label: "Auto-nest size", min: 0.18, max: 0.4, step: 0.02, default: 0.28, decimals: 2 },
 ];
 
 export const TOGGLE_DEFS: ToggleDef[] = [
@@ -468,6 +475,8 @@ export const TOGGLE_DEFS: ToggleDef[] = [
   { id: "enableColdPool", category: "storm", label: "Cold-pool loading", default: true },
   { id: "enableFollowStormGain", category: "storm", label: "Follow-storm gain", default: true },
   { id: "enableBubbleScale", category: "storm", label: "Bubble strength scale", default: true },
+  { id: "enableNestFollow", category: "storm", label: "Follow storm (nest)", default: true },
+  { id: "enableNestAutoSpawn", category: "storm", label: "Auto-spawn nest", default: true },
 ];
 
 export function defaultAdvancedValues(): AdvancedValues {
