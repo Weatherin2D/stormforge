@@ -308,7 +308,7 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "rainShaftOpacity", category: "clouds", label: "Rain shaft opacity", min: 0.2, max: 2.5, step: 0.05, default: 1, decimals: 2 },
 
   // Fluid
-  { id: "vorticityBoost", category: "fluid", label: "Vorticity boost", min: 0, max: 3, step: 0.05, default: 1, decimals: 2 },
+  { id: "vorticityBoost", category: "fluid", label: "Vorticity", min: 0, max: 5, step: 0.1, default: 0, decimals: 1 },
   { id: "buoyancyScale", category: "fluid", label: "Buoyancy", min: 0.4, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "viscosityScale", category: "fluid", label: "Viscosity", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
   { id: "horizMixing", category: "fluid", label: "Horiz mixing", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
