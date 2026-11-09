@@ -49,13 +49,13 @@ export const DEFAULT_LOOK: CloudLook = {
   phaseRain: [0.78, 0.22],
   backWeight: 0.32,
   multiScatter: [0.5, 0.5, 0.5],
-  powder: 0.62,
+  powder: 0.58,
   powderLength: 1400,
-  ambientStrength: 0.78,
-  ambientAtten: 0.95,
+  ambientStrength: 0.92,
+  ambientAtten: 0.9,
   // Extra turbidity on top of Koschmieder visibility from lodDistance.
   hazeDensity: 1.2e-5,
-  exposure: 0.92,
+  exposure: 1.0,
   // Smaller tiles → readable cauliflower lobes from afar.
   shapeTileMeters: 4800,
   detailTileMeters: 1400,

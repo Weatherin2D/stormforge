@@ -1779,9 +1779,11 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     groundMat.color.setScalar(1 - s * 0.22);
     if (this.cloudMat && Math.abs(s - this.lastPushedAdapt) > 0.012) {
       this.lastPushedAdapt = s;
+      // Mild iris only — do not swing cloud brightness with camera distance
+      // under the deck (that made close approaches look darker/brighter).
       this.cloudMat.setLook({
-        exposure: DEFAULT_LOOK.exposure * (1 + s * 1.45),
-        ambientStrength: DEFAULT_LOOK.ambientStrength * (1 + s * 0.7),
+        exposure: DEFAULT_LOOK.exposure * (1 + s * 0.35),
+        ambientStrength: DEFAULT_LOOK.ambientStrength * (1 + s * 0.25),
       });
     }
   }
