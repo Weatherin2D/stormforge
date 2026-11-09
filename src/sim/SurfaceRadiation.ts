@@ -109,32 +109,10 @@ export function cosZenith(
   );
 }
 
-function hash2(i: number, j: number): number {
-  let n = Math.imul(i, 374761393) + Math.imul(j, 668265263);
-  n = Math.imul(n ^ (n >>> 13), 1274126177);
-  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
-}
-
-function valueNoise(x: number, y: number): number {
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const fx = x - x0;
-  const fy = y - y0;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sy = fy * fy * (3 - 2 * fy);
-  const v00 = hash2(x0, y0);
-  const v10 = hash2(x0 + 1, y0);
-  const v01 = hash2(x0, y0 + 1);
-  const v11 = hash2(x0 + 1, y0 + 1);
-  const a = v00 + (v10 - v00) * sx;
-  const b = v01 + (v11 - v01) * sx;
-  return a + (b - a) * sy;
-}
-
 /**
- * Smooth land-heating weights, mean near 1, about 0.55–1.45.
- * With `marine`, the southeast corner is water so a coastal boundary can form.
- * Fixed hash so a run keeps the same patches.
+ * Land/water heating weight per column.
+ * Land is uniform (1) so daylight does not stamp the same noise hotspots
+ * every run. Painted water and the optional marine SE corner still cool.
  */
 export function buildLandMask(
   nx: number,
@@ -143,30 +121,27 @@ export function buildLandMask(
   water?: ArrayLike<number> | null,
 ): Float32Array {
   const mask = new Float32Array(nx * ny);
-  const scale = Math.max(4, Math.round(Math.min(nx, ny) / 8));
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);
   for (let j = 0; j < ny; j++) {
     const row = j * nx;
-    const y = j / scale;
     const yn = j / yDen;
     for (let i = 0; i < nx; i++) {
-      const land = 0.55 + valueNoise(i / scale, y) * 0.9;
       const painted = water && water.length === nx * ny ? water[row + i] : -1;
       if (painted >= 0) {
-        const wet = painted < 0 ? 0 : painted > 1 ? 1 : painted;
-        mask[row + i] = land * (1 - wet) + 0.08 * wet;
+        const wet = painted > 1 ? 1 : painted;
+        mask[row + i] = 1 - 0.92 * wet;
         continue;
       }
       if (!marine) {
-        mask[row + i] = land;
+        mask[row + i] = 1;
         continue;
       }
       const xn = i / xDen;
       const sea =
         Math.min(1, Math.max(0, (xn - 0.7) / 0.1)) *
         Math.min(1, Math.max(0, (0.3 - yn) / 0.1));
-      mask[row + i] = land * (1 - sea) + 0.08 * sea;
+      mask[row + i] = 1 - 0.92 * sea;
     }
   }
   return mask;
