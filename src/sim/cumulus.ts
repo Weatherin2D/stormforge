@@ -69,9 +69,18 @@ export function stepCumulusMassFlux(
           trig += (c.hPa / 10) * Math.exp(-(r * r) / (2 * 0.18 * 0.18));
         }
       }
-      if (trig < TRIGGER_MIN) continue;
-
       const k0 = openK ? openK[ij] : 0;
+      // Daytime BL heating can trigger discrete plumes without a drawn low.
+      // Gate on warm anomalies so the whole CAPE-rich domain does not sheet.
+      if (trig < TRIGGER_MIN) {
+        const idSfc = grid.idx(i, j, k0);
+        const dTh = f.theta[idSfc] - f.theta0[k0];
+        if (dTh > 1.8) {
+          const mottling = 0.55 + 0.45 * (((i * 37 + j * 91) % 100) / 100);
+          trig = Math.max(trig, 0.38 * mottling * Math.min(1.4, dTh / 3));
+        }
+      }
+      if (trig < TRIGGER_MIN) continue;
       for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
         z[k] = (k + 0.5) * dz;

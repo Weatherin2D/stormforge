@@ -1659,9 +1659,10 @@ export class FluidSolver implements SimBackend {
   }
 
   /**
-   * Soft restore of quiet columns toward the init sounding.
-   * θ always; qv only when dry — never remoisten near-saturated air (that
-   * was priming the whole domain into one cloud blob).
+   * Soft restore toward the init sounding without killing initiation.
+   * Near-surface warm anomalies (daytime heating / bubbles) are never cooled
+   * back — that was erasing CAPE before towers could form. qv is only
+   * remoistened when clearly dry.
    */
   private applyProfileRestore(dt: number): void {
     if (dt <= 0) return;
@@ -1673,51 +1674,40 @@ export class FluidSolver implements SimBackend {
     const base = 1 - Math.exp(-dt / tau);
     if (base < 1e-8) return;
 
-    // Column activity gate: skip anything with cloud or strong motion.
-    const busy = new Uint8Array(nx * ny);
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) {
-        let hydroMax = 0;
-        let wMax = 0;
-        let dthMax = 0;
-        for (let k = 0; k < nz; k++) {
+    for (let k = 0; k < nz; k++) {
+      const z = (k + 0.5) * dz;
+      const zFrac = (k + 0.5) / nz;
+      // Stronger aloft; very weak in the BL so diurnal heating can build.
+      let rate = base * (0.35 + 1.1 * zFrac * zFrac);
+      if (z < 2500) rate *= 0.2;
+      if (rate < 1e-9) continue;
+      const th0 = f.theta0[k];
+      const qv0 = f.qv0[k];
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
           const id = g.idx(i, j, k);
           const hydro =
             f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
-          if (hydro > hydroMax) hydroMax = hydro;
+          if (hydro > 1e-5) continue;
           const wAbs = Math.abs(f.w[g.wIdx(i, j, k)]);
-          if (wAbs > wMax) wMax = wAbs;
-          const dth = Math.abs(f.theta[id] - f.theta0[k]);
-          if (dth > dthMax) dthMax = dth;
-        }
-        if (hydroMax > 1e-5 || wMax > 0.8 || dthMax > 2.5) {
-          busy[i + j * nx] = 1;
-        }
-      }
-    }
+          if (wAbs > 1) continue;
 
-    for (let k = 0; k < nz; k++) {
-      const zFrac = (k + 0.5) / nz;
-      const rate = base * (0.55 + 0.9 * zFrac * zFrac);
-      const th0 = f.theta0[k];
-      const qv0 = f.qv0[k];
-      const qs0 = Math.max(1e-6, qsat(TFromTheta(th0, f.p0[k]), f.p0[k]));
-      for (let j = 0; j < ny; j++) {
-        for (let i = 0; i < nx; i++) {
-          if (busy[i + j * nx]) continue;
-          const id = g.idx(i, j, k);
-          let a = rate;
-          // Near-surface: gentler so cold pools and diurnal heating survive.
-          if ((k + 0.5) * dz < 1200) a *= 0.35;
-          f.theta[id] += (th0 - f.theta[id]) * a;
+          const dTh = th0 - f.theta[id];
+          if (z < 3000) {
+            // BL: only recover cold pools; leave heated / bubble air alone.
+            if (dTh > 0.15) f.theta[id] += dTh * rate;
+          } else if (Math.abs(dTh) > 0.1) {
+            f.theta[id] += dTh * rate;
+          }
+
           // Remoisten only dry, unsaturated air — never push RH toward 100%.
           const qsLoc = Math.max(
             1e-6,
             qsat(TFromTheta(f.theta[id], f.p0[k]), f.p0[k]),
           );
-          if (f.qv[id] < qv0 && f.qv[id] < 0.85 * qsLoc) {
-            const target = Math.min(qv0, 0.85 * qsLoc, 0.85 * qs0);
-            f.qv[id] += (target - f.qv[id]) * a;
+          if (f.qv[id] < qv0 * 0.85 && f.qv[id] < 0.75 * qsLoc) {
+            const target = Math.min(qv0, 0.8 * qsLoc);
+            f.qv[id] += (target - f.qv[id]) * rate;
           }
           if (f.qv[id] < 0) f.qv[id] = 0;
         }

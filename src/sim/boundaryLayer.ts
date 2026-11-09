@@ -105,14 +105,14 @@ export function stepBulkSurfaceFluxes(
 
       const heat =
         CH * spd * (thSfc - thAir) * (1 - evaporative * 0.5);
-      // Cap per-step heating so diurnal forcing cannot runaway-clamp the BL.
+      // Cap per-step heating; allow daytime CAPE to build at sandbox pace.
       let dTh = heat * dt * Math.max(0.2, adv.swHeating);
-      if (dTh > 0.8) dTh = 0.8;
-      if (dTh < -0.8) dTh = -0.8;
+      if (dTh > 1.2) dTh = 1.2;
+      if (dTh < -0.9) dTh = -0.9;
       f.theta[id] += dTh;
       // Bound drift away from base state.
       const th0 = f.theta0[k0];
-      if (f.theta[id] > th0 + 10) f.theta[id] = th0 + 10;
+      if (f.theta[id] > th0 + 12) f.theta[id] = th0 + 12;
       if (f.theta[id] < th0 - 8) f.theta[id] = th0 - 8;
 
       const T = TFromTheta(f.theta[id], f.p0[k0]);
