@@ -25,12 +25,12 @@ import {
   type SectionImage,
   type SectionRequest,
 } from "./inspect";
-import { HybridNestBackend } from "./HybridNestBackend";
-import { WebGPUBackend } from "./WebGPUBackend";
-import { setupNeedsCpu, type SurfaceSpec } from "./surface";
-
-/** Live solver: CPU, GPU, or hybrid GPU-parent + CPU-nest. */
-type LiveSolver = FluidSolver | WebGPUBackend | HybridNestBackend;
+/**
+ * Shipping live physics is the CPU FluidSolver. WebGPU / hybrid stay available
+ * for smoke and opt-in experiments — the GPU dynamical core is not yet
+ * cloud-parity with FluidSolver, so using it as the default wiped weather.
+ */
+type LiveSolver = FluidSolver;
 
 let solver: LiveSolver | null = null;
 
@@ -182,16 +182,9 @@ async function buildSolver(
   sounding: SoundingLevel[],
   opts: InitOptions,
 ): Promise<LiveSolver> {
-  const surface = opts.surface as SurfaceSpec | null | undefined;
-  // Complex terrain stays CPU. Nest uses hybrid GPU parent + CPU child when
-  // WebGPU is available; plain sandbox uses GPU-resident pack path.
-  if (setupNeedsCpu(surface ? { ...surface, nest: null } : null)) {
-    const cpu = new FluidSolver(grid);
-    cpu.rebuild(grid, sounding, opts);
-    return cpu;
-  }
-  const created = await HybridNestBackend.create(grid, sounding, opts);
-  return created;
+  const cpu = new FluidSolver(grid);
+  cpu.rebuild(grid, sounding, opts);
+  return cpu;
 }
 
 self.onmessage = (ev: MessageEvent) => {

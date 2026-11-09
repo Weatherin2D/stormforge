@@ -476,7 +476,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
   { id: "enableFollowStormGain", category: "storm", label: "Follow-storm gain", default: true },
   { id: "enableBubbleScale", category: "storm", label: "Bubble strength scale", default: true },
   { id: "enableNestFollow", category: "storm", label: "Follow storm (nest)", default: true },
-  { id: "enableNestAutoSpawn", category: "storm", label: "Auto-spawn nest", default: true },
+  { id: "enableNestAutoSpawn", category: "storm", label: "Auto-spawn nest", default: false },
 ];
 
 export function defaultAdvancedValues(): AdvancedValues {

@@ -9,7 +9,6 @@ import {
 import { FluidSolver, stableOuterDt } from "./sim/FluidSolver";
 import type { LightningStrike } from "./sim/FluidSolver";
 import type { SimBackend } from "./sim/SimBackend";
-import { WebGPUBackend } from "./sim/WebGPUBackend";
 import { LiveBridge, LiveState } from "./sim/LiveBridge";
 import { CloudRainRenderer } from "./render/CloudRainRenderer";
 import { Radar2DView } from "./render/Radar2DView";
@@ -39,7 +38,6 @@ import {
   nestGrid,
   normalizeNest,
   sampleCover,
-  setupNeedsCpu,
   type SurfaceSpec,
 } from "./sim/surface";
 import type { OverlayField } from "./render/fields";
@@ -148,6 +146,8 @@ export class App {
   private inspectSentGen = -1;
   private liveDth: number | null = null;
   private liveCloud: { cloudMax: number; rainMax: number; cloudMass: number } | null = null;
+  /** Last nest display grid key applied to the 3D renderer (nx×ny×extent). */
+  private liveNestGridKey = "";
   private outputIntervalSec = 5;
   private batchCancel = false;
   private pendingSetup: SetupValues | null = null;
@@ -1200,19 +1200,6 @@ export class App {
       synoptic: this.synoptic,
       surface,
     });
-    // If the WebGPU backend could not allocate device-sized buffers
-    // (e.g. a continental grid exceeding maxBufferSize), fall back to CPU.
-    if (this.solver instanceof WebGPUBackend && this.solver.initFailure) {
-      console.warn(
-        `WebGPU backend unavailable for this grid: ${this.solver.initFailure}. Falling back to CPU.`,
-      );
-    this.solver = new FluidSolver(grid);
-    this.solver.rebuild(grid, this.sounding, {
-      bubbleStrength: values.bubbleStrength,
-        synoptic: this.synoptic,
-        surface,
-    });
-    }
     this.solver.hydrostatic = values.hydrostatic ? "on" : "off";
     const radiation = {
       enabled: true,
@@ -1227,6 +1214,7 @@ export class App {
     this.liveCloud = null;
     this.liveVolumeSeen = false;
     this.liveRetry = 0;
+    this.liveNestGridKey = "";
     this.livePayload = {
       grid: {
         nx: grid.nx,
@@ -1293,21 +1281,13 @@ export class App {
     });
   }
 
-  /** Select the WebGPU backend when available, otherwise the CPU FluidSolver. */
+  /**
+   * Shipping solver is always the CPU FluidSolver. WebGPU / hybrid remain for
+   * smoke and future opt-in ? GPU dynamics are not yet cloud-parity.
+   */
   private async createSolver(grid: Grid3D): Promise<SimBackend> {
-    const surface = this.surfaceOf(this.pendingSetup);
-    // Painted terrain / water stays CPU. Nest uses hybrid GPU parent + CPU
-    // child; plain sandbox uses the GPU-resident pack path.
-    if (setupNeedsCpu(surface ? { ...surface, nest: null } : null)) {
-      return new FluidSolver(grid);
-    }
-    const { HybridNestBackend } = await import("./sim/HybridNestBackend");
-    const created = await HybridNestBackend.create(grid, this.sounding, {
-      bubbleStrength: this.pendingSetup?.bubbleStrength ?? 3,
-      synoptic: this.synoptic,
-      surface,
-    });
-    return created;
+    void grid;
+    return new FluidSolver(grid);
   }
 
   /** Height of the 0 ï¿½C level above ground from the current sounding, in metres. */
@@ -2016,6 +1996,21 @@ export class App {
           y1: st.nest.y1,
         },
       );
+      // Volume pack uses the nest child grid ? keep the renderer on that size.
+      const nestKey = `${st.nest.nx}x${st.nest.ny}x${st.nest.xExtent | 0}x${st.nest.yExtent | 0}`;
+      if (nestKey !== this.liveNestGridKey) {
+        const shown = gridFromExtentAndResolution(
+          st.nest.nx,
+          st.nest.ny,
+          parent.nz,
+          parent.zTop,
+          st.nest.xExtent,
+          st.nest.yExtent,
+        );
+        this.renderer.setGrid(shown);
+        this.renderer.resize();
+        this.liveNestGridKey = nestKey;
+      }
     }
     this.liveDth = st.dThSfc;
     this.liveCloud = {
