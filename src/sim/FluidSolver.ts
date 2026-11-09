@@ -1729,9 +1729,10 @@ export class FluidSolver implements SimBackend {
       }
     }
 
-    // Thin lateral sponge — winds, condensate, and a weak θ/qv inflow restore.
-    const rim = Math.min(4, Math.floor(Math.min(nx, ny) / 6));
-    if (rim < 1) return;
+    // Lateral rim: damp only normal winds / w so reflections stay quiet.
+    // Do NOT wipe hydrometeors or θ/qv — the old 4-cell condensate sponge
+    // carved an empty weather-free frame (~50–70 km) around the whole domain.
+    const rim = Math.min(2, Math.max(1, Math.floor(Math.min(nx, ny) / 32)));
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
         const di = Math.min(i, nx - 1 - i);
@@ -1739,31 +1740,25 @@ export class FluidSolver implements SimBackend {
         const dEdge = Math.min(di, dj);
         if (dEdge >= rim) continue;
         const t = 1 - dEdge / rim;
-        const damp = Math.min(0.85, 0.12 * t * t * dt * sponge);
+        const damp = Math.min(0.45, 0.06 * t * t * dt * sponge);
         if (damp <= 0) continue;
         for (let k = 0; k < nz; k++) {
-          const id = g.idx(i, j, k);
-          f.qc[id] *= 1 - damp;
-          f.qr[id] *= 1 - damp;
-          f.qi[id] *= 1 - damp;
-          f.qs[id] *= 1 - damp;
-          f.qg[id] *= 1 - damp;
-          f.qh[id] *= 1 - damp;
-          f.ni[id] *= 1 - damp;
-          // Weak inflow restore so the rim does not become a dry wall.
-          f.theta[id] += (f.theta0[k] - f.theta[id]) * damp * 0.25;
-          f.qv[id] += (f.qv0[k] - f.qv[id]) * damp * 0.25;
-          if (f.qv[id] < 0) f.qv[id] = 0;
           f.w[g.wIdx(i, j, k)] *= 1 - damp;
           f.w[g.wIdx(i, j, k + 1)] *= 1 - damp;
-          f.u[g.uIdx(i, j, k)] +=
-            (f.u0[k] - f.u[g.uIdx(i, j, k)]) * damp * 0.5;
-          f.u[g.uIdx(i + 1, j, k)] +=
-            (f.u0[k] - f.u[g.uIdx(i + 1, j, k)]) * damp * 0.5;
-          f.v[g.vIdx(i, j, k)] +=
-            (f.v0[k] - f.v[g.vIdx(i, j, k)]) * damp * 0.5;
-          f.v[g.vIdx(i, j + 1, k)] +=
-            (f.v0[k] - f.v[g.vIdx(i, j + 1, k)]) * damp * 0.5;
+          // Nudge only the outward-normal wind faces toward the base state.
+          if (di <= dj) {
+            const iu = i === 0 ? 0 : i === nx - 1 ? nx : i;
+            if (i === 0 || i === nx - 1) {
+              f.u[g.uIdx(iu, j, k)] +=
+                (f.u0[k] - f.u[g.uIdx(iu, j, k)]) * damp;
+            }
+          } else {
+            const jv = j === 0 ? 0 : j === ny - 1 ? ny : j;
+            if (j === 0 || j === ny - 1) {
+              f.v[g.vIdx(i, jv, k)] +=
+                (f.v0[k] - f.v[g.vIdx(i, jv, k)]) * damp;
+            }
+          }
         }
       }
     }
