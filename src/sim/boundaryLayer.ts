@@ -105,11 +105,15 @@ export function stepBulkSurfaceFluxes(
 
       const heat =
         CH * spd * (thSfc - thAir) * (1 - evaporative * 0.5);
-      f.theta[id] += heat * dt * Math.max(0.2, adv.swHeating);
+      // Cap per-step heating so diurnal forcing cannot runaway-clamp the BL.
+      let dTh = heat * dt * Math.max(0.2, adv.swHeating);
+      if (dTh > 0.8) dTh = 0.8;
+      if (dTh < -0.8) dTh = -0.8;
+      f.theta[id] += dTh;
       // Bound drift away from base state.
       const th0 = f.theta0[k0];
-      if (f.theta[id] > th0 + 14) f.theta[id] = th0 + 14;
-      if (f.theta[id] < th0 - 10) f.theta[id] = th0 - 10;
+      if (f.theta[id] > th0 + 10) f.theta[id] = th0 + 10;
+      if (f.theta[id] < th0 - 8) f.theta[id] = th0 - 8;
 
       const T = TFromTheta(f.theta[id], f.p0[k0]);
       const qSfc =
@@ -202,7 +206,12 @@ export function stepGrayLongwave(
 ): void {
   if (dt <= 0) return;
   const { nx, ny, nz, dz } = grid;
-  const rate = ((2.4 / 3600) * getAdvanced().lwLandCooling) * dt;
+  const adv = getAdvanced();
+  const rate = ((2.4 / 3600) * adv.lwLandCooling) * dt;
+  // Weak clear-sky Newtonian cooling toward θ0 so free-troposphere T cannot
+  // float forever while only cloud tops are forced.
+  const clearKPerDay = Math.max(0, adv.clearSkyCooling);
+  const clearRate = (clearKPerDay / 86400) * dt;
   const nxny = nx * ny;
 
   for (let j = 0; j < ny; j++) {
@@ -217,6 +226,19 @@ export function stepGrayLongwave(
         if (qc > 5e-5) {
           lwp += qc * f.rho0[k] * dz;
           cloudTop = k;
+        }
+      }
+      if (clearRate > 0) {
+        for (let k = k0; k < nz; k++) {
+          const id = i + j * nx + k * nxny;
+          // Skip heavy cloud cells — cloud-top LW handles those.
+          if (f.qc[id] + f.qi[id] > 5e-5) continue;
+          const d0 = f.theta0[k] - f.theta[id];
+          // Prefer cooling warm free-troposphere anomalies; cold ones recover slower.
+          let step = d0 > 0 ? Math.min(d0, clearRate * 0.5) : Math.max(d0, -clearRate);
+          if (step > 0.25) step = 0.25;
+          if (step < -0.25) step = -0.25;
+          f.theta[id] += step;
         }
       }
       if (cloudTop < 1 || lwp < 1e-4) continue;

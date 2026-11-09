@@ -86,6 +86,15 @@ export interface AdvancedValues {
   coriolisScale: number;
   pressureRelax: number;
   advectionSharpness: number;
+  /**
+   * Quiet-air restore of θ/qv toward the initial sounding (hours).
+   * Longer = slower; storms are left alone.
+   */
+  profileNudgeTau: number;
+  /** Minimum qv as a fraction of the base-state qv0 outside heavy precip. */
+  qvFloorFrac: number;
+  /** Clear-sky Newtonian cooling toward θ0 (K/day). */
+  clearSkyCooling: number;
 
   // —— Precipitation (visual particles) ——
   precipSpawn: number;
@@ -193,6 +202,8 @@ export interface AdvancedToggles {
   /** @deprecated Ignored — vorticity confinement removed. Kept for old saves. */
   enableVorticity: boolean;
   enableSponge: boolean;
+  /** Soft restore of quiet columns toward the init sounding. */
+  enableProfileNudge: boolean;
   /** @deprecated Ignored — w-damping removed. Kept for old saves. */
   enableWDamping: boolean;
   enableRK2Advection: boolean;
@@ -322,6 +333,9 @@ export const SETTING_DEFS: SettingDef[] = [
   { id: "divergenceDamp", category: "fluid", label: "Div. damping", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
   { id: "wDamping", category: "fluid", label: "W damping", min: 0, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "spongeStrength", category: "fluid", label: "Sponge strength", min: 0.2, max: 3, step: 0.05, default: 1, decimals: 2 },
+  { id: "profileNudgeTau", category: "fluid", label: "Profile restore (h)", min: 2, max: 24, step: 0.5, default: 8, decimals: 1 },
+  { id: "qvFloorFrac", category: "fluid", label: "qv floor vs sounding", min: 0.05, max: 0.6, step: 0.05, default: 0.25, decimals: 2 },
+  { id: "clearSkyCooling", category: "radiation", label: "Clear-sky cool (K/d)", min: 0, max: 4, step: 0.1, default: 1.5, decimals: 1 },
   { id: "coriolisScale", category: "fluid", label: "Coriolis", min: 0, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "pressureRelax", category: "fluid", label: "Pressure relax", min: 0.4, max: 2, step: 0.05, default: 1, decimals: 2 },
   { id: "advectionSharpness", category: "fluid", label: "Advection sharp", min: 0.5, max: 1.5, step: 0.05, default: 1, decimals: 2 },
@@ -426,6 +440,7 @@ export const TOGGLE_DEFS: ToggleDef[] = [
   // Fluid
   { id: "enableBuoyancy", category: "fluid", label: "Buoyancy", default: true },
   { id: "enableSponge", category: "fluid", label: "Domain sponges", default: true },
+  { id: "enableProfileNudge", category: "fluid", label: "Profile restore", default: true },
   { id: "enableRK2Advection", category: "fluid", label: "RK2 / MUSCL advection", default: true },
   { id: "enableDivergenceDamp", category: "fluid", label: "Divergence damping", default: true },
 

@@ -629,6 +629,8 @@ export class FluidSolver implements SimBackend {
         if (tog.enableCharge) this.updateCharge(slowDt);
       }
 
+      this.enforceMoistureBounds();
+      if (tog.enableProfileNudge) this.applyProfileRestore(h);
       if (tog.enableSponge) this.applySponge(h);
       this.applyTerrain(h);
       if (!this.nestChild && !this.clockPaused) {
@@ -1619,13 +1621,80 @@ export class FluidSolver implements SimBackend {
     }
   }
 
+  /**
+   * Keep vapor from raining the sounding dry or going supersaturated forever.
+   * Floors are relative to the init profile so Td cannot collapse to −80 °C.
+   */
+  private enforceMoistureBounds(): void {
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny, nz } = g;
+    const floorFrac = Math.max(0.05, Math.min(0.6, getAdvanced().qvFloorFrac));
+    for (let k = 0; k < nz; k++) {
+      const qFloor = Math.max(1e-6, f.qv0[k] * floorFrac);
+      const qs = Math.max(qFloor, qsat(TFromTheta(f.theta0[k], f.p0[k]), f.p0[k]));
+      const qCeil = qs * 1.02;
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const id = g.idx(i, j, k);
+          const hydro =
+            f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
+          // Heavy precip columns may dry below the floor; light air may not.
+          if (hydro < 5e-4 && f.qv[id] < qFloor) f.qv[id] = qFloor;
+          if (f.qv[id] > qCeil) f.qv[id] = qCeil;
+          if (f.qv[id] < 0) f.qv[id] = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * Soft restore of quiet columns toward the init sounding so multi-hour runs
+   * do not walk into an otherworldly dry/warm Skew-T. Storm cores are skipped.
+   */
+  private applyProfileRestore(dt: number): void {
+    if (dt <= 0) return;
+    const g = this.grid;
+    const f = this.fields;
+    const { nx, ny, nz, dz } = g;
+    const tauH = Math.max(2, getAdvanced().profileNudgeTau);
+    const tau = tauH * 3600;
+    const base = 1 - Math.exp(-dt / tau);
+    if (base < 1e-8) return;
+    for (let k = 0; k < nz; k++) {
+      const zFrac = (k + 0.5) / nz;
+      // Faster restore aloft (where sponge already acts) and slower near surface.
+      const rate = base * (0.55 + 0.9 * zFrac * zFrac);
+      const th0 = f.theta0[k];
+      const qv0 = f.qv0[k];
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const id = g.idx(i, j, k);
+          const hydro =
+            f.qc[id] + f.qr[id] + f.qi[id] + f.qs[id] + f.qg[id] + f.qh[id];
+          const dth = f.theta[id] - th0;
+          const wAbs = Math.abs(f.w[g.wIdx(i, j, k)]);
+          // Leave stormy / strongly buoyant / ascending air alone.
+          if (hydro > 2e-5 || dth > 1.2 || dth < -2.5 || wAbs > 1.5) continue;
+          let a = rate;
+          if (hydro > 5e-6 || Math.abs(dth) > 0.5) a *= 0.35;
+          // Near-surface: gentler so cold pools and diurnal heating survive.
+          if ((k + 0.5) * dz < 1200) a *= 0.35;
+          f.theta[id] += (th0 - f.theta[id]) * a;
+          f.qv[id] += (qv0 - f.qv[id]) * a;
+          if (f.qv[id] < 0) f.qv[id] = 0;
+        }
+      }
+    }
+  }
+
   private applySponge(dt: number): void {
     const g = this.grid;
     const { nx, ny, nz } = g;
     const f = this.fields;
 
     const sponge = getAdvanced().spongeStrength;
-    // Upper lid sponge (cell centers for θ; faces for wind)
+    // Upper lid sponge (cell centers for θ/qv; faces for wind)
     const kSponge = Math.floor(nz * 0.75);
     for (let k = kSponge; k < nz; k++) {
       const t = (k - kSponge) / Math.max(1, nz - 1 - kSponge);
@@ -1634,8 +1703,12 @@ export class FluidSolver implements SimBackend {
       const damp = 1 - Math.exp(-0.05 * t * t * dt * sponge);
       for (let j = 0; j < ny; j++) {
         for (let i = 0; i < nx; i++) {
-          f.theta[g.idx(i, j, k)] +=
-            (f.theta0[k] - f.theta[g.idx(i, j, k)]) * damp * 0.5;
+          const id = g.idx(i, j, k);
+          f.theta[id] += (f.theta0[k] - f.theta[id]) * damp * 0.5;
+          // Moisture must restore too — otherwise the top of the sounding
+          // rains out and never recovers.
+          f.qv[id] += (f.qv0[k] - f.qv[id]) * damp * 0.5;
+          if (f.qv[id] < 0) f.qv[id] = 0;
         }
         for (let i = 0; i <= nx; i++) {
           const id = g.uIdx(i, j, k);
@@ -1656,7 +1729,7 @@ export class FluidSolver implements SimBackend {
       }
     }
 
-    // Thin lateral sponge — winds + condensate only (preserve θ/qv for radiation)
+    // Thin lateral sponge — winds, condensate, and a weak θ/qv inflow restore.
     const rim = Math.min(4, Math.floor(Math.min(nx, ny) / 6));
     if (rim < 1) return;
     for (let j = 0; j < ny; j++) {
@@ -1677,6 +1750,10 @@ export class FluidSolver implements SimBackend {
           f.qg[id] *= 1 - damp;
           f.qh[id] *= 1 - damp;
           f.ni[id] *= 1 - damp;
+          // Weak inflow restore so the rim does not become a dry wall.
+          f.theta[id] += (f.theta0[k] - f.theta[id]) * damp * 0.25;
+          f.qv[id] += (f.qv0[k] - f.qv[id]) * damp * 0.25;
+          if (f.qv[id] < 0) f.qv[id] = 0;
           f.w[g.wIdx(i, j, k)] *= 1 - damp;
           f.w[g.wIdx(i, j, k + 1)] *= 1 - damp;
           f.u[g.uIdx(i, j, k)] +=
