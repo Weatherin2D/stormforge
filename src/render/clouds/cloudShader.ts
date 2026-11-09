@@ -318,32 +318,32 @@ vec3 sampleSigma(vec3 p, float shapeCarve, float fineDetail) {
       sn = mix(sn, fibrous, iceFrac * 0.9);
     }
 
-    // Shape erosion does NOT fade with camera distance — afar must stay lobed.
+    // Carve enough for cauliflower without erasing sparse decks to nothing.
     float erodeAmt =
-      mix(mix(0.55, 0.92, vigor), 0.38, iceFrac) *
+      mix(mix(0.32, 0.72, vigor), 0.28, iceFrac) *
       mix(uErosionIce, uErosionLiquid, 1.0 - iceFrac) *
       shapeCarve;
-    erodeAmt *= mix(0.7, 1.0, smoothstep(0.03, 0.3, base));
+    erodeAmt *= mix(0.55, 1.0, smoothstep(0.03, 0.3, base));
+    erodeAmt = min(erodeAmt, 0.85);
 
-    // Micro Worley only nearby.
     if (fineDetail > 0.1) {
       vec3 dn = detailSample(pk * mix(1.05, 1.4, vigor));
       float df = detailFbm(dn);
-      float detailErode = mix(0.22, 0.6, vigor) * (1.0 - iceFrac * 0.7) * fineDetail;
+      float detailErode = mix(0.15, 0.45, vigor) * (1.0 - iceFrac * 0.7) * fineDetail;
       sn = mix(sn, sn * df, detailErode);
-      erodeAmt *= mix(1.0, 1.3, fineDetail * (1.0 - df));
+      erodeAmt *= mix(1.0, 1.15, fineDetail * (1.0 - df));
+      erodeAmt = min(erodeAmt, 0.88);
     }
 
-    // Hard threshold — crisp silhouette against sky (photo refs 2 & 4).
-    float soft = mix(0.28, 0.12, vigor);
-    float d = (base * heightGrad - (1.0 - sn) * erodeAmt) / max(1.0 - erodeAmt * soft, 0.06);
+    float soft = mix(0.42, 0.18, vigor);
+    float d = (base * heightGrad - (1.0 - sn) * erodeAmt) / max(1.0 - erodeAmt * soft, 0.08);
     d = clamp(d, 0.0, 1.0);
-    // Opaque liquid core; ice thinner.
-    float coreFloor = base * mix(0.08, mix(0.28, 0.14, iceFrac), (1.0 - iceFrac) * mix(0.35, 1.0, vigor));
+    // Keep a readable core for any liquid/ice so carve cannot blank the volume.
+    float coreFloor = base * mix(0.35, mix(0.55, 0.22, iceFrac), mix(0.4, 1.0, vigor));
     d = max(d, coreFloor);
-    d = clamp(d * (1.0 + 3.2 * vigor) * mix(1.0, 0.78, iceFrac), 0.0, 1.0);
-    // Kill soft fringe so afar edges don't read as blue jelly.
-    d *= smoothstep(0.02, 0.12, d);
+    d = clamp(d * (1.0 + 2.4 * vigor) * mix(1.0, 0.85, iceFrac), 0.0, 1.0);
+    // Soft edge trim only — do not zero moderate density.
+    d *= smoothstep(0.0, 0.04, d);
 
     float share = max(liq + ice, 1e-6);
     liq = d * (liq / share);
@@ -393,19 +393,21 @@ void main() {
   // Silver lining: forward scatter boost near the sun disc.
   float silver = pow(max(cosT, 0.0), 8.0) * 0.55;
 
+  float pathLen = max(tFar - tNear, 1.0);
   float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 48.0, float(MAX_STEPS));
-  // Fixed fine step — pathLen/budget made afar rays take huge strides and look
-  // optically thin. Empty-space skip still covers clear air cheaply.
+  // Fine steps inside cloud (close-up look). Empty skips scale with path so
+  // afar rays still reach the storm before the step budget runs out.
   float dtFine = max(uStepSize, FINE_STEP);
-  float dtCoarse = dtFine * COARSE_STEP_MUL;
+  float dtCover = pathLen / budget;
+  float dtCoarse = max(dtFine * COARSE_STEP_MUL, dtCover);
   float t = tNear + dtFine * 0.5 * ign(gl_FragCoord.xy + vec2(uFrame));
 
   vec3 col = vec3(0.0);
   float T = 1.0;
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
   bool night = uSunDir.y < -0.02;
-  // After a coarse skip hits density, back up once and march fine.
-  bool wasEmpty = true;
+  // Only rewind after a real empty skip — not on the first cloudy sample.
+  bool fromSkip = false;
 
   for (int i = 0; i < MAX_STEPS; i++) {
     if (float(i) >= budget || t >= tFar || T < 0.01) break;
@@ -416,19 +418,20 @@ void main() {
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
     float rawSum = probe.x + probe.y + probe.z + hailHere;
-    bool cloudy = rawSum >= 0.00045;
+    bool cloudy = rawSum >= 0.00035;
 
     if (!cloudy) {
-      wasEmpty = true;
-      t += dtCoarse;
+      fromSkip = true;
+      float left = max(budget - float(i), 1.0);
+      float skip = max(dtCoarse, (tFar - t) / left);
+      t += skip;
       continue;
     }
 
-    // Hit density after a coarse skip: rewind one coarse step and resume fine.
-    // Continue so this iteration does not shade the overshot sample.
-    if (wasEmpty) {
-      t = max(tNear, t - (dtCoarse - dtFine));
-      wasEmpty = false;
+    // Hit density after a coarse skip: rewind and resume fine.
+    if (fromSkip) {
+      t = max(tNear, t - max(dtCoarse - dtFine, dtFine));
+      fromSkip = false;
       continue;
     }
 

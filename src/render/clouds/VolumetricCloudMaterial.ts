@@ -38,8 +38,8 @@ export interface CloudLook {
  * Spotter-realism defaults: carved liquid towers, translucent ice, contrasty lighting.
  */
 export const DEFAULT_LOOK: CloudLook = {
-  sigmaLiquid: 0.011,
-  sigmaIce: 0.002,
+  sigmaLiquid: 0.012,
+  sigmaIce: 0.0022,
   sigmaRain: 0.0024,
   erosionLiquid: 1.0,
   erosionIce: 0.48,
