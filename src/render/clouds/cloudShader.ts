@@ -394,8 +394,10 @@ void main() {
 
   float cosT = dot(rd, uSunDir);
   float phase = dualLobe(cosT, uPhaseLiquid);
-  // Mild silver lining — strong rim light was bleaching sun-facing decks.
-  float silver = pow(max(cosT, 0.0), 10.0) * 0.28;
+  // View–sun angle terms for highlight lobes (forward / side / back).
+  float towardSun = pow(max(cosT, 0.0), 5.0);
+  float sideSun = pow(clamp(1.0 - abs(cosT), 0.0, 1.0), 1.6);
+  float withSun = pow(max(-cosT, 0.0), 2.5);
 
   float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 64.0, float(MAX_STEPS));
   float dtFine = max(uStepSize, FINE_STEP);
@@ -493,21 +495,40 @@ void main() {
     vec3 coreFill = cloudAlbedo * (0.09 + 0.12 * ms) + uSunColor * 0.04 * ms;
     coreFill += (uSkyColor * 0.45 + cloudAlbedo * 0.4 + uSunColor * 0.14 * ms) * deep * 0.24;
 
-    // Direct term — modest, interiors rely on multi-scatter above.
+    // Direct diffuse — phase already angle-dependent via dual HG lobe.
     float sunLit = min(sunAmt * phase * powder, 0.95);
-    sunLit += silver * sunThrough(odSun * 0.55) * powder * 0.4;
-    sunLit = min(sunLit, 1.05);
+    sunLit = min(sunLit, 1.0);
     vec3 litFace = cloudAlbedo * uSunColor;
-    vec3 cloudCol = litFace * sunLit * 0.62 + ambient * 1.05 + coreFill + nightFill;
+    vec3 cloudCol = litFace * sunLit * 0.58 + ambient * 1.05 + coreFill + nightFill;
+
+    // Angle-varying sun highlights (spotter realism):
+    //  - towardSun: silver lining / glory on thin rims looking into the sun
+    //  - sideSun: bright cauliflower faces when the sun is to the side
+    //  - withSun: soft sheen when the sun is behind the camera
+    float thinRim = exp(-cloudSig * 90.0);
+    float litEdge = sunAmt * mix(0.35, 1.0, powder);
+    float elevGlow = mix(0.55, 1.0, clamp(uSunDir.y * 1.2 + 0.15, 0.0, 1.0));
+    float silverLining = towardSun * litEdge * mix(0.45, 1.35, thinRim) * dayAmt * elevGlow;
+    float sideGlint = sideSun * sunAmt * powder * dayAmt * elevGlow;
+    float backSheen = withSun * sunAmt * powder * 0.45 * dayAmt;
+    // Warm sun highlight colour, slightly hotter than body albedo.
+    vec3 hiCol = uSunColor * vec3(1.05, 1.0, 0.94);
+    vec3 highlight =
+      hiCol * (silverLining * 0.95 + sideGlint * 0.48 + backSheen * 0.28);
+    // Extra forward bloom on very thin edges looking at the sun.
+    highlight += hiCol * towardSun * thinRim * sunThrough(odSun * 0.5) * 0.55 * dayAmt;
+    cloudCol += highlight;
+
     // Mild cool shift in shadow — keep luminance up so close-ups are not muddy.
     cloudCol = mix(cloudCol, cloudCol * vec3(0.82, 0.86, 0.92), crevice * 0.4);
-    cloudCol = min(cloudCol, mix(vec3(1.45), vec3(1.15, 1.17, 1.2), dayAmt * 0.35));
+    cloudCol = min(cloudCol, mix(vec3(1.55), vec3(1.22, 1.24, 1.28), dayAmt * 0.3));
 
-    // Rain shafts: grey curtains with enough fill to read up close.
+    // Rain shafts: grey curtains + angle-dependent sun streak.
     float rainGrey = dot(ambient, vec3(0.3, 0.5, 0.2));
     vec3 rainCol = vec3(rainGrey) * 0.95
                  + uSunColor * sunAmt * powder * 0.14
                  + coreFill * 0.35 + nightFill * 0.45;
+    rainCol += hiCol * (towardSun * 0.35 + sideSun * 0.18) * sunAmt * powder * dayAmt;
     rainCol *= mix(1.0, 0.82, crevice);
 
     vec3 flash = flashLight(p);
