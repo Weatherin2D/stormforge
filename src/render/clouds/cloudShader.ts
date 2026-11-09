@@ -389,8 +389,8 @@ void main() {
 
   float cosT = dot(rd, uSunDir);
   float phase = dualLobe(cosT, uPhaseLiquid);
-  // Silver lining: forward scatter boost near the sun disc.
-  float silver = pow(max(cosT, 0.0), 8.0) * 0.55;
+  // Mild silver lining — strong rim light was bleaching sun-facing decks.
+  float silver = pow(max(cosT, 0.0), 10.0) * 0.28;
 
   float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 64.0, float(MAX_STEPS));
   float dtFine = max(uStepSize, FINE_STEP);
@@ -462,46 +462,58 @@ void main() {
     // Twilight/night: keep sky visibility high so decks stay lit by ambient.
     skyVis = max(skyVis, mix(0.7, 0.0, dayAmt));
 
+    // Powder softens deep scatter — keep rim glow mild so sunlit faces stay grey-white.
     float powder = 1.0 - exp(-cloudSig * uPowderLength);
-    powder = mix(1.0 - 0.6 * uPowder, 1.0, powder);
+    powder = mix(1.0 - 0.45 * uPowder, 1.0, powder);
 
     float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
-    float baseDark = mix(0.22, 1.0, smoothstep(0.05, 0.48, h));
-    baseDark = mix(mix(0.55, 1.0, smoothstep(0.05, 0.48, h)), baseDark, dayAmt);
+    // Spotter bases: distinctly darker under the tower in daylight.
+    float baseDark = mix(0.18, 1.0, smoothstep(0.04, 0.5, h));
+    baseDark = mix(mix(0.5, 1.0, smoothstep(0.05, 0.48, h)), baseDark, dayAmt);
     float sunAmt = sunThrough(odSun);
-    float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.35) * dayAmt;
-    vec3 cloudAlbedo = vec3(0.92, 0.94, 0.97);
-    vec3 ambientBottom = uGroundColor * 0.55 + cloudAlbedo * 0.12;
-    vec3 ambientTop = mix(cloudAlbedo * 0.35, uSkyColor * 0.55, 0.35);
-    float ambBoost = mix(2.2, 1.0, dayAmt);
+    // Stronger self-shadow so sun does not bleach the whole mass white.
+    float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.15) * dayAmt;
+    vec3 cloudAlbedo = vec3(0.86, 0.88, 0.92);
+    vec3 ambientBottom = uGroundColor * 0.7 + cloudAlbedo * 0.08;
+    vec3 ambientTop = mix(cloudAlbedo * 0.28, uSkyColor * 0.45, 0.4);
+    float ambBoost = mix(2.0, 1.0, dayAmt);
     vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark * ambBoost;
-    ambient *= mix(1.0, 0.55, crevice);
-    vec3 nightFill = cloudAlbedo * mix(0.16, 0.0, dayAmt) * (0.55 + 0.45 * skyVis);
-    nightFill += uSkyColor * mix(0.35, 0.0, dayAmt);
+    ambient *= mix(1.0, 0.42, crevice);
+    vec3 nightFill = cloudAlbedo * mix(0.14, 0.0, dayAmt) * (0.55 + 0.45 * skyVis);
+    nightFill += uSkyColor * mix(0.3, 0.0, dayAmt);
 
-    float ms = clamp(sunThrough(odSun * 0.28), 0.0, 1.0);
-    vec3 coreFill = cloudAlbedo * (0.06 + 0.1 * ms) + uSunColor * 0.04 * ms;
+    // Bounded multi-scatter — soft fill, not a second sun.
+    float ms = clamp(sunThrough(odSun * 0.45), 0.0, 1.0);
+    vec3 coreFill = cloudAlbedo * (0.04 + 0.06 * ms) + uSunColor * 0.02 * ms;
 
-    float sunLit = min(sunAmt * phase * powder, 1.55);
-    sunLit += silver * sunThrough(odSun * 0.45) * powder;
-    vec3 litWhite = mix(cloudAlbedo, vec3(1.0), 0.55) * uSunColor;
-    vec3 cloudCol = litWhite * sunLit * 0.72 + ambient * 0.85 + coreFill + nightFill;
-    cloudCol = mix(cloudCol, cloudCol * vec3(0.72, 0.78, 0.88), crevice * 0.55);
+    // Energy-aware direct term: phase + powder, hard-capped so noon cannot clip.
+    float sunLit = min(sunAmt * phase * powder, 0.85);
+    sunLit += silver * sunThrough(odSun * 0.55) * powder * 0.35;
+    sunLit = min(sunLit, 0.95);
+    vec3 litFace = cloudAlbedo * uSunColor;
+    vec3 cloudCol = litFace * sunLit * 0.48 + ambient * 0.95 + coreFill + nightFill;
+    // Cool the shadowed mass toward storm-grey / blue-grey.
+    cloudCol = mix(cloudCol, cloudCol * vec3(0.62, 0.68, 0.78), crevice * 0.7);
+    // Daytime highlight ceiling — warm soft white, never chalk.
+    cloudCol = min(cloudCol, mix(vec3(1.35), vec3(0.95, 0.97, 1.02), dayAmt * 0.55));
 
-    vec3 rainCol = uSunColor * sunAmt * 0.32
-                 + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.45) * 0.75
-                 + coreFill * 0.3 + nightFill * 0.6;
+    // Rain shafts: dark translucent curtains, slight sun streak only.
+    float rainGrey = dot(ambient, vec3(0.3, 0.5, 0.2));
+    vec3 rainCol = vec3(rainGrey) * 0.85
+                 + uSunColor * sunAmt * powder * 0.12
+                 + coreFill * 0.2 + nightFill * 0.45;
+    rainCol *= mix(1.0, 0.7, crevice);
 
     vec3 flash = flashLight(p);
     cloudCol += flash;
-    rainCol += flash * 0.55;
+    rainCol += flash * 0.45;
 
     vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
     if (hSig > 1e-4) {
       vec3 hailCol =
-        uSunColor * (sunAmt * 0.45) * vec3(0.80, 0.84, 0.90)
-        + ambient * vec3(0.70, 0.75, 0.82)
-        + vec3(0.03);
+        uSunColor * (sunAmt * 0.28) * vec3(0.78, 0.82, 0.88)
+        + ambient * vec3(0.65, 0.7, 0.78)
+        + vec3(0.02);
       S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
     }
 
@@ -523,8 +535,10 @@ void main() {
   // Opacity stays; fog already washed colour toward haze along the ray.
 
   straight *= uExposure;
+  // Soft photographic shoulder — daylight highlights compress before chalk.
   float flashPeak = max(max(straight.r, straight.g), straight.b);
-  straight = straight / (vec3(1.0) + straight * mix(0.65, 0.28, smoothstep(1.2, 4.0, flashPeak)));
+  float shoulder = mix(0.85, 0.32, smoothstep(0.9, 3.5, flashPeak));
+  straight = straight / (vec3(1.0) + straight * shoulder);
   straight = max(straight, vec3(0.0));
 
   gl_FragColor = vec4(straight, alpha);

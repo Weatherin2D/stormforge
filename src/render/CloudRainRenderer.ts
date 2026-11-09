@@ -44,7 +44,7 @@ import type { VortexLevel } from "../sim/fieldPack";
  * SUN_GAIN scales cloud sun only; baking it into intensity too bleaches the ground.
  * SUN_DISC is below MeteoLAB's 40 so low-sun Mie + disc don't clip to white.
  */
-const SUN_GAIN = 2, SKY_GAIN = 12, SUN_DISC = 16;
+const SUN_GAIN = 1.15, SKY_GAIN = 12, SUN_DISC = 16;
 /** Soft ceiling on sky/disc gain so twilight adaptation can't blow the frame. */
 const SKY_GAIN_CAP = 48;
 const SUN_DISC_LUM_CAP = 6.5;
@@ -1496,11 +1496,12 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const sunCol = this.skyState.sunByHeight;
     const sunEl = Math.sin((el * Math.PI) / 180);
     const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(Math.max(0, sunEl) * (SUN_LEVELS - 1))));
-    const horizonLift = Math.max(0.4, Math.min(1, (el + 1) / 14));
+    // Cap noon lift so high sun does not bleach cloud albedo white.
+    const horizonLift = Math.max(0.35, Math.min(0.85, (el + 1) / 16));
     const cm = this.cloudMat.uniforms;
     (cm.uSunColor as { value: THREE.Vector3 }).value
       .set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2])
-      .multiplyScalar(SUN_GAIN * adapt * horizonLift);
+      .multiplyScalar(SUN_GAIN * Math.min(adapt, 8) * horizonLift);
     (cm.uSkyColor as { value: THREE.Vector3 }).value.set(
       E[0] / Math.PI * skyGain + NIGHT_TOP[0] * night,
       E[1] / Math.PI * skyGain + NIGHT_TOP[1] * night,
