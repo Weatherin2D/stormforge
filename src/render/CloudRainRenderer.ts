@@ -51,9 +51,9 @@ const SUN_DISC_LUM_CAP = 6.5;
 /** Sky dome / clear-color night floor (deep airglow). */
 const NIGHT_SKY = [0.008, 0.012, 0.026] as const;
 const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
-/** Cloud ambient night floors (MeteoLAB NIGHT_TOP / NIGHT_BOTTOM) — brighter than the sky dome so clouds stay above the noise floor. */
-const NIGHT_TOP = [0.1, 0.12, 0.2] as const;
-const NIGHT_BOTTOM = [0.06, 0.07, 0.1] as const;
+/** Cloud ambient night floors — kept well above the sky dome so decks stay visible after dark. */
+const NIGHT_TOP = [0.18, 0.2, 0.32] as const;
+const NIGHT_BOTTOM = [0.1, 0.11, 0.16] as const;
 const CITY_SKY = [0.06, 0.036, 0.016] as const;
 
 const blitVert = /* glsl */ `
@@ -180,8 +180,8 @@ export class CloudRainRenderer {
   private volumeBlendStart = 0;
   private volumeBlendDur = 1;
   private volumeBlendReady = false;
-  /** Adaptive march budget (72–128). Lower when frames are long. */
-  private stepBudget = 112;
+  /** Adaptive march budget (96–256). Must cover the full domain path. */
+  private stepBudget = 160;
   /** EMA of frame time (ms); still used to defer heavy light-volume rebuilds. */
   private frameMsEma = 48;
   /** Half-res cloud pass + TAA — ~3× fewer fragments than full-res. */
@@ -1579,15 +1579,15 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       const sample = Math.min(dt, 80);
       this.frameMsEma = this.frameMsEma * 0.7 + sample * 0.3;
     }
-    // Map frame cost → march steps. Night stays lean; headroom buys detail.
+    // Map frame cost → march steps. Floor stays high so afar storms are reached.
     const night = this.sunDir.y <= -0.02 || this.sunFrac < 0.08;
     const ema = this.frameMsEma;
-    let budget = 112;
-    if (night) budget = 72;
-    else if (ema > 55) budget = 72;
-    else if (ema > 42) budget = 88;
-    else if (ema > 32) budget = 104;
-    else if (ema < 22) budget = 128;
+    let budget = 160;
+    if (night) budget = 128;
+    else if (ema > 55) budget = 112;
+    else if (ema > 42) budget = 128;
+    else if (ema > 32) budget = 160;
+    else if (ema < 22) budget = 224;
     this.stepBudget = budget;
     if (dt > 120 && this.volumeBlendDur > 1) this.volumeBlendDur = 1;
   }
@@ -2211,7 +2211,7 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       boxMin,
       boxMax,
       fieldGain: new THREE.Vector3(this.tune.gain, this.tune.gain, this.tune.gain),
-      quality: { maxSteps: 128 },
+      quality: { maxSteps: 256 },
     });
     this.cloudMat.setFieldsPrev(prevTex);
     this.cloudMat.setVolumeMix(1);

@@ -120,15 +120,15 @@ export class VolumetricCloudMaterial extends THREE.ShaderMaterial {
       vertexShader: cloudVertexShader,
       fragmentShader: cloudFragmentShader,
       defines: {
-        MAX_STEPS: q.maxSteps ?? 128,
+        MAX_STEPS: q.maxSteps ?? 256,
         FINE_STEP: "40.0",
-        COARSE_STEP_MUL: "2.75",
+        COARSE_STEP_MUL: "3.5",
       },
       uniforms: {
         uFields: { value: opts.fields },
         uFieldsPrev: { value: opts.fields },
         uVolumeMix: { value: 1 },
-        uStepBudget: { value: q.maxSteps ?? 128 },
+        uStepBudget: { value: q.maxSteps ?? 256 },
         uShapeNoise: { value: noise.shape },
         uDetailNoise: { value: noise.detail },
         uLightVol: { value: fallbackLight },

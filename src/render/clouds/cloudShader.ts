@@ -20,13 +20,13 @@ void main() {
 
 export const cloudFragmentShader = /* glsl */ `
 #ifndef MAX_STEPS
-#define MAX_STEPS 128
+#define MAX_STEPS 256
 #endif
 #ifndef FINE_STEP
 #define FINE_STEP 40.0
 #endif
 #ifndef COARSE_STEP_MUL
-#define COARSE_STEP_MUL 2.75
+#define COARSE_STEP_MUL 3.5
 #endif
 
 varying vec3 vWorldPos;
@@ -123,11 +123,11 @@ vec3 flashLight(vec3 p) {
     if (amt <= 0.0) continue;
     vec3 d = p - uFlashPos[f];
     float d2 = dot(d, d);
-    // Wide fill so IC/CG pulses light a whole tower, not a tiny core.
-    float core = exp(-d2 / (3500.0 * 3500.0));
-    float mid = exp(-d2 / (9000.0 * 9000.0));
-    float wide = exp(-d2 / (18000.0 * 18000.0));
-    flash += uFlashColor[f] * amt * (2.4 * core + 1.1 * mid + 0.35 * wide);
+    // Wide fill so flashes light whole towers across the domain.
+    float core = exp(-d2 / (4500.0 * 4500.0));
+    float mid = exp(-d2 / (12000.0 * 12000.0));
+    float wide = exp(-d2 / (28000.0 * 28000.0));
+    flash += uFlashColor[f] * amt * (2.6 * core + 1.2 * mid + 0.4 * wide);
   }
   return flash;
 }
@@ -234,15 +234,14 @@ vec3 airBeta(vec3 rd, float midHeight) {
   return vec3(0.78, 1.0, 1.32) * (beta0 * scale);
 }
 
-// Very light colour wash only — opacity is never dissolved with distance so
-// afar decks match the close-up look the user asked for.
+// Distance fog washes colour into haze — never used to zero opacity.
 vec3 aerialFog(vec3 col, vec3 rd, float dist, float midHeight) {
-  vec3 beta = airBeta(rd, midHeight) * 0.22;
-  float near = max(uLodDistance, 8000.0) * 0.35;
+  vec3 beta = airBeta(rd, midHeight) * 0.85;
+  float near = max(uLodDistance, 8000.0) * 0.12;
   float path = max(0.0, dist - near);
   vec3 Tair = exp(-beta * path);
-  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.08 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
-  return col * Tair + inscatter * (vec3(1.0) - Tair) * 0.25;
+  vec3 inscatter = mix(uHazeColor, uSkyColor, 0.18 * clamp(rd.y * 2.0 + 0.15, 0.0, 1.0));
+  return mix(col, inscatter, vec3(1.0) - Tair);
 }
 
 // Decode baked light: R encodes 1-exp(-od/8), G is sky visibility.
@@ -393,44 +392,47 @@ void main() {
   // Silver lining: forward scatter boost near the sun disc.
   float silver = pow(max(cosT, 0.0), 8.0) * 0.55;
 
-  float pathLen = max(tFar - tNear, 1.0);
-  float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 48.0, float(MAX_STEPS));
-  // Fine steps inside cloud (close-up look). Empty skips scale with path so
-  // afar rays still reach the storm before the step budget runs out.
+  float budget = uStepBudget < 1.0 ? float(MAX_STEPS) : clamp(uStepBudget, 64.0, float(MAX_STEPS));
   float dtFine = max(uStepSize, FINE_STEP);
-  float dtCover = pathLen / budget;
-  float dtCoarse = max(dtFine * COARSE_STEP_MUL, dtCover);
   float t = tNear + dtFine * 0.5 * ign(gl_FragCoord.xy + vec2(uFrame));
 
   vec3 col = vec3(0.0);
   float T = 1.0;
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
+  // 0 = deep night / blue hour, 1 = full day — drives ambient floors.
+  float dayAmt = smoothstep(-0.08, 0.28, uSunDir.y);
   bool night = uSunDir.y < -0.02;
   // Only rewind after a real empty skip — not on the first cloudy sample.
   bool fromSkip = false;
 
   for (int i = 0; i < MAX_STEPS; i++) {
     if (float(i) >= budget || t >= tFar || T < 0.01) break;
-    vec3 p = ro + rd * t;
+    // Hard invariant: remaining steps must be able to finish the ray, so far
+    // decks / shafts are never dropped just because near air burned the budget.
+    float left = max(budget - float(i), 1.0);
+    float must = (tFar - t) / left;
+    // Fine near the camera, coarser with range — still at least must-cover.
+    float lodMul = mix(1.0, 8.0, smoothstep(600.0, 18000.0, t));
+    float dtLod = max(dtFine * lodMul, must);
+    float dtEmpty = max(dtLod * COARSE_STEP_MUL, must);
 
+    vec3 p = ro + rd * t;
     vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
     vec4 field = fieldTap(uvw);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
     float rawSum = probe.x + probe.y + probe.z + hailHere;
-    bool cloudy = rawSum >= 0.00035;
+    bool cloudy = rawSum >= 0.0003;
 
     if (!cloudy) {
       fromSkip = true;
-      float left = max(budget - float(i), 1.0);
-      float skip = max(dtCoarse, (tFar - t) / left);
-      t += skip;
+      t += dtEmpty;
       continue;
     }
 
-    // Hit density after a coarse skip: rewind and resume fine.
+    // Hit density after a coarse skip: rewind and resume with lod step.
     if (fromSkip) {
-      t = max(tNear, t - max(dtCoarse - dtFine, dtFine));
+      t = max(tNear, t - max(dtEmpty - dtLod, dtFine));
       fromSkip = false;
       continue;
     }
@@ -442,77 +444,85 @@ void main() {
     float hSig = hailHere * hailHere * 3.2;
     float sigT = cloudSig + rainSig + hSig;
 
-    if (sigT > 1e-5) {
-      float odSun, skyVis;
-      bakedLight(uvw, odSun, skyVis);
-      if (night) {
-        odSun = 4.0;
-        skyVis = mix(0.35, skyVis, 0.4);
-      }
-      skyVis = mix(0.18, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.45, uAmbientAtten)));
-
-      float powder = 1.0 - exp(-cloudSig * uPowderLength);
-      powder = mix(1.0 - 0.6 * uPowder, 1.0, powder);
-
-      float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
-      // Photo look: dark bases, bright sunlit tops, grey crevices from OD.
-      float baseDark = mix(0.22, 1.0, smoothstep(0.05, 0.48, h));
-      float sunAmt = sunThrough(odSun);
-      float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.35);
-      // Neutral grey ambient — avoid sky-blue bleed that made afar blobs cyan.
-      vec3 cloudAlbedo = vec3(0.92, 0.94, 0.97);
-      vec3 ambientBottom = uGroundColor * 0.55 + cloudAlbedo * 0.12;
-      vec3 ambientTop = mix(cloudAlbedo * 0.35, uSkyColor * 0.55, 0.35);
-      vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark;
-      ambient *= mix(1.0, 0.55, crevice);
-
-      float ms = clamp(sunThrough(odSun * 0.28), 0.0, 1.0);
-      vec3 coreFill = cloudAlbedo * (0.06 + 0.1 * ms) + uSunColor * 0.04 * ms;
-
-      float sunLit = min(sunAmt * phase * powder, 1.55);
-      sunLit += silver * sunThrough(odSun * 0.45) * powder;
-      // Brilliant white lit lobes; cool grey in shadow (refs 2 & 4).
-      vec3 litWhite = mix(cloudAlbedo, vec3(1.0), 0.55) * uSunColor;
-      vec3 cloudCol = litWhite * sunLit * 0.72 + ambient * 0.85 + coreFill;
-      cloudCol = mix(cloudCol, cloudCol * vec3(0.72, 0.78, 0.88), crevice * 0.55);
-
-      vec3 rainCol = uSunColor * sunAmt * 0.32
-                   + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.45) * 0.75
-                   + coreFill * 0.3;
-
-      vec3 flash = flashLight(p);
-      cloudCol += flash;
-      rainCol += flash * 0.55;
-
-      vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
-      if (hSig > 1e-4) {
-        vec3 hailCol =
-          uSunColor * (sunAmt * 0.45) * vec3(0.80, 0.84, 0.90)
-          + ambient * vec3(0.70, 0.75, 0.82)
-          + vec3(0.03);
-        S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
-      }
-
-      float midH = mix(ro.y, p.y, 0.5);
-      S = aerialFog(S, rd, t, midH);
-
-      float stepT = exp(-sigT * dtFine);
-      float w = T * (1.0 - stepT);
-      col += S * w;
-      T *= stepT;
+    // Carved-away density: treat as clear so we do not stall within ~1 km.
+    if (sigT <= 1e-5) {
+      fromSkip = true;
+      t += dtEmpty;
+      continue;
     }
 
-    t += dtFine;
+    float odSun, skyVis;
+    bakedLight(uvw, odSun, skyVis);
+    if (night) {
+      // Soft night bake — do not force OD so high that crevice kills ambient.
+      odSun = mix(odSun, 1.8, 0.85);
+      skyVis = max(skyVis, 0.62);
+    }
+    skyVis = mix(0.28, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.4, uAmbientAtten)));
+    // Twilight/night: keep sky visibility high so decks stay lit by ambient.
+    skyVis = max(skyVis, mix(0.7, 0.0, dayAmt));
+
+    float powder = 1.0 - exp(-cloudSig * uPowderLength);
+    powder = mix(1.0 - 0.6 * uPowder, 1.0, powder);
+
+    float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
+    float baseDark = mix(0.22, 1.0, smoothstep(0.05, 0.48, h));
+    baseDark = mix(mix(0.55, 1.0, smoothstep(0.05, 0.48, h)), baseDark, dayAmt);
+    float sunAmt = sunThrough(odSun);
+    float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.35) * dayAmt;
+    vec3 cloudAlbedo = vec3(0.92, 0.94, 0.97);
+    vec3 ambientBottom = uGroundColor * 0.55 + cloudAlbedo * 0.12;
+    vec3 ambientTop = mix(cloudAlbedo * 0.35, uSkyColor * 0.55, 0.35);
+    float ambBoost = mix(2.2, 1.0, dayAmt);
+    vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark * ambBoost;
+    ambient *= mix(1.0, 0.55, crevice);
+    vec3 nightFill = cloudAlbedo * mix(0.16, 0.0, dayAmt) * (0.55 + 0.45 * skyVis);
+    nightFill += uSkyColor * mix(0.35, 0.0, dayAmt);
+
+    float ms = clamp(sunThrough(odSun * 0.28), 0.0, 1.0);
+    vec3 coreFill = cloudAlbedo * (0.06 + 0.1 * ms) + uSunColor * 0.04 * ms;
+
+    float sunLit = min(sunAmt * phase * powder, 1.55);
+    sunLit += silver * sunThrough(odSun * 0.45) * powder;
+    vec3 litWhite = mix(cloudAlbedo, vec3(1.0), 0.55) * uSunColor;
+    vec3 cloudCol = litWhite * sunLit * 0.72 + ambient * 0.85 + coreFill + nightFill;
+    cloudCol = mix(cloudCol, cloudCol * vec3(0.72, 0.78, 0.88), crevice * 0.55);
+
+    vec3 rainCol = uSunColor * sunAmt * 0.32
+                 + mix(ambient, vec3(dot(ambient, vec3(0.3, 0.5, 0.2))), 0.45) * 0.75
+                 + coreFill * 0.3 + nightFill * 0.6;
+
+    vec3 flash = flashLight(p);
+    cloudCol += flash;
+    rainCol += flash * 0.55;
+
+    vec3 S = mix(cloudCol, rainCol, rainSig / max(sigT, 1e-6));
+    if (hSig > 1e-4) {
+      vec3 hailCol =
+        uSunColor * (sunAmt * 0.45) * vec3(0.80, 0.84, 0.90)
+        + ambient * vec3(0.70, 0.75, 0.82)
+        + vec3(0.03);
+      S = mix(S, hailCol, clamp(hSig / max(sigT, 1e-4), 0.0, 0.92));
+    }
+
+    float midH = mix(ro.y, p.y, 0.5);
+    S = aerialFog(S, rd, t, midH);
+
+    float stepT = exp(-sigT * dtLod);
+    float w = T * (1.0 - stepT);
+    col += S * w;
+    T *= stepT;
+
+    t += dtLod;
   }
 
   float alpha = 1.0 - T;
   if (alpha < 0.001) discard;
 
   vec3 straight = col / max(1.0 - T, 1e-4);
-  // Keep opacity distance-independent (no aerialAlpha dissolve).
+  // Opacity stays; fog already washed colour toward haze along the ray.
 
   straight *= uExposure;
-  // Soft shoulder so lit edges stay warm grey, not chalk. Flash peaks stay hotter.
   float flashPeak = max(max(straight.r, straight.g), straight.b);
   straight = straight / (vec3(1.0) + straight * mix(0.65, 0.28, smoothstep(1.2, 4.0, flashPeak)));
   straight = max(straight, vec3(0.0));
