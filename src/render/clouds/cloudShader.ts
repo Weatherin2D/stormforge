@@ -473,16 +473,16 @@ void main() {
 
     float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
     // Readable bases even up close — do not crush to charcoal under the deck.
-    float baseDark = mix(0.42, 1.0, smoothstep(0.04, 0.52, h));
-    baseDark = mix(mix(0.58, 1.0, smoothstep(0.05, 0.48, h)), baseDark, dayAmt);
+    float baseDark = mix(0.5, 1.0, smoothstep(0.04, 0.52, h));
+    baseDark = mix(mix(0.62, 1.0, smoothstep(0.05, 0.48, h)), baseDark, dayAmt);
     float sunAmt = sunThrough(odSun);
     float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.1) * dayAmt;
-    vec3 cloudAlbedo = vec3(0.9, 0.92, 0.95);
-    vec3 ambientBottom = uGroundColor * 0.75 + cloudAlbedo * 0.14;
-    vec3 ambientTop = mix(cloudAlbedo * 0.4, uSkyColor * 0.5, 0.35);
-    float ambBoost = mix(2.0, 1.05, dayAmt);
+    vec3 cloudAlbedo = vec3(0.92, 0.94, 0.97);
+    vec3 ambientBottom = uGroundColor * 0.8 + cloudAlbedo * 0.16;
+    vec3 ambientTop = mix(cloudAlbedo * 0.45, uSkyColor * 0.5, 0.35);
+    float ambBoost = mix(2.0, 1.1, dayAmt);
     vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark * ambBoost;
-    ambient *= mix(1.0, 0.62, crevice);
+    ambient *= mix(1.0, 0.7, crevice);
     vec3 nightFill = cloudAlbedo * mix(0.14, 0.0, dayAmt) * (0.55 + 0.45 * skyVis);
     nightFill += uSkyColor * mix(0.3, 0.0, dayAmt);
 
@@ -490,18 +490,18 @@ void main() {
     // like the afar silhouette (Hillaire-style cheap approximation).
     float ms = clamp(sunThrough(odSun * 0.4), 0.0, 1.0);
     float deep = clamp(1.0 - sunAmt, 0.0, 1.0);
-    vec3 coreFill = cloudAlbedo * (0.07 + 0.1 * ms) + uSunColor * 0.035 * ms;
-    coreFill += (uSkyColor * 0.45 + cloudAlbedo * 0.35 + uSunColor * 0.12 * ms) * deep * 0.22;
+    vec3 coreFill = cloudAlbedo * (0.09 + 0.12 * ms) + uSunColor * 0.04 * ms;
+    coreFill += (uSkyColor * 0.45 + cloudAlbedo * 0.4 + uSunColor * 0.14 * ms) * deep * 0.24;
 
     // Direct term — modest, interiors rely on multi-scatter above.
-    float sunLit = min(sunAmt * phase * powder, 0.9);
+    float sunLit = min(sunAmt * phase * powder, 0.95);
     sunLit += silver * sunThrough(odSun * 0.55) * powder * 0.4;
-    sunLit = min(sunLit, 1.0);
+    sunLit = min(sunLit, 1.05);
     vec3 litFace = cloudAlbedo * uSunColor;
-    vec3 cloudCol = litFace * sunLit * 0.55 + ambient * 1.0 + coreFill + nightFill;
+    vec3 cloudCol = litFace * sunLit * 0.62 + ambient * 1.05 + coreFill + nightFill;
     // Mild cool shift in shadow — keep luminance up so close-ups are not muddy.
-    cloudCol = mix(cloudCol, cloudCol * vec3(0.78, 0.82, 0.9), crevice * 0.45);
-    cloudCol = min(cloudCol, mix(vec3(1.4), vec3(1.08, 1.1, 1.14), dayAmt * 0.4));
+    cloudCol = mix(cloudCol, cloudCol * vec3(0.82, 0.86, 0.92), crevice * 0.4);
+    cloudCol = min(cloudCol, mix(vec3(1.45), vec3(1.15, 1.17, 1.2), dayAmt * 0.35));
 
     // Rain shafts: grey curtains with enough fill to read up close.
     float rainGrey = dot(ambient, vec3(0.3, 0.5, 0.2));

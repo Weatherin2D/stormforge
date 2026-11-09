@@ -44,7 +44,7 @@ import type { VortexLevel } from "../sim/fieldPack";
  * SUN_GAIN scales cloud sun only; baking it into intensity too bleaches the ground.
  * SUN_DISC is below MeteoLAB's 40 so low-sun Mie + disc don't clip to white.
  */
-const SUN_GAIN = 1.15, SKY_GAIN = 12, SUN_DISC = 16;
+const SUN_GAIN = 1.3, SKY_GAIN = 12, SUN_DISC = 16;
 /** Soft ceiling on sky/disc gain so twilight adaptation can't blow the frame. */
 const SKY_GAIN_CAP = 48;
 const SUN_DISC_LUM_CAP = 6.5;
