@@ -19,6 +19,8 @@ import {
 
 /**
  * Adjust one cell toward liquid saturation.
+ * `dt` rate-limits clear-air condensation so multi-second hydrostatic
+ * steps cannot instantly sheet the domain from a near-saturated lid.
  */
 export function adjustCellSaturation(
   theta: number,
@@ -26,6 +28,7 @@ export function adjustCellSaturation(
   qc: number,
   p: number,
   exner: number,
+  dt = 1,
 ): { theta: number; qv: number; qc: number } {
   let th = theta;
   let q = Math.max(0, qv);
@@ -36,11 +39,17 @@ export function adjustCellSaturation(
   const excess = q - qs;
 
   if (excess > 0) {
+    // Ignore tiny supersaturation in clear air — numerical / profile noise.
+    if (c < 1e-6 && excess < 8e-5) {
+      return { theta: th, qv: q, qc: c };
+    }
     // One Newton step: condensation heats and raises qs.
     const dqs_dT = (qs * L) / (461.5 * Math.max(T, 1) * Math.max(T, 1));
     const dT_dq = (L / CP) * (th / Math.max(T, 1)) * exner;
     const denom = 1 + dqs_dT * dT_dq;
-    const cond = excess / Math.max(denom, 0.2);
+    let cond = excess / Math.max(denom, 0.2);
+    // Clear air: ease onto the curve instead of dumping the whole surplus.
+    if (c < 1e-5) cond *= Math.min(1, Math.max(dt, 0) / 12);
     q -= cond;
     c += cond;
     th += (L / CP) * cond * (th / Math.max(T, 1));
@@ -62,6 +71,7 @@ export function stepSaturationAdjustment(
   f: SimFields,
   exner: Float32Array,
   openK?: Uint16Array | null,
+  dt = 1,
 ): void {
   const { nx, ny, nz } = grid;
   const nxny = nx * ny;
@@ -74,7 +84,14 @@ export function stepSaturationAdjustment(
       for (let i = 0; i < nx; i++) {
         if (openK && k < openK[i + j * nx]) continue;
         const id = row + i;
-        const out = adjustCellSaturation(f.theta[id], f.qv[id], f.qc[id], p0, ex);
+        const out = adjustCellSaturation(
+          f.theta[id],
+          f.qv[id],
+          f.qc[id],
+          p0,
+          ex,
+          dt,
+        );
         f.theta[id] = out.theta;
         f.qv[id] = out.qv;
         f.qc[id] = out.qc;

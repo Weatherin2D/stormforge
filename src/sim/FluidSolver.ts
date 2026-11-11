@@ -587,19 +587,40 @@ export class FluidSolver implements SimBackend {
         applySmagorinsky(this.grid, this.fields, h, this.openK);
       }
 
-      stepSaturationAdjustment(this.grid, this.fields, this.exner, this.openK);
-      if (tog.enableWarmRain) {
-        stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
-      }
-      if (tog.enableColdMicro) {
-        stepColdMicrophysics(
+      // Microphysics / saturation must not ride a multi-minute hydrostatic
+      // dynamics step — that sheets ice and rain on continental grids.
+      const MICRO_MAX = 8;
+      let microLeft = h;
+      const sunFrac = this.getSolarStatus().sunFrac;
+      while (microLeft > 1e-6) {
+        const mh = microLeft > MICRO_MAX ? MICRO_MAX : microLeft;
+        stepSaturationAdjustment(
           this.grid,
           this.fields,
-          h,
           this.exner,
-          this.iceScratch,
-          this.getSolarStatus().sunFrac,
+          this.openK,
+          mh,
         );
+        if (tog.enableWarmRain) {
+          stepMicrophysics(
+            this.grid,
+            this.fields,
+            mh,
+            this.qrScratch,
+            this.exner,
+          );
+        }
+        if (tog.enableColdMicro) {
+          stepColdMicrophysics(
+            this.grid,
+            this.fields,
+            mh,
+            this.exner,
+            this.iceScratch,
+            sunFrac,
+          );
+        }
+        microLeft -= mh;
       }
 
       this.slowClock += h;
@@ -3043,7 +3064,9 @@ export function stableOuterDt(
     // pure horizontal advection; multi-minute passes were NaNing mesoscale.
     const advective = (0.4 * horiz) / 40;
     const rain = (48 * vertical) / 20;
-    const cap = horiz > 20000 ? 180 : 90;
+    // Keep continental passes short enough that slow physics / sat adjust
+    // stay on the same footing as mesoscale runs.
+    const cap = horiz > 20000 ? 60 : 45;
     const dt = Math.min(advective, rain, cap);
     return dt < 1 ? 1 : dt;
   }

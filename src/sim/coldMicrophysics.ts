@@ -255,7 +255,10 @@ function iceProcesses(
   let change = 0;
 
   if (limit > 0 && lacking > 0) {
-    change = Math.min(limit, lacking * CRYSTAL_MASS);
+    // Nucleation is a rate, not an instant fill — uncapped Cooper dumps
+    // turned multi-minute hydrostatic steps into domain-wide ice sheets.
+    const nucleate = Math.min(limit, lacking * CRYSTAL_MASS) * Math.min(1, dt / 20);
+    change = nucleate;
     number[i] += change / CRYSTAL_MASS;
   }
 

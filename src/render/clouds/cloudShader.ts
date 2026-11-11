@@ -132,14 +132,21 @@ vec3 flashLight(vec3 p) {
   return flash;
 }
 
-bool intersectBox(vec3 ro, vec3 rd, out float tNear, out float tFar) {
+bool intersectBox(
+  vec3 ro,
+  vec3 rd,
+  vec3 bMin,
+  vec3 bMax,
+  out float tNear,
+  out float tFar
+) {
   vec3 inv = vec3(
     abs(rd.x) > 1e-6 ? 1.0 / rd.x : (rd.x < 0.0 ? -1e6 : 1e6),
     abs(rd.y) > 1e-6 ? 1.0 / rd.y : (rd.y < 0.0 ? -1e6 : 1e6),
     abs(rd.z) > 1e-6 ? 1.0 / rd.z : (rd.z < 0.0 ? -1e6 : 1e6)
   );
-  vec3 t0 = (uBoxMin - ro) * inv;
-  vec3 t1 = (uBoxMax - ro) * inv;
+  vec3 t0 = (bMin - ro) * inv;
+  vec3 t1 = (bMax - ro) * inv;
   vec3 tmin = min(t0, t1);
   vec3 tmax = max(t0, t1);
   tNear = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
@@ -384,12 +391,17 @@ float hailSigma(vec3 p) {
 }
 
 void main() {
-  vec3 ro = cameraPosition;
-  vec3 rd = normalize(vWorldPos - ro);
+  // Camera-relative march — absolute metres on continental domains (~1e7)
+  // lose float precision and warp / glitter the volume.
+  vec3 cam = cameraPosition;
+  vec3 ro = vec3(0.0);
+  vec3 rd = normalize(vWorldPos - cam);
+  vec3 boxMin = uBoxMin - cam;
+  vec3 boxMax = uBoxMax - cam;
 
   float tNear, tFar;
-  if (!intersectBox(ro, rd, tNear, tFar)) discard;
-  tFar = groundDistance(ro, rd, tFar);
+  if (!intersectBox(ro, rd, boxMin, boxMax, tNear, tFar)) discard;
+  tFar = groundDistance(ro + cam, rd, tFar);
   if (tFar <= tNear) discard;
 
   float cosT = dot(rd, uSunDir);
@@ -423,8 +435,9 @@ void main() {
     float dtLod = max(dtFine * lodMul, must);
     float dtEmpty = max(dtLod * COARSE_STEP_MUL, must);
 
-    vec3 p = ro + rd * t;
-    vec3 uvw = (p - uBoxMin) / (uBoxMax - uBoxMin);
+    vec3 pRel = ro + rd * t;
+    vec3 p = pRel + cam;
+    vec3 uvw = (pRel - boxMin) / max(boxMax - boxMin, vec3(1.0));
     vec4 field = fieldTap(uvw);
     vec3 probe = max(field.rgb * uFieldGain, vec3(0.0));
     float hailHere = max(field.a * uFieldGain.x, 0.0);
@@ -473,7 +486,7 @@ void main() {
     float powder = 1.0 - exp(-cloudSig * uPowderLength);
     powder = mix(1.0 - 0.4 * uPowder, 1.0, powder);
 
-    float h = clamp((p.y - uBoxMin.y) / boxH * 1.25, 0.0, 1.0);
+    float h = clamp((pRel.y - boxMin.y) / boxH * 1.25, 0.0, 1.0);
     // Daytime bases stay soft grey — do not crush dense cores to charcoal.
     float baseDark = mix(0.62, 1.0, smoothstep(0.03, 0.48, h));
     baseDark = mix(mix(0.7, 1.0, smoothstep(0.04, 0.45, h)), baseDark, dayAmt);

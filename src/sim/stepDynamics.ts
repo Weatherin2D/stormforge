@@ -225,8 +225,10 @@ export function mixGridScale(
 ): void {
   const mix = getAdvanced().horizMixing;
   if (mix <= 0 || dt <= 0) return;
-  // How much of a spike's excess over its neighbors is handed outward.
-  const bite = Math.min(0.7, 0.28 + 0.22 * mix);
+  // Rate form so coarse hydrostatic steps and fine storm steps spread
+  // spikes at the same physical pace (old bite was per-substep).
+  const biteRate = 0.07 + 0.05 * mix; // 1/s of excess handed outward
+  const bite = Math.min(0.55, 1 - Math.exp(-biteRate * dt));
   const { nx, ny, nz } = grid;
   broadenCells(f.theta, thetaEnv, nx, ny, nz, bite, 0.35, openK, false);
   broadenCells(f.qv, qvEnv, nx, ny, nz, bite, 2e-5, openK, true);

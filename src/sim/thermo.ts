@@ -150,11 +150,16 @@ export function defaultSounding(zTop: number, n = 40): SoundingLevel[] {
     // Surface warm / moist, steep lapse — CAPE-friendly for sandbox
     let T = 302 - 0.0085 * z;
     if (z > 11000) T = 215 + 0.001 * (z - 11000);
-    // Moist BL (not saturated) + steeper Td drop aloft
-    let TdC = (T - 273.15) - 2.0;
-    if (z > 1500) TdC = 16.5 - 0.0065 * (z - 1500);
-    if (z > 5000) TdC = -10 - 0.0035 * (z - 5000);
-    if (z > 9000) TdC = -28 - 0.002 * (z - 9000);
+    // Moist BL (not saturated). Always keep Td below T — absolute Td
+    // schedules used to go supersaturated in the cold upper troposphere
+    // and sheet cirrus once hydrostatic steps cooled the lid further.
+    const tC = T - 273.15;
+    let depression = 2.5;
+    if (z > 1500) depression = 4.0;
+    if (z > 4000) depression = 7.0;
+    if (z > 7000) depression = 11.0;
+    if (z > 10000) depression = 15.0;
+    const TdC = tC - depression;
     const Td = TdC + 273.15;
     // Veering wind profile
     const u = 5 + 0.002 * z;
