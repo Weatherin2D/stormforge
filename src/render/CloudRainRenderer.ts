@@ -2463,6 +2463,8 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const w = this.radarNx * f;
     const h = this.radarNy * f;
     if (this.radarTex && this.radarData && this.radarData.length === w * h * 4) {
+      this.radarTex.minFilter = THREE.NearestFilter;
+      this.radarTex.magFilter = THREE.NearestFilter;
       this.uploadRadar();
       return;
     }
@@ -2474,9 +2476,9 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
       THREE.RGBAFormat,
       THREE.UnsignedByteType,
     );
-    const filter = f <= 1 ? THREE.NearestFilter : THREE.LinearFilter;
-    tex.minFilter = filter;
-    tex.magFilter = filter;
+    // Palette textures stay nearest — linear RGB invents false LUT colors.
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
     tex.flipY = true;
     tex.needsUpdate = true;
     if ("colorSpace" in tex) tex.colorSpace = THREE.NoColorSpace;

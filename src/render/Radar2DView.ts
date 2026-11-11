@@ -1430,7 +1430,8 @@ export class Radar2DView {
     const ch = this.canvas.height;
     this.ctx.fillStyle = INST.bg;
     this.ctx.fillRect(0, 0, cw, ch);
-    this.ctx.imageSmoothingEnabled = f > 1;
+    // Discrete radar LUTs — never bilinear-filter in RGB (false fringe colors).
+    this.ctx.imageSmoothingEnabled = false;
 
     const box = this.mapFrame();
     if (!box) return;

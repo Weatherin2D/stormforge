@@ -1818,7 +1818,7 @@ export function writeReflectivityRgba(
 }
 
 function dbzToRgba(dbz: number, out: Uint8Array, o: number): void {
-  if (dbz < 5) {
+  if (!Number.isFinite(dbz) || dbz < 5) {
     out[o] = MAP_BG[1];
     out[o + 1] = MAP_BG[2];
     out[o + 2] = MAP_BG[3];
@@ -1922,12 +1922,14 @@ function lerpStops(
   o: number,
   alpha: number,
 ): void {
+  const v = Number.isFinite(value) ? value : stops[0][0];
   let i = 0;
-  while (i < stops.length - 1 && value > stops[i + 1][0]) i++;
+  while (i < stops.length - 1 && v > stops[i + 1][0]) i++;
   const a = stops[i];
   const b = stops[Math.min(stops.length - 1, i + 1)];
-  const t =
-    a[0] === b[0] ? 0 : (value - a[0]) / Math.max(1e-6, b[0] - a[0]);
+  const raw =
+    a[0] === b[0] ? 0 : (v - a[0]) / Math.max(1e-6, b[0] - a[0]);
+  const t = Math.min(1, Math.max(0, raw));
   out[o] = (a[1] + (b[1] - a[1]) * t) | 0;
   out[o + 1] = (a[2] + (b[2] - a[2]) * t) | 0;
   out[o + 2] = (a[3] + (b[3] - a[3]) * t) | 0;
