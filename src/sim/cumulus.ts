@@ -5,7 +5,8 @@
  *
  * CAPE alone is not a trigger — the default sandbox sounding has thousands
  * of J/kg everywhere, which would sheet the whole map with anvil and rain.
- * Columns only fire where a front ridge or a drawn low provides lift.
+ * Columns only fire where a front ridge or a drawn low provides lift, or
+ * on a sparse daytime seed so continental grids stay cellular.
  */
 
 import { Grid3D } from "./Grid3D";
@@ -28,10 +29,12 @@ const PRECIP_FRAC = 0.25;
 const MASS_SCALE = 4.0e-4; // kg/m²/s per (CAPE)^{1/2}
 /** Minimum synoptic lift (front ridge or low weight) to allow a plume. */
 const TRIGGER_MIN = 0.35;
+/** Target spacing between daytime self-triggered cells (m). */
+const DAY_PLUME_SPACING = 90_000;
 
 /**
  * Deep convection parameterization. Safe to call only when the grid cannot
- * resolve updrafts (dx ≳ 4 km).
+ * resolve updrafts (dx >= 4 km).
  *
  * `liftK` is the frontal ridge amplitude from the balanced environment
  * (0 = no front). Drawn lows add their own trigger weight inside.
@@ -44,7 +47,7 @@ export function stepCumulusMassFlux(
   liftK?: Float32Array | null,
 ): void {
   if (dt <= 0) return;
-  const { nx, ny, nz, dz } = grid;
+  const { nx, ny, nz, dz, dx, dy } = grid;
   const z = new Float32Array(nz);
   const p = new Float32Array(nz);
   const T = new Float32Array(nz);
@@ -52,6 +55,13 @@ export function stepCumulusMassFlux(
   const syn = getActiveSynoptic();
   const xDen = Math.max(1, nx - 1);
   const yDen = Math.max(1, ny - 1);
+  const cellM = Math.max(dx, dy, 1);
+  // Keep ~one daytime plume per DAY_PLUME_SPACING^2, capped so coarse grids
+  // never light up a majority of columns once the BL warms.
+  const dayKeep = Math.min(
+    0.08,
+    Math.max(0.015, (DAY_PLUME_SPACING * DAY_PLUME_SPACING) / (cellM * cellM)),
+  );
 
   for (let j = 0; j < ny; j++) {
     const yn = j / yDen;
@@ -70,14 +80,20 @@ export function stepCumulusMassFlux(
         }
       }
       const k0 = openK ? openK[ij] : 0;
-      // Daytime BL heating can trigger discrete plumes without a drawn low.
-      // Gate on warm anomalies so the whole CAPE-rich domain does not sheet.
+      // Daytime BL heating: sparse seeds only. A continuous mottling gate
+      // still fires most warm land columns on continental grids.
       if (trig < TRIGGER_MIN) {
         const idSfc = grid.idx(i, j, k0);
         const dTh = f.theta[idSfc] - f.theta0[k0];
-        if (dTh > 1.8) {
-          const mottling = 0.55 + 0.45 * (((i * 37 + j * 91) % 100) / 100);
-          trig = Math.max(trig, 0.38 * mottling * Math.min(1.4, dTh / 3));
+        if (dTh > 2.4) {
+          const seed =
+            ((i * 73856093) ^ (j * 19349663) ^ ((i + 17) * (j + 91) * 83492791)) >>>
+            0;
+          const u = (seed % 1000) / 1000;
+          if (u < dayKeep) {
+            const intensity = Math.min(1.2, (dTh - 2.0) / 5);
+            trig = Math.max(trig, TRIGGER_MIN + 0.08 * intensity);
+          }
         }
       }
       if (trig < TRIGGER_MIN) continue;
@@ -90,14 +106,12 @@ export function stepCumulusMassFlux(
         const e = (qv * f.p0[k]) / (0.622 + qv);
         Td[k] = dewpointFromE(Math.max(1, e)) + 273.15;
       }
-      // Mask buried levels by copying the first free air downward.
       for (let k = 0; k < k0; k++) {
         T[k] = T[k0];
         Td[k] = Td[k0];
       }
 
       const idx = integrateCapeCin(z, p, T, Td, nz, grid.zTop);
-      // Need real CAPE and a soft CIN gate so capped columns stay quiet.
       if (idx.cape < 400 || idx.cin > 40 || idx.elM <= idx.lclM + 500) continue;
 
       const M =
@@ -116,7 +130,6 @@ export function stepCumulusMassFlux(
         Math.min(nz - 1, Math.floor(idx.elM / dz)),
       );
 
-      // Entraining plume: θ_p and q_p
       let thP = f.theta[grid.idx(i, j, kLcl)];
       let qP = f.qv[grid.idx(i, j, kLcl)];
       let condensed = 0;
@@ -134,7 +147,6 @@ export function stepCumulusMassFlux(
           condensed += cond;
           thP += (LV / CP) * cond * (thP / Math.max(Tparc, 1));
         }
-        // Compensating subsidence on the environment.
         if (k > kLcl && k < nz - 1) {
           const idUp = grid.idx(i, j, k + 1);
           const wSub =
@@ -152,25 +164,26 @@ export function stepCumulusMassFlux(
       if (condensed < 1e-5) continue;
       const rain = condensed * PRECIP_FRAC;
       const cloud = condensed - rain;
-      // Detrain near EL.
+      const mixIn = Math.min(
+        0.06,
+        (M * Math.max(dt, 1)) / Math.max(f.rho0[kEl] * dz, 0.05),
+      );
       const idEl = grid.idx(i, j, kEl);
-      f.qc[idEl] += cloud * 0.6;
-      f.qr[idEl] += rain * 0.4;
+      f.qc[idEl] += cloud * 0.6 * mixIn;
+      f.qr[idEl] += rain * 0.4 * mixIn;
       if (kEl > 0) {
-        f.qc[grid.idx(i, j, kEl - 1)] += cloud * 0.4;
-        f.qr[grid.idx(i, j, kEl - 1)] += rain * 0.3;
+        f.qc[grid.idx(i, j, kEl - 1)] += cloud * 0.4 * mixIn;
+        f.qr[grid.idx(i, j, kEl - 1)] += rain * 0.3 * mixIn;
       }
-      // Surface precip rate from the remaining rain fraction.
-      const mm = rain * 0.3 * f.rho0[kLcl] * dz;
+      const mm = rain * 0.3 * mixIn * f.rho0[kLcl] * dz;
       const col = ij;
       f.rainAccum[col] += mm;
       if (dt > 0) f.precipRate[col] += (mm / dt) * 3600;
 
-      // Cool / dry the sub-cloud layer slightly (downdraft proxy).
       for (let k = k0; k < kLcl; k++) {
         const id = grid.idx(i, j, k);
-        f.theta[id] -= 0.15 * rain * (LV / CP);
-        f.qv[id] = Math.max(0, f.qv[id] - 0.1 * rain);
+        f.theta[id] -= 0.15 * rain * mixIn * (LV / CP);
+        f.qv[id] = Math.max(0, f.qv[id] - 0.1 * rain * mixIn);
       }
     }
   }
