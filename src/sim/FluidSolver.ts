@@ -31,6 +31,7 @@ import {
 } from "./SurfaceRadiation";
 import {
   applyFrontalUpglide,
+  clearUnstableFog,
   dampPhantomConvergence,
   frontalUpglideAmplitude,
   mixGridScale,
@@ -564,6 +565,8 @@ export class FluidSolver implements SimBackend {
             this.columnStable,
             this.openK,
             this.heightGrid,
+            this.fields.qc,
+            this.fields.qi,
           );
           dampPhantomConvergence(
             this.grid,
@@ -588,6 +591,9 @@ export class FluidSolver implements SimBackend {
       }
 
       stepSaturationAdjustment(this.grid, this.fields, this.exner, this.openK);
+      // Fog without a lid is lifted saturated air — clear it so CAPE maps
+      // do not light up inside a fake stratus sheet.
+      clearUnstableFog(this.grid, this.fields, this.exner, this.openK);
       if (tog.enableWarmRain) {
         stepMicrophysics(this.grid, this.fields, h, this.qrScratch, this.exner);
       }

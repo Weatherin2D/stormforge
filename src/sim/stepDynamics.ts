@@ -4,6 +4,7 @@
  *   - Stable-column draft relaxation
  *   - Post-projection frontal upglide restore
  *   - Horizontal spike broadening (mixGridScale)
+ *   - Unstable-fog clearing
  *
  * Painted “slow physics” writers (cloud-top cooling, synoptic omega forcing,
  * marine stratus seeding, BL mixing writers) intentionally do not live here.
@@ -12,6 +13,7 @@
 import { Grid3D } from "./Grid3D";
 import { SimFields } from "./InitFromSounding";
 import { getAdvanced } from "./AdvancedSettings";
+import { CP, LV, esatFast, mixingRatio } from "./thermo";
 
 /**
  * How hard each column's front may lift, in m/s at the ridge.
@@ -41,8 +43,8 @@ export function frontalUpglideAmplitude(
       // Convergence that feeds the phantom draft extends past the warm ridge.
       if (frontDist[ij] >= 0.25 && lift < 0.2) {
         out[ij] = 0;
-        // Always mark for phantom-draft damping; real warm cores are spared
-        // inside relaxStableDrafts via the θ-anomaly check.
+        // Always mark for phantom-draft damping; real warm cores / cloudy
+        // columns are spared inside relaxStableDrafts.
         stable[ij] = 1;
         continue;
       }
@@ -51,6 +53,44 @@ export function frontalUpglideAmplitude(
       out[ij] = lift >= 0.2 ? 0.03 * ridge : 0;
     }
   }
+}
+
+/** Condensate mass in a column between kLo (inclusive) and kHi (exclusive). */
+function columnCloudMassRange(
+  qc: Float32Array,
+  qi: Float32Array,
+  ij: number,
+  nxy: number,
+  kLo: number,
+  kHi: number,
+): number {
+  let m = 0;
+  for (let k = kLo; k < kHi; k++) {
+    const id = ij + k * nxy;
+    m += qc[id] + qi[id];
+  }
+  return m;
+}
+
+/**
+ * Real storm cloud lives above the boundary layer. Shallow fog/stratus must
+ * NOT disable phantom-draft damping — that froze a saturated sheet in place
+ * while CAPE stayed huge, then unlocked a checkerboard when latent heat hit.
+ */
+function isDeepStormColumn(
+  qc: Float32Array,
+  qi: Float32Array,
+  ij: number,
+  nxy: number,
+  nz: number,
+  dz: number,
+): boolean {
+  const kBl = Math.min(nz, Math.max(2, Math.ceil(1500 / Math.max(dz, 1))));
+  const deep = columnCloudMassRange(qc, qi, ij, nxy, kBl, nz);
+  if (deep > 3e-4) return true;
+  // Thick column total with most of it above the BL.
+  const total = deep + columnCloudMassRange(qc, qi, ij, nxy, 0, kBl);
+  return total > 8e-4 && deep > 0.5 * total;
 }
 
 /**
@@ -70,11 +110,14 @@ export function relaxStableDrafts(
   stable: Uint8Array,
   openK: Uint16Array | null,
   height: Float32Array | null,
+  qc?: Float32Array | null,
+  qi?: Float32Array | null,
 ): void {
   // The projection rebuilds this draft from the imposed synoptic wind on
   // every substep. A capped column has no storm to maintain, so put w back
-  // to the gentle upglide. Hills and a real thermal (a few kelvin off the
-  // balanced pattern) are left alone.
+  // to the gentle upglide. Hills, real thermals, and already-cloudy columns
+  // (lifted condensation) are left alone — damping those froze saturated
+  // air into a fog sheet while CAPE stayed huge.
   const { nx, ny, nz, dz } = grid;
   const nxy = nx * ny;
   const depth = 2800;
@@ -83,13 +126,11 @@ export function relaxStableDrafts(
     for (let i = 0; i < nx; i++) {
       const ij = row + i;
       if (!stable[ij]) continue;
-      // Only relax phantom drafts on frontal columns. Elsewhere amp is 0 and
-      // writing `a * shape` would zero every thermal whose θ anomaly dips
-      // below the 2.5 K spare threshold — that killed the init bubble.
       const a = amp[ij];
       if (!(a > 0)) continue;
       if (openK && openK[ij] > 0) continue;
       if (height && height[ij] > 40) continue;
+      if (qc && qi && isDeepStormColumn(qc, qi, ij, nxy, nz, dz)) continue;
       for (let k = 1; k < nz; k++) {
         const z = k * dz;
         const below = ij + (k - 1) * nxy;
@@ -98,10 +139,8 @@ export function relaxStableDrafts(
           Math.abs(theta[below] - thetaEnv[below]),
           Math.abs(theta[above] - thetaEnv[above]),
         );
-        // Spare only a real warm-core thermal (init bubble is ~3–4 K). A
-        // 1–2 K anomaly from frontal lift + condensation must stay damped
-        // or the line unlocks into domain-wide convection.
-        if (anomaly > 4.5) continue;
+        // Spare a real warm-core thermal (init bubble is ~3–4 K).
+        if (anomaly > 3.5) continue;
         const shape =
           z > 8000
             ? 0
@@ -127,13 +166,14 @@ export function dampPhantomConvergence(
 ): void {
   const { nx, ny, nz, dx, dy } = grid;
   const nxy = nx * ny;
-  const bleed = 0.55;
+  const bleed = 0.28;
   for (let j = 1; j < ny - 1; j++) {
     const row = j * nx;
     for (let i = 1; i < nx - 1; i++) {
       const ij = row + i;
       if (!stable[ij] || !(amp[ij] > 0)) continue;
       if (openK && openK[ij] > 0) continue;
+      if (isDeepStormColumn(f.qc, f.qi, ij, nxy, nz, grid.dz)) continue;
       // Leave columns with a real warm core alone.
       let anom = 0;
       for (let k = 0; k < Math.min(nz, 12); k++) {
@@ -141,7 +181,7 @@ export function dampPhantomConvergence(
         const d = Math.abs(f.theta[id] - thetaEnv[id]);
         if (d > anom) anom = d;
       }
-      if (anom > 4.5) continue;
+      if (anom > 3.5) continue;
       for (let k = 0; k < nz; k++) {
         if (openK && k < openK[ij]) continue;
         const du =
@@ -196,6 +236,59 @@ export function applyFrontalUpglide(
         // Slamming w to `target` locked a storm-strength draft along the
         // whole front; ease a fraction back instead.
         if (wk < target && wk > -0.5) w[id] = wk + (target - wk) * 0.2;
+      }
+    }
+  }
+}
+
+/**
+ * Fog needs a lid. Near-surface cloud water in a neutrally stratified
+ * column is lifted saturated air that should either deepen into cumulus or
+ * evaporate — not sit as a CAPE-filled fog sheet on the map.
+ */
+export function clearUnstableFog(
+  grid: Grid3D,
+  f: SimFields,
+  exner: Float32Array,
+  openK?: Uint16Array | null,
+): void {
+  const { nx, ny, nz, dz } = grid;
+  const nxy = nx * ny;
+  // Clear through ~1.5 km so lifted "fog sheets" near the LCL are caught.
+  const kFog = Math.min(nz - 1, Math.max(2, Math.ceil(1500 / Math.max(dz, 1))));
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const ij = i + j * nx;
+      const k0 = openK ? openK[ij] : 0;
+      if (k0 >= kFog) continue;
+      // Bulk BL stratification (not a single-level spike).
+      let qcLow = 0;
+      for (let k = k0; k < kFog; k++) qcLow += f.qc[ij + k * nxy];
+      if (qcLow < 2e-5) continue;
+      const bulk =
+        f.theta[ij + (kFog - 1) * nxy] - f.theta[ij + k0 * nxy];
+      // Marine/radiation fog sits under a strong inversion (≥ ~4 K / 1.5 km).
+      // Weaker bulk stability with shallow cloud is lifted saturated air that
+      // would otherwise paint "CAPE inside thick fog" on the map.
+      if (bulk > 4.0) continue;
+      // Leave columns that already have deep storm cloud alone.
+      if (isDeepStormColumn(f.qc, f.qi, ij, nxy, nz, dz)) continue;
+
+      for (let k = k0; k < kFog; k++) {
+        const id = ij + k * nxy;
+        const qc = f.qc[id];
+        if (qc < 1e-8) continue;
+        // Evaporate the shallow cloud back to vapor.
+        const evap = qc * 0.95;
+        const ex = exner[k];
+        const T = f.theta[id] * ex;
+        f.qc[id] = qc - evap;
+        f.qv[id] += evap;
+        f.theta[id] -= (LV / CP) * evap * (f.theta[id] / Math.max(T, 1));
+        const qs = mixingRatio(esatFast(f.theta[id] * ex), f.p0[k]);
+        // Leave ~2% undersaturation so the sheet cannot re-seal next step.
+        const target = qs * 0.98;
+        if (f.qv[id] > target) f.qv[id] = target;
       }
     }
   }

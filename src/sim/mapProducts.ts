@@ -1594,26 +1594,26 @@ function packThermo(
   which: "cape" | "cin" | "cape03" | "lfc" | "el",
 ): void {
   const { nx, ny, nz, dz, zTop } = grid;
-  const stepK = Math.max(1, Math.floor(nz / 20));
-  const ks: number[] = [];
-  for (let k = 0; k < nz; k += stepK) ks.push(k);
-  if (ks[ks.length - 1] !== nz - 1) ks.push(nz - 1);
-  const nLev = ks.length;
+  // Use every level — skipping levels made CAPE flicker into diagonal
+  // stripes next to fronts where θ/qv vary sharply with height.
+  const nLev = nz;
   ensureThermo(nLev);
+
+  const scalar = new Float32Array(nx * ny);
+  const smooth = new Float32Array(nx * ny);
 
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      for (let n = 0; n < nLev; n++) {
-        const k = ks[n];
+      for (let k = 0; k < nz; k++) {
         const id = grid.idx(i, j, k);
         const p = f.p0[k];
         const T = TFromTheta(f.theta[id], p);
         const qv = Math.max(0, f.qv[id]);
         const e = (qv * p) / (0.622 + qv);
-        thermoZ[n] = (k + 0.5) * dz;
-        thermoP[n] = p;
-        thermoT[n] = T;
-        thermoTd[n] = Math.min(T, dewpointFromE(Math.max(1, e)) + 273.15);
+        thermoZ[k] = (k + 0.5) * dz;
+        thermoP[k] = p;
+        thermoT[k] = T;
+        thermoTd[k] = Math.min(T, dewpointFromE(Math.max(1, e)) + 273.15);
       }
       const idx = integrateCapeCin(
         thermoZ,
@@ -1622,13 +1622,58 @@ function packThermo(
         thermoTd,
         nLev,
         zTop,
+        false,
       );
+      const ij = i + j * nx;
+      // Shallow fog with almost no CIN is not a free-convective column —
+      // hide the CAPE paint so maps do not light up inside a stratus sheet.
+      let qcLow = 0;
+      const kFog = Math.min(nz, Math.max(2, Math.ceil(800 / Math.max(dz, 1))));
+      for (let k = 0; k < kFog; k++) qcLow += f.qc[grid.idx(i, j, k)];
+      const fogMask =
+        (which === "cape" || which === "cape03") &&
+        qcLow > 5e-5 &&
+        idx.cin < 25;
+      if (which === "cape") scalar[ij] = fogMask ? 0 : idx.cape;
+      else if (which === "cin") scalar[ij] = idx.cin;
+      else if (which === "cape03") scalar[ij] = fogMask ? 0 : idx.cape0to3;
+      else if (which === "lfc") scalar[ij] = idx.lfcM;
+      else scalar[ij] = idx.elM;
+    }
+  }
+
+  // Two-pass 3×3 smooth kills one-cell CAPE glitter / diagonal stripes
+  // next to fronts without erasing real mesoscale gradients.
+  const pass = (src: Float32Array, dst: Float32Array): void => {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        let sum = 0;
+        let n = 0;
+        for (let dj = -1; dj <= 1; dj++) {
+          const jj = j + dj;
+          if (jj < 0 || jj >= ny) continue;
+          for (let di = -1; di <= 1; di++) {
+            const ii = i + di;
+            if (ii < 0 || ii >= nx) continue;
+            const w = di === 0 && dj === 0 ? 4 : 1;
+            sum += src[ii + jj * nx] * w;
+            n += w;
+          }
+        }
+        dst[i + j * nx] = sum / n;
+      }
+    }
+  };
+  pass(scalar, smooth);
+  pass(smooth, scalar);
+
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const v = scalar[i + j * nx];
       const pix = mapPix(i, j, nx, ny);
-      if (which === "cape") capeToRgba(idx.cape, out, pix);
-      else if (which === "cin") cinToRgba(idx.cin, out, pix);
-      else if (which === "cape03") capeToRgba(idx.cape0to3, out, pix);
-      else if (which === "lfc") topToRgba(idx.lfcM, out, pix);
-      else topToRgba(idx.elM, out, pix);
+      if (which === "cape" || which === "cape03") capeToRgba(v, out, pix);
+      else if (which === "cin") cinToRgba(v, out, pix);
+      else topToRgba(v, out, pix);
     }
   }
 }

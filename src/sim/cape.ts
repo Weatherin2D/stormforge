@@ -138,17 +138,15 @@ export function integrateCapeCin(
     } else {
       const climb = zMid - zPar;
       if (climb > 0) {
-        // Floor the lapse so a cartoon 8.5 K/km sounding stays on a
-        // readable CAPE scale, while still steepening toward dry aloft.
-        const gamma = Math.max(0.0068, moistLapse(Tp, pMid));
+        // True moist-adiabatic cooling. The old 6.8 K/km floor and a
+        // dry-adiabat fallback (when qvParcel < 0.45 qs) painted striped
+        // false CAPE next to fronts and inside fog.
+        const gamma = moistLapse(Tp, pMid);
         Tp -= gamma * climb;
         zPar = zMid;
       }
       Tpar = Tp;
-      const qs = mixingRatio(esatFast(Math.max(180, Tpar)), pMid);
-      if (qvParcel < qs * 0.45) {
-        Tpar = thetaP * Math.pow(Math.max(pMid, 1) / P0, KAPPA);
-      }
+      void qvParcel;
     }
 
     const B = 9.81 * ((Tpar - Tenv) / Math.max(Tenv, 1));
