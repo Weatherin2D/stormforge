@@ -193,9 +193,10 @@ export function computeSkyLighting(
   }
 
   let sun = new THREE.Vector3(sunR, sunG, sunB);
-  sun.multiplyScalar(smoothstep(-4, 6, el));
+  // Hold a warm twilight beam a little past geometric sunset for cloud rims.
+  sun.multiplyScalar(smoothstep(-7, 5, el));
   // Attenuate sun intensity but keep color warm in twilight
-  sun.multiplyScalar(mix(0.15, 1.0, dayFactor));
+  sun.multiplyScalar(mix(0.2, 1.0, dayFactor));
 
   // Sky colors
   const up = scatterAt(el, 55);

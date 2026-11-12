@@ -51,9 +51,9 @@ const SUN_DISC_LUM_CAP = 6.5;
 /** Sky dome / clear-color night floor (deep airglow). */
 const NIGHT_SKY = [0.008, 0.012, 0.026] as const;
 const NIGHT_GROUND = [0.1, 0.12, 0.18] as const;
-/** Cloud ambient night floors — kept well above the sky dome so decks stay visible after dark. */
-const NIGHT_TOP = [0.18, 0.2, 0.32] as const;
-const NIGHT_BOTTOM = [0.1, 0.11, 0.16] as const;
+/** Cloud ambient night floors — cool airglow, dim enough to silhouette but still readable. */
+const NIGHT_TOP = [0.055, 0.07, 0.12] as const;
+const NIGHT_BOTTOM = [0.028, 0.032, 0.05] as const;
 const CITY_SKY = [0.06, 0.036, 0.016] as const;
 
 const blitVert = /* glsl */ `
@@ -1497,11 +1497,14 @@ roughnessFactor = mix(roughnessFactor, 0.32, gHailDots);`,
     const sunEl = Math.sin((el * Math.PI) / 180);
     const sIdx = Math.min(SUN_LEVELS - 1, Math.max(0, Math.round(Math.max(0, sunEl) * (SUN_LEVELS - 1))));
     // Cap noon lift so high sun does not bleach cloud albedo white.
-    const horizonLift = Math.max(0.35, Math.min(0.85, (el + 1) / 16));
+    // Twilight keeps warm sun colour on the clouds even near the horizon.
+    const horizonLift = Math.max(0.28, Math.min(0.85, (el + 4) / 18));
+    const twilightLift =
+      el > -8 && el < 12 ? Math.max(horizonLift, 0.55 + 0.25 * (1 - Math.abs(el) / 12)) : horizonLift;
     const cm = this.cloudMat.uniforms;
     (cm.uSunColor as { value: THREE.Vector3 }).value
       .set(sunCol[sIdx * 3], sunCol[sIdx * 3 + 1], sunCol[sIdx * 3 + 2])
-      .multiplyScalar(SUN_GAIN * Math.min(adapt, 8) * horizonLift);
+      .multiplyScalar(SUN_GAIN * Math.min(adapt, 8) * twilightLift);
     (cm.uSkyColor as { value: THREE.Vector3 }).value.set(
       E[0] / Math.PI * skyGain + NIGHT_TOP[0] * night,
       E[1] / Math.PI * skyGain + NIGHT_TOP[1] * night,

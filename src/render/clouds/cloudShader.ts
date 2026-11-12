@@ -418,9 +418,11 @@ void main() {
   vec3 col = vec3(0.0);
   float T = 1.0;
   float boxH = max(1.0, uBoxMax.y - uBoxMin.y);
-  // 0 = deep night / blue hour, 1 = full day — drives ambient floors.
-  float dayAmt = smoothstep(-0.08, 0.28, uSunDir.y);
-  bool night = uSunDir.y < -0.02;
+  // Day / twilight / night weights from sun elevation.
+  float dayAmt = smoothstep(-0.02, 0.32, uSunDir.y);
+  float twilight = smoothstep(-0.14, 0.0, uSunDir.y) * (1.0 - smoothstep(0.06, 0.32, uSunDir.y));
+  float nightAmt = 1.0 - smoothstep(-0.22, 0.04, uSunDir.y);
+  bool night = uSunDir.y < -0.04;
   // Only rewind after a real empty skip — not on the first cloudy sample.
   bool fromSkip = false;
 
@@ -475,75 +477,102 @@ void main() {
     bakedLight(uvw, odSun, skyVis);
     if (night) {
       // Soft night bake — do not force OD so high that crevice kills ambient.
-      odSun = mix(odSun, 1.8, 0.85);
-      skyVis = max(skyVis, 0.62);
+      odSun = mix(odSun, 2.4, 0.75);
+      skyVis = max(skyVis, 0.35);
     }
-    skyVis = mix(0.28, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.4, uAmbientAtten)));
-    // Twilight/night: keep sky visibility high so decks stay lit by ambient.
-    skyVis = max(skyVis, mix(0.7, 0.0, dayAmt));
+    skyVis = mix(0.22, 1.0, pow(clamp(skyVis, 0.0, 1.0), max(0.4, uAmbientAtten)));
+    // Night keeps a low airglow floor so decks silhouette; twilight reads the sky.
+    skyVis = max(skyVis, mix(0.28, 0.0, dayAmt) + twilight * 0.18);
 
     // Powder softens deep scatter — keep rim glow mild so sunlit faces stay grey-white.
     float powder = 1.0 - exp(-cloudSig * uPowderLength);
     powder = mix(1.0 - 0.4 * uPowder, 1.0, powder);
 
     float h = clamp((pRel.y - boxMin.y) / boxH * 1.25, 0.0, 1.0);
-    // Daytime bases stay soft grey — do not crush dense cores to charcoal.
+    // Daytime bases stay soft grey; night bases go nearly black.
     float baseDark = mix(0.62, 1.0, smoothstep(0.03, 0.48, h));
-    baseDark = mix(mix(0.7, 1.0, smoothstep(0.04, 0.45, h)), baseDark, dayAmt);
+    baseDark = mix(mix(0.28, 0.72, smoothstep(0.05, 0.55, h)), baseDark, dayAmt);
+    baseDark = mix(baseDark, mix(0.4, 0.9, smoothstep(0.04, 0.5, h)), twilight);
     float sunAmt = sunThrough(odSun);
-    float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.25) * dayAmt;
-    vec3 cloudAlbedo = vec3(0.94, 0.96, 0.98);
-    vec3 ambientBottom = uGroundColor * 0.85 + cloudAlbedo * 0.28;
-    vec3 ambientTop = mix(cloudAlbedo * 0.72, uSkyColor * 0.42, 0.28);
-    // Day still needs a strong ambient floor; dense towers rarely see direct sun.
-    float ambBoost = mix(2.0, 1.55, dayAmt);
+    float crevice = pow(clamp(1.0 - sunAmt, 0.0, 1.0), 1.25) * max(dayAmt, twilight * 0.85);
+
+    // Day: bright grey. Twilight: warm peach body. Night: cool blue-grey.
+    vec3 dayAlbedo = vec3(0.94, 0.96, 0.98);
+    vec3 twilightAlbedo = vec3(0.82, 0.68, 0.55);
+    vec3 nightAlbedo = vec3(0.42, 0.5, 0.68);
+    vec3 cloudAlbedo = mix(nightAlbedo, dayAlbedo, dayAmt);
+    cloudAlbedo = mix(cloudAlbedo, twilightAlbedo, twilight * 0.65);
+
+    vec3 ambientBottom = uGroundColor * mix(0.55, 0.85, dayAmt) + cloudAlbedo * mix(0.12, 0.28, dayAmt);
+    vec3 ambientTop = mix(cloudAlbedo * mix(0.35, 0.72, dayAmt), uSkyColor * mix(0.55, 0.42, dayAmt), 0.28);
+    // Night ambient is dim airglow; day stays strong so dense towers aren't soot.
+    float ambBoost = mix(0.62, 1.55, dayAmt);
+    ambBoost = mix(ambBoost, 1.05, twilight);
     vec3 ambient = mix(ambientBottom, ambientTop, h) * skyVis * uAmbientStrength * baseDark * ambBoost;
     ambient *= mix(1.0, 0.88, crevice);
-    vec3 nightFill = cloudAlbedo * mix(0.14, 0.0, dayAmt) * (0.55 + 0.45 * skyVis);
-    nightFill += uSkyColor * mix(0.3, 0.0, dayAmt);
+
+    // Faint cool night fill — visible decks, not daytime grey wash.
+    vec3 nightFill = vec3(0.035, 0.05, 0.09) * nightAmt * (0.35 + 0.65 * h) * (0.5 + 0.5 * skyVis);
+    nightFill += uSkyColor * nightAmt * 0.22;
     // Daytime fill so shadowed faces stay bright cumulus grey, not soot.
-    vec3 dayFill = cloudAlbedo * (0.1 + 0.08 * skyVis) * dayAmt;
+    vec3 dayFill = dayAlbedo * (0.1 + 0.08 * skyVis) * dayAmt;
+    // Twilight underglow — warm horizon bounce into bases.
+    vec3 twilightFill = uSunColor * vec3(1.15, 0.75, 0.45) * twilight * (0.12 + 0.2 * (1.0 - h));
 
     // Multi-scatter fill scales with optical depth so close interiors stay lit
     // like the afar silhouette (Hillaire-style cheap approximation).
     float ms = clamp(sunThrough(odSun * 0.4), 0.0, 1.0);
     float deep = clamp(1.0 - sunAmt, 0.0, 1.0);
-    vec3 coreFill = cloudAlbedo * (0.14 + 0.18 * ms) + uSunColor * 0.07 * ms;
-    coreFill += (uSkyColor * 0.4 + cloudAlbedo * 0.55 + uSunColor * 0.18 * ms) * deep * 0.32;
+    float coreScale = mix(0.35, 1.0, dayAmt) + twilight * 0.45;
+    vec3 coreFill = (cloudAlbedo * (0.14 + 0.18 * ms) + uSunColor * 0.07 * ms) * coreScale;
+    coreFill += (uSkyColor * 0.4 + cloudAlbedo * 0.55 + uSunColor * 0.18 * ms) * deep * 0.32 * coreScale;
 
     // Direct diffuse — phase already angle-dependent via dual HG lobe.
     float sunLit = min(sunAmt * phase * powder, 1.0);
+    // Twilight keeps warm direct light even as dayAmt falls.
+    float sunGate = max(dayAmt, twilight * 1.15);
     vec3 litFace = cloudAlbedo * uSunColor;
-    vec3 cloudCol = litFace * sunLit * 0.82 + ambient * 1.18 + coreFill + nightFill + dayFill;
+    vec3 cloudCol =
+      litFace * sunLit * mix(0.55, 0.82, dayAmt) * sunGate
+      + ambient * mix(0.95, 1.18, dayAmt)
+      + coreFill + nightFill + dayFill + twilightFill;
 
     // Angle-varying sun highlights (spotter realism):
     //  - towardSun: silver lining / glory on thin rims looking into the sun
     //  - sideSun: bright cauliflower faces when the sun is to the side
     //  - withSun: soft sheen when the sun is behind the camera
+    // Twilight boosts these — that is when rims go gold/pink.
     float thinRim = exp(-cloudSig * 90.0);
     float litEdge = sunAmt * mix(0.35, 1.0, powder);
     float elevGlow = mix(0.55, 1.0, clamp(uSunDir.y * 1.2 + 0.15, 0.0, 1.0));
-    float silverLining = towardSun * litEdge * mix(0.45, 1.35, thinRim) * dayAmt * elevGlow;
-    float sideGlint = sideSun * sunAmt * powder * dayAmt * elevGlow;
-    float backSheen = withSun * sunAmt * powder * 0.45 * dayAmt;
-    // Warm sun highlight colour, slightly hotter than body albedo.
-    vec3 hiCol = uSunColor * vec3(1.05, 1.0, 0.94);
+    elevGlow = max(elevGlow, twilight * 1.35);
+    float hiGate = max(dayAmt, twilight * 1.4);
+    float silverLining = towardSun * litEdge * mix(0.45, 1.35, thinRim) * hiGate * elevGlow;
+    float sideGlint = sideSun * sunAmt * powder * hiGate * elevGlow;
+    float backSheen = withSun * sunAmt * powder * 0.45 * hiGate;
+    // Warm sun highlight — hotter still in twilight.
+    vec3 hiCol = uSunColor * mix(vec3(1.05, 1.0, 0.94), vec3(1.35, 0.85, 0.45), twilight);
     vec3 highlight =
       hiCol * (silverLining * 0.95 + sideGlint * 0.48 + backSheen * 0.28);
     // Extra forward bloom on very thin edges looking at the sun.
-    highlight += hiCol * towardSun * thinRim * sunThrough(odSun * 0.5) * 0.55 * dayAmt;
+    highlight += hiCol * towardSun * thinRim * sunThrough(odSun * 0.5) * 0.55 * hiGate;
     cloudCol += highlight;
 
-    // Mild cool shift in shadow — keep daytime luminance up (no charcoal).
-    cloudCol = mix(cloudCol, cloudCol * vec3(0.9, 0.93, 0.97), crevice * 0.28);
-    cloudCol = min(cloudCol, mix(vec3(1.55), vec3(1.35, 1.36, 1.38), dayAmt * 0.25));
+    // Cool shift in shadow — stronger at night, mild by day.
+    vec3 shadowTint = mix(vec3(0.72, 0.8, 0.95), vec3(0.9, 0.93, 0.97), dayAmt);
+    shadowTint = mix(shadowTint, vec3(0.55, 0.48, 0.7), twilight * 0.55);
+    cloudCol = mix(cloudCol, cloudCol * shadowTint, crevice * mix(0.45, 0.28, dayAmt));
+    // Night luminance cap is low; twilight allows warm peaks.
+    vec3 colCap = mix(vec3(0.55, 0.6, 0.75), vec3(1.35, 1.36, 1.38), dayAmt);
+    colCap = mix(colCap, vec3(1.45, 1.05, 0.7), twilight * 0.7);
+    cloudCol = min(cloudCol, colCap);
 
     // Rain shafts: grey curtains + angle-dependent sun streak.
     float rainGrey = dot(ambient, vec3(0.3, 0.5, 0.2));
-    vec3 rainCol = vec3(rainGrey) * 1.05
-                 + uSunColor * sunAmt * powder * 0.18
-                 + coreFill * 0.4 + nightFill * 0.45 + dayFill * 0.6;
-    rainCol += hiCol * (towardSun * 0.35 + sideSun * 0.18) * sunAmt * powder * dayAmt;
+    vec3 rainCol = vec3(rainGrey) * mix(0.7, 1.05, dayAmt)
+                 + uSunColor * sunAmt * powder * 0.18 * sunGate
+                 + coreFill * 0.4 + nightFill * 0.55 + dayFill * 0.6 + twilightFill * 0.5;
+    rainCol += hiCol * (towardSun * 0.35 + sideSun * 0.18) * sunAmt * powder * hiGate;
     rainCol *= mix(1.0, 0.9, crevice);
 
     vec3 flash = flashLight(p);
